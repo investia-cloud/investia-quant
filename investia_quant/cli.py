@@ -11,6 +11,9 @@ import click
 # Helpers
 # ---------------------------------------------------------------------------
 
+_DEFAULT_ANALYSIS_START = "2015-01-01"  # Se non specificato, il sistema aggiusta alla prima selezione disponibile
+
+
 def _setup_libs_path():
     """Aggiunge notebooks/libs_py al sys.path se non già presente."""
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -21,9 +24,8 @@ def _setup_libs_path():
 
 def _load_all_libs():
     """Importa tutte le librerie runtime e restituisce il namespace."""
-
     _setup_libs_path()
-    # Imposta le variabili d'ambiente IQ_* con path assoluti dal root progetto
+    # Path assoluti dal root progetto via env vars (letti da u_functions)
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     os.environ.setdefault("IQ_INPUTS_DIR",  os.path.join(root, "inputs"))
     os.environ.setdefault("IQ_OUTPUTS_DIR", os.path.join(root, "outputs"))
@@ -58,7 +60,7 @@ def _load_all_libs():
             ns.update({k: v for k, v in vars(mod).items() if not k.startswith("__")})
         except Exception as e:
             click.echo(f"[WARN] Impossibile importare {lib}: {e}", err=True)
-            
+
     return ns
 
 
@@ -78,7 +80,6 @@ def _resolve_portfolio(ptf_name: str, ns: dict):
     # Fallback: cerca direttamente per nome variabile nel namespace
     obj = ns.get(ptf_name)
     if obj is not None and isinstance(obj, dict):
-        # Euristica: K-portfolio ha "trading_systems", R-portfolio ha "tickers"
         if "trading_systems" in obj:
             return obj, "K"
         if "tickers" in obj:
@@ -91,6 +92,13 @@ def _resolve_portfolio(ptf_name: str, ns: dict):
         f"  R-portfolio disponibili: {available_r}\n"
         f"  K-portfolio disponibili: {available_k}"
     )
+
+
+def _get_credentials(ns):
+    load_email_credentials = ns.get("load_email_credentials")
+    if load_email_credentials is None:
+        raise click.ClickException("load_email_credentials non trovata in u_functions.")
+    return load_email_credentials()
 
 
 # ---------------------------------------------------------------------------
@@ -109,7 +117,7 @@ def app():
 
 @app.command()
 @click.option("--ptf", required=True, help="Nome portafoglio (es. alpha_world, us_trading_2026)")
-@click.option("--recipient", default=None, help="Email destinatario (override config)")
+@click.option("--recipient", default=None, help="Email destinatario")
 @click.option("--report-date", default=None, help="Data fine report YYYY-MM-DD (default: oggi)")
 @click.option("--dry-run", is_flag=True, default=False, help="Simula senza inviare email")
 @click.option("--verbose", is_flag=True, default=False, help="Output verboso")
@@ -117,23 +125,12 @@ def app():
 @click.option("--wfo-results-dir", default=None, help="Override directory risultati WFO")
 def run(ptf, recipient, report_date, dry_run, verbose, no_send, wfo_results_dir):
     """Esecuzione runtime: genera e invia report segnali (R e K portfolio)."""
-    click.echo(f"[iq run] Caricamento librerie...")
+    click.echo("[iq run] Caricamento librerie...")
     ns = _load_all_libs()
 
     click.echo(f"[iq run] Risolvo portafoglio: {ptf}")
     portfolio_obj, kind = _resolve_portfolio(ptf, ns)
     click.echo(f"[iq run] Tipo: {kind}-portfolio — {portfolio_obj.get('Title', ptf)}")
-
-    # Credenziali email
-    load_email_credentials = ns.get("load_email_credentials")
-    if load_email_credentials is None:
-        raise click.ClickException("load_email_credentials non trovata in u_functions.")
-    sender_email, sender_password = load_email_credentials()
-
-    if recipient is None:
-        raise click.ClickException(
-            "Destinatario non specificato. Usa --recipient <email> oppure configura il default."
-        )
 
     send_report = not no_send and not dry_run
 
@@ -143,6 +140,9 @@ def run(ptf, recipient, report_date, dry_run, verbose, no_send, wfo_results_dir)
             raise click.ClickException("r_run_portfolio non trovata in r_functions.")
         wfo_dir = wfo_results_dir or ns.get("_TSLAB_RUNTIME_R_WFO_RESULTS_DIR", "../../inputs/WFO_R_RUN_RESULTS")
         if send_report:
+            if recipient is None:
+                raise click.ClickException("Destinatario non specificato. Usa --recipient <email>.")
+            sender_email, sender_password = _get_credentials(ns)
             click.echo(f"[iq run] Eseguo r_run_portfolio → {recipient}")
             out = r_run_portfolio(
                 portfolio=portfolio_obj,
@@ -159,7 +159,7 @@ def run(ptf, recipient, report_date, dry_run, verbose, no_send, wfo_results_dir)
             )
             click.echo(f"[iq run] Completato. Output: {out}")
         else:
-            click.echo(f"[iq run] --no-send attivo: r_run_portfolio NON eseguito.")
+            click.echo("[iq run] --no-send attivo: r_run_portfolio NON eseguito.")
 
     elif kind == "K":
         k_run_portfolio = ns.get("k_run_portfolio")
@@ -167,6 +167,9 @@ def run(ptf, recipient, report_date, dry_run, verbose, no_send, wfo_results_dir)
             raise click.ClickException("k_run_portfolio non trovata in k_functions.")
         wfo_dir = wfo_results_dir or ns.get("_TSLAB_RUNTIME_T_WFO_RESULTS_DIR", "../../inputs/WFO_T_RUN_RESULTS")
         if send_report:
+            if recipient is None:
+                raise click.ClickException("Destinatario non specificato. Usa --recipient <email>.")
+            sender_email, sender_password = _get_credentials(ns)
             click.echo(f"[iq run] Eseguo k_run_portfolio → {recipient}")
             out = k_run_portfolio(
                 portfolio_cfg=portfolio_obj,
@@ -187,7 +190,7 @@ def run(ptf, recipient, report_date, dry_run, verbose, no_send, wfo_results_dir)
             )
             click.echo(f"[iq run] Completato. Output: {out}")
         else:
-            click.echo(f"[iq run] --no-send attivo: k_run_portfolio NON eseguito.")
+            click.echo("[iq run] --no-send attivo: k_run_portfolio NON eseguito.")
 
 
 # ---------------------------------------------------------------------------
@@ -197,27 +200,23 @@ def run(ptf, recipient, report_date, dry_run, verbose, no_send, wfo_results_dir)
 @app.command()
 @click.option("--ptf", required=True, help="Nome portafoglio")
 @click.option("--recipient", default=None, help="Email destinatario")
-@click.option("--start-date", default=None, help="Data inizio analisi YYYY-MM-DD")
+@click.option("--start-date", default=None, help="Data inizio analisi YYYY-MM-DD (default: automatico)")
 @click.option("--end-date", default=None, help="Data fine analisi YYYY-MM-DD")
 @click.option("--verbose", is_flag=True, default=False)
 @click.option("--no-send", is_flag=True, default=False, help="Non inviare email")
 @click.option("--wfo-results-dir", default=None)
 def report(ptf, recipient, start_date, end_date, verbose, no_send, wfo_results_dir):
     """Genera e invia report performance (R e K portfolio)."""
-    click.echo(f"[iq report] Caricamento librerie...")
+    click.echo("[iq report] Caricamento librerie...")
     ns = _load_all_libs()
 
     click.echo(f"[iq report] Risolvo portafoglio: {ptf}")
     portfolio_obj, kind = _resolve_portfolio(ptf, ns)
     click.echo(f"[iq report] Tipo: {kind}-portfolio — {portfolio_obj.get('Title', ptf)}")
 
-    load_email_credentials = ns.get("load_email_credentials")
-    if load_email_credentials is None:
-        raise click.ClickException("load_email_credentials non trovata in u_functions.")
-    sender_email, sender_password = load_email_credentials()
-
-    if recipient is None:
-        raise click.ClickException("Destinatario non specificato. Usa --recipient <email>.")
+    # Se start_date non specificata usa default remoto:
+    # r_functions aggiusta automaticamente alla prima selezione disponibile
+    effective_start = start_date if start_date is not None else _DEFAULT_ANALYSIS_START
 
     send = not no_send
 
@@ -227,10 +226,13 @@ def report(ptf, recipient, start_date, end_date, verbose, no_send, wfo_results_d
             raise click.ClickException("run_rotational_portfolio_performance non trovata in r_functions.")
         wfo_dir = wfo_results_dir or ns.get("_TSLAB_RUNTIME_R_WFO_RESULTS_DIR", "../../inputs/WFO_R_RUN_RESULTS")
         if send:
-            click.echo(f"[iq report] Eseguo run_rotational_portfolio_performance → {recipient}")
+            if recipient is None:
+                raise click.ClickException("Destinatario non specificato. Usa --recipient <email>.")
+            sender_email, sender_password = _get_credentials(ns)
+            click.echo(f"[iq report] Eseguo run_rotational_portfolio_performance → {recipient} (start={effective_start})")
             out = run_rotational_portfolio_performance(
                 portfolio=portfolio_obj,
-                analisys_start_date=start_date,
+                analisys_start_date=effective_start,
                 analisys_end_date=end_date,
                 wfo_results_dir=wfo_dir,
                 sender_email=sender_email,
@@ -241,9 +243,9 @@ def report(ptf, recipient, start_date, end_date, verbose, no_send, wfo_results_d
                 verbose=verbose,
                 auto_adjust=True,
             )
-            click.echo(f"[iq report] Completato.")
+            click.echo("[iq report] Completato.")
         else:
-            click.echo(f"[iq report] --no-send attivo.")
+            click.echo("[iq report] --no-send attivo.")
 
     elif kind == "K":
         run_ts_portfolio_performance = ns.get("run_ts_portfolio_performance")
@@ -251,7 +253,10 @@ def report(ptf, recipient, start_date, end_date, verbose, no_send, wfo_results_d
             raise click.ClickException("run_ts_portfolio_performance non trovata in k_functions.")
         wfo_dir = wfo_results_dir or ns.get("_TSLAB_RUNTIME_T_WFO_RESULTS_DIR", "../../inputs/WFO_T_RUN_RESULTS")
         if send:
-            click.echo(f"[iq report] Eseguo run_ts_portfolio_performance → {recipient}")
+            if recipient is None:
+                raise click.ClickException("Destinatario non specificato. Usa --recipient <email>.")
+            sender_email, sender_password = _get_credentials(ns)
+            click.echo(f"[iq report] Eseguo run_ts_portfolio_performance → {recipient} (start={effective_start})")
             out = run_ts_portfolio_performance(
                 portfolio_cfg=portfolio_obj,
                 sender_email=sender_email,
@@ -263,9 +268,9 @@ def report(ptf, recipient, start_date, end_date, verbose, no_send, wfo_results_d
                 create_structure=False,
                 auto_adjust=True,
             )
-            click.echo(f"[iq report] Completato.")
+            click.echo("[iq report] Completato.")
         else:
-            click.echo(f"[iq report] --no-send attivo.")
+            click.echo("[iq report] --no-send attivo.")
 
 
 # ---------------------------------------------------------------------------
@@ -278,7 +283,7 @@ def report(ptf, recipient, start_date, end_date, verbose, no_send, wfo_results_d
 @click.option("--wfo-results-dir", default=None)
 def analyze(ptf, verbose, wfo_results_dir):
     """Lancia analisi R-portfolio (WFO + OFC + MC). Solo R-portfolio."""
-    click.echo(f"[iq analyze] Caricamento librerie...")
+    click.echo("[iq analyze] Caricamento librerie...")
     ns = _load_all_libs()
 
     click.echo(f"[iq analyze] Risolvo portafoglio: {ptf}")
