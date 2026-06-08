@@ -21,7 +21,14 @@ def _setup_libs_path():
 
 def _load_all_libs():
     """Importa tutte le librerie runtime e restituisce il namespace."""
+
     _setup_libs_path()
+    # Imposta le variabili d'ambiente IQ_* con path assoluti dal root progetto
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    os.environ.setdefault("IQ_INPUTS_DIR",  os.path.join(root, "inputs"))
+    os.environ.setdefault("IQ_OUTPUTS_DIR", os.path.join(root, "outputs"))
+    os.environ.setdefault("IQ_CACHE_DIR",   os.path.join(root, "cache"))
+
     import importlib
     ns = {}
     # Ordine critico: k_tickers prima di k_portfolios e r_portfolios
@@ -51,7 +58,7 @@ def _load_all_libs():
             ns.update({k: v for k, v in vars(mod).items() if not k.startswith("__")})
         except Exception as e:
             click.echo(f"[WARN] Impossibile importare {lib}: {e}", err=True)
-
+            
     return ns
 
 
@@ -71,6 +78,7 @@ def _resolve_portfolio(ptf_name: str, ns: dict):
     # Fallback: cerca direttamente per nome variabile nel namespace
     obj = ns.get(ptf_name)
     if obj is not None and isinstance(obj, dict):
+        # Euristica: K-portfolio ha "trading_systems", R-portfolio ha "tickers"
         if "trading_systems" in obj:
             return obj, "K"
         if "tickers" in obj:
@@ -116,6 +124,17 @@ def run(ptf, recipient, report_date, dry_run, verbose, no_send, wfo_results_dir)
     portfolio_obj, kind = _resolve_portfolio(ptf, ns)
     click.echo(f"[iq run] Tipo: {kind}-portfolio — {portfolio_obj.get('Title', ptf)}")
 
+    # Credenziali email
+    load_email_credentials = ns.get("load_email_credentials")
+    if load_email_credentials is None:
+        raise click.ClickException("load_email_credentials non trovata in u_functions.")
+    sender_email, sender_password = load_email_credentials()
+
+    if recipient is None:
+        raise click.ClickException(
+            "Destinatario non specificato. Usa --recipient <email> oppure configura il default."
+        )
+
     send_report = not no_send and not dry_run
 
     if kind == "R":
@@ -124,10 +143,6 @@ def run(ptf, recipient, report_date, dry_run, verbose, no_send, wfo_results_dir)
             raise click.ClickException("r_run_portfolio non trovata in r_functions.")
         wfo_dir = wfo_results_dir or ns.get("_TSLAB_RUNTIME_R_WFO_RESULTS_DIR", "../../inputs/WFO_R_RUN_RESULTS")
         if send_report:
-            if recipient is None:
-                raise click.ClickException("Destinatario non specificato. Usa --recipient <email>.")
-            load_email_credentials = ns.get("load_email_credentials")
-            sender_email, sender_password = load_email_credentials()
             click.echo(f"[iq run] Eseguo r_run_portfolio → {recipient}")
             out = r_run_portfolio(
                 portfolio=portfolio_obj,
@@ -152,10 +167,6 @@ def run(ptf, recipient, report_date, dry_run, verbose, no_send, wfo_results_dir)
             raise click.ClickException("k_run_portfolio non trovata in k_functions.")
         wfo_dir = wfo_results_dir or ns.get("_TSLAB_RUNTIME_T_WFO_RESULTS_DIR", "../../inputs/WFO_T_RUN_RESULTS")
         if send_report:
-            if recipient is None:
-                raise click.ClickException("Destinatario non specificato. Usa --recipient <email>.")
-            load_email_credentials = ns.get("load_email_credentials")
-            sender_email, sender_password = load_email_credentials()
             click.echo(f"[iq run] Eseguo k_run_portfolio → {recipient}")
             out = k_run_portfolio(
                 portfolio_cfg=portfolio_obj,
@@ -200,6 +211,14 @@ def report(ptf, recipient, start_date, end_date, verbose, no_send, wfo_results_d
     portfolio_obj, kind = _resolve_portfolio(ptf, ns)
     click.echo(f"[iq report] Tipo: {kind}-portfolio — {portfolio_obj.get('Title', ptf)}")
 
+    load_email_credentials = ns.get("load_email_credentials")
+    if load_email_credentials is None:
+        raise click.ClickException("load_email_credentials non trovata in u_functions.")
+    sender_email, sender_password = load_email_credentials()
+
+    if recipient is None:
+        raise click.ClickException("Destinatario non specificato. Usa --recipient <email>.")
+
     send = not no_send
 
     if kind == "R":
@@ -208,10 +227,6 @@ def report(ptf, recipient, start_date, end_date, verbose, no_send, wfo_results_d
             raise click.ClickException("run_rotational_portfolio_performance non trovata in r_functions.")
         wfo_dir = wfo_results_dir or ns.get("_TSLAB_RUNTIME_R_WFO_RESULTS_DIR", "../../inputs/WFO_R_RUN_RESULTS")
         if send:
-            if recipient is None:
-                raise click.ClickException("Destinatario non specificato. Usa --recipient <email>.")
-            load_email_credentials = ns.get("load_email_credentials")
-            sender_email, sender_password = load_email_credentials()
             click.echo(f"[iq report] Eseguo run_rotational_portfolio_performance → {recipient}")
             out = run_rotational_portfolio_performance(
                 portfolio=portfolio_obj,
@@ -236,10 +251,6 @@ def report(ptf, recipient, start_date, end_date, verbose, no_send, wfo_results_d
             raise click.ClickException("run_ts_portfolio_performance non trovata in k_functions.")
         wfo_dir = wfo_results_dir or ns.get("_TSLAB_RUNTIME_T_WFO_RESULTS_DIR", "../../inputs/WFO_T_RUN_RESULTS")
         if send:
-            if recipient is None:
-                raise click.ClickException("Destinatario non specificato. Usa --recipient <email>.")
-            load_email_credentials = ns.get("load_email_credentials")
-            sender_email, sender_password = load_email_credentials()
             click.echo(f"[iq report] Eseguo run_ts_portfolio_performance → {recipient}")
             out = run_ts_portfolio_performance(
                 portfolio_cfg=portfolio_obj,
