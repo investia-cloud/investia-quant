@@ -687,3 +687,9 @@ portfolio_euro_trading_2026 = {
 
 
 
+
+K_PORTFOLIO_REGISTRY = {
+    "us_trading_2025":   portfolio_us_trading_2025,
+    "us_trading_2026":   portfolio_us_trading_2026,
+    "euro_trading_2026": portfolio_euro_trading_2026,
+}
