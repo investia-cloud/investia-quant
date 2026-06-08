@@ -95,3 +95,4 @@ scripts/portfolios.conf
 Recovery/
 data/
 wget-log
+investia_quant.egg-info/
