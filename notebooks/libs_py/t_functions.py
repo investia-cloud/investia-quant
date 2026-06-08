@@ -6,6 +6,7 @@ t_functions.py — Refactored from notebooks/libs/t_functions.ipynb
 # Universe Selections Functions (top performing)
 # =================================
 from typing import Optional, Iterable, Dict, Tuple, List, Union, Callable, Any
+import pandas as pd
 
 # Importo le funzioni di utilita' generali
 # %run u_functions.ipynb

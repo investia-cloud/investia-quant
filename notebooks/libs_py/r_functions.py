@@ -19,6 +19,12 @@ import os
 from typing import Union, List, Dict, Tuple, Any
 from itertools import product, combinations
 
+import warnings
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+
+from dataclasses import dataclass, field
+from typing import Optional
 
 """
 rotational_engine.py
@@ -44,14 +50,6 @@ COMPATIBILITÀ COI NOTEBOOK:
   - build_rotational_portfolios_from_selections  → alias di build_portfolio_from_selections
 """
 
-from __future__ import annotations
-
-import warnings
-from dataclasses import dataclass, field
-from typing import Optional
-
-import numpy as np
-import pandas as pd
 
 # Helper per data in italiano (da mettere a livello modulo, riusabile)
 _MESI_IT = ["", "gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno",
@@ -2045,10 +2043,6 @@ MIGLIORAMENTI RISPETTO ALL'ORIGINALE
    - vol_cache documentato.
 """
 
-from __future__ import annotations
-
-from dataclasses import dataclass, field
-from typing import Optional
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -6862,13 +6856,11 @@ def adaptive_cluster_universe(
 # ============================================================
 # CELL 0 — Import
 # ============================================================
-import numpy as np
-import pandas as pd
+
 from scipy.cluster.hierarchy import linkage, fcluster, dendrogram
 from scipy.spatial.distance import squareform
 from sklearn.preprocessing import StandardScaler
 import matplotlib.pyplot as plt
-from typing import Optional
 
 # ============================================================
 # CELL 1 — Funzioni (incolla tutto, non modificare)
@@ -8611,13 +8603,6 @@ def run_rotational_portfolio_performance(
 # =============================================================================
 # Monte Carlo Validation per Portafogli Rotazionali
 # =============================================================================
-from __future__ import annotations
-from typing import Optional
-import warnings
-import numpy as np
-import pandas as pd
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 
 # Metriche standard e convenzione direzione
 _MC_METRICS = ['CAGR', 'MaxDD', 'Sharpe', 'Calmar', 'Volatility', 'Ulcer']

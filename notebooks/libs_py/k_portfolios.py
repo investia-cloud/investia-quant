@@ -1,6 +1,7 @@
 """
 k_portfolios.py — Refactored from notebooks/libs/k_portfolios.ipynb
 """
+from datetime import datetime
 
 # # Importo le definizioni statiche dei ticker
 # %run k_tickers.ipynb

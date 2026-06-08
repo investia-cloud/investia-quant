@@ -3,6 +3,8 @@ mc_functions.py — Refactored from notebooks/libs/mc_functions.ipynb
 """
 
 from pypfopt import EfficientFrontier, risk_models, expected_returns
+import vectorbt as vbt
+import pandas as pd
 
 def optimize_portfolio(tickers, start_date, end_date, target_metric, goal='max', num_trials=1000, init_cash=10000):
     """

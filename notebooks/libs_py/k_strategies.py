@@ -1,6 +1,7 @@
 """
 k_strategies.py — Refactored from notebooks/libs/k_strategies.ipynb
 """
+import pandas as pd
 
 ###############################################################################
 # DEFINIZIONE STRATEGIE (strategy_*) e INDICATORI (calculate_*)
