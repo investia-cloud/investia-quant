@@ -5,13 +5,16 @@ Entry point: iq run / iq report / iq analyze
 
 import sys
 import os
+import datetime
 import click
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Default start date per iq report
+# R-portfolio: remoto — r_functions aggiusta automaticamente alla prima selezione disponibile
+# K-portfolio: YTD — performance dell'anno corrente
 # ---------------------------------------------------------------------------
-
-_DEFAULT_ANALYSIS_START = "2015-01-01"  # Se non specificato, il sistema aggiusta alla prima selezione disponibile
+_DEFAULT_ANALYSIS_START_R = "2015-01-01"
+_DEFAULT_ANALYSIS_START_K = f"{datetime.date.today().year}-01-01"
 
 
 def _setup_libs_path():
@@ -200,7 +203,8 @@ def run(ptf, recipient, report_date, dry_run, verbose, no_send, wfo_results_dir)
 @app.command()
 @click.option("--ptf", required=True, help="Nome portafoglio")
 @click.option("--recipient", default=None, help="Email destinatario")
-@click.option("--start-date", default=None, help="Data inizio analisi YYYY-MM-DD (default: automatico)")
+@click.option("--start-date", default=None,
+              help="Data inizio analisi YYYY-MM-DD (default: 2015-01-01 per R, YTD per K)")
 @click.option("--end-date", default=None, help="Data fine analisi YYYY-MM-DD")
 @click.option("--verbose", is_flag=True, default=False)
 @click.option("--no-send", is_flag=True, default=False, help="Non inviare email")
@@ -214,13 +218,12 @@ def report(ptf, recipient, start_date, end_date, verbose, no_send, wfo_results_d
     portfolio_obj, kind = _resolve_portfolio(ptf, ns)
     click.echo(f"[iq report] Tipo: {kind}-portfolio — {portfolio_obj.get('Title', ptf)}")
 
-    # Se start_date non specificata usa default remoto:
-    # r_functions aggiusta automaticamente alla prima selezione disponibile
-    effective_start = start_date if start_date is not None else _DEFAULT_ANALYSIS_START
-
     send = not no_send
 
     if kind == "R":
+        # Default: remoto — r_functions aggiusta alla prima selezione disponibile
+        effective_start = start_date if start_date is not None else _DEFAULT_ANALYSIS_START_R
+
         run_rotational_portfolio_performance = ns.get("run_rotational_portfolio_performance")
         if run_rotational_portfolio_performance is None:
             raise click.ClickException("run_rotational_portfolio_performance non trovata in r_functions.")
@@ -248,6 +251,9 @@ def report(ptf, recipient, start_date, end_date, verbose, no_send, wfo_results_d
             click.echo("[iq report] --no-send attivo.")
 
     elif kind == "K":
+        # Default: YTD (inizio anno corrente)
+        effective_start = start_date if start_date is not None else _DEFAULT_ANALYSIS_START_K
+
         run_ts_portfolio_performance = ns.get("run_ts_portfolio_performance")
         if run_ts_portfolio_performance is None:
             raise click.ClickException("run_ts_portfolio_performance non trovata in k_functions.")
@@ -267,6 +273,8 @@ def report(ptf, recipient, start_date, end_date, verbose, no_send, wfo_results_d
                 wfo_results_dir=wfo_dir,
                 create_structure=False,
                 auto_adjust=True,
+                analisys_start_date=effective_start,
+                analisys_end_date=end_date,
             )
             click.echo("[iq report] Completato.")
         else:

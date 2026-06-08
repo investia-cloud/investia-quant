@@ -19,6 +19,7 @@ from itertools import product
 from typing import Union, List, Dict, Tuple, Any, Iterable, Optional
 import seaborn as sns
 import json
+from k_strategies import *  # strategie richieste da _resolve_strategy via globals()
 
 # Flag globale per attivare/disattivare l’uso della engine grid
 USE_ENGINE_GRID: bool = False
@@ -4450,6 +4451,7 @@ def k_run_portfolio(
 def load_trading_systems_batch(
     portfolio_cfg: dict,
     end_date: str| None = None,
+    start_date: str | None = None,   # ← aggiungi
     wfo_results_dir: str = "WFO_RESULTS",
     verbose: bool = True,
     create_structure : bool = False,
@@ -4467,8 +4469,12 @@ def load_trading_systems_batch(
     
     # end_date risolto in modo sicuro e normalizzato
     end_date = resolve_end_date(end_date, tz_name="Europe/Rome")
+    if start_date is not None:
+        import pandas as pd
+        start_date = pd.Timestamp(start_date).to_pydatetime().replace(tzinfo=None)
+    else:
+        start_date = datetime(end_date.year - 2, 1, 1)
 
-    start_date = datetime(end_date.year - 2, 1, 1)
     if verbose:
         print("Start date (batch):", start_date.date())
         print("End date   (batch):", end_date.date())
@@ -5674,7 +5680,9 @@ def run_ts_portfolio_performance(
     verbose: bool = False,
     create_structure: bool = True,
     wfo_results_dir: str | None = None,
-    auto_adjust: bool = True
+    auto_adjust: bool = True,
+    analisys_start_date: str | None = None,
+    analisys_end_date: str | None = None
 ):
 
     if not isinstance(portfolio_cfg, dict):
@@ -5690,6 +5698,7 @@ def run_ts_portfolio_performance(
     portfolio_ts, meta = load_trading_systems_batch(
         portfolio_cfg=portfolio_cfg,
         end_date=analisys_end_date,
+        start_date=analisys_start_date,   # ← aggiungi
         verbose=verbose,
         wfo_results_dir=wfo_results_dir,
         create_structure=create_structure,
