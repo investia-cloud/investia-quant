@@ -421,3 +421,65 @@ e ha consolidato la documentazione fondendo `TODO.md` in questo file.
 Per riprendere in nuova chat è sufficiente allegare questo file e dire da quale 
 punto vuoi ripartire — il punto naturale ora è il rilancio dei 3 PTF rimanenti, 
 oppure direttamente la discussione sulle sorgenti di skill alternative.
+
+
+### Sessione 08/06/2026 — pyproject.toml + venv (Task 1.2 ✓)
+
+- Root progetto: ~/investia-quant (già rinominato)
+- Python: 3.12.3
+- Venv: ~/.venvs/investia-quant/
+- pyproject.toml compilato con dipendenze runtime + [dev]
+- pip install -e ".[dev]" completato senza errori
+- requirements.lock generato
+- iq registrato nel PATH (ModuleNotFoundError atteso: Task 1.3 pending)
+
+Fix durante compilazione:
+- build-backend: setuptools.backends.legacy:build → setuptools.build_meta
+- pypfopt → PyPortfolioOpt (nome PyPI corretto)
+
+Prossimo: Task 1.3 — scheletro CLI iq (investia_quant/cli.py)
+
+
+---
+
+## Sessione 08/06/2026 — Refactor libs_py + CLI iq
+
+**Branch**: `refactor/libs-py`
+**Root progetto**: `~/investia-quant` (rinominato da TSlab_project)
+
+### Completato
+
+**Task 1.2 ✓** — pyproject.toml + venv
+- Python 3.12.3, venv `~/.venvs/investia-quant/`
+- `pip install -e ".[dev]"` OK
+- Fix: build-backend e pypfopt → PyPortfolioOpt
+
+**Task 1.3 ✓** — CLI `iq` scheletro + implementazione completa
+- `iq run` R e K — validato su ciclo reale, mail inviata e ricevuta
+- `iq report` R — validato, figure complete, periodo corretto
+- `iq report` K — funzionante, periodo YTD by design (maggio-giugno perché load_trading_systems_batch scarica solo ultimo periodo runtime)
+- `iq analyze` — placeholder (Fase 2)
+
+**libs_py/ completo** — 11 librerie convertite da .ipynb a .py, tutte AST OK:
+u_functions, r_functions, k_functions, s_functions, t_functions, mc_functions,
+k_tickers, k_strategies, k_portfolios, r_portfolios, l_portfolios
+
+**Fix applicati durante sessione:**
+- `r_portfolios.py`: aggiunto `from k_tickers import *` per risolvere dipendenze
+- `k_functions.py`: aggiunto `from k_strategies import *` per _resolve_strategy via globals()
+- `k_functions.py`: aggiunto `analisys_start_date/end_date` a `run_ts_portfolio_performance` e `load_trading_systems_batch`
+- `u_functions.py`: aggiunto patch con funzioni grafiche mancanti (plot_cumulative_and_rolling_returns, plot_annual_performance, plot_year_returns_histogram, plot_ticker_frequencies, plot_total_return_per_ticker) e versione completa di `_generate_portfolio_performance_core_refactored`
+- `cli.py`: default start_date differenziato (R: 2015-01-01, K: YTD)
+
+### Pendente
+
+1. **`iq report` K — periodo YTD** — `load_trading_systems_batch` hardcoda `start_date = datetime(end_date.year - 2, 1, 1)`. Il periodo risultante è sempre ~1 mese. Da confrontare con comportamento notebook per capire se era già così o il notebook gestiva diversamente.
+
+2. **Task 3 — Release versionata** — struttura `releases/2026.x/` + symlink `current`
+
+3. **Cleanup JN runtime** — dopo validazione completa CLI:
+   - `notebooks/runtime/R_Run_Portfolio.ipynb` → dismissione
+   - `notebooks/runtime/K_Run_Portfolio.ipynb` → dismissione
+   - `notebooks/runtime/_bootstrap_runtime.ipynb` → dismissione
+   - `notebooks/runtime/libs/` → verificare, dismissione se duplicato
+   - Regola finale: in production gira solo `libs_py/` + `investia_quant/` + `scripts/`
