@@ -1,0 +1,51 @@
+[project]
+name = "investia-quant"
+version = "2026.0"
+description = "Framework quantitativo per portafogli rotazionali (R-portfolio) e strategie di trading (K-portfolio)"
+requires-python = ">=3.12"
+
+# Dipendenze runtime — il minimo necessario per iq run / iq report
+dependencies = [
+    "numpy",
+    "pandas",
+    "scipy",
+    "scikit-learn",
+    "matplotlib",
+    "seaborn",
+    "plotly",
+    "vectorbt",
+    "yfinance",
+    "statsmodels",
+    "reportlab",
+    "Pillow",
+    "joblib",
+    "tqdm",
+    "tqdm-joblib",
+    "PyPortfolioOpt",
+    "tabulate",
+    "psutil",
+    "pytz",
+    "requests",
+    "click",
+]
+
+[project.optional-dependencies]
+# Dipendenze sviluppo — JN interattivi, analisi, visualizzazione avanzata
+dev = [
+    "investia-quant[runtime]",
+    "jupyter",
+    "ipykernel",
+    "itables",
+    "typer",
+]
+
+[project.scripts]
+iq = "investia_quant.cli:app"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["investia_quant*"]
