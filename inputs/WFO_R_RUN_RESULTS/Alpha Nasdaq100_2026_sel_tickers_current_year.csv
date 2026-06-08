@@ -1,0 +1,2 @@
+rebal_date,tickers,carried,n_passed_filters,universe
+2026-03-31,"['MRVL', 'ARM', 'INSM']",False,15,"['AMD', 'ARM', 'BKR', 'EA', 'FANG', 'INSM', 'INTC', 'MAR', 'MPWR', 'MRVL', 'PCAR', 'REGN', 'STX', 'TXN', 'WMT']"

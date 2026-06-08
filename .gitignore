@@ -1,0 +1,97 @@
+# ── Versioni di backup manuali ───────────────────────────────────────────────
+*_SAVE.ipynb
+*_old.ipynb
+*.claude.ipynb
+notebooks/libs/r_functions_1.ipynb
+
+# ── File HTML (output plots) ──────────────────────────────────────────────────
+*.html
+
+# ── CSV di cache (non WFO) ───────────────────────────────────────────────────
+**/company_cache.csv
+
+# ── Outputs e run stampati ────────────────────────────────────────────────────
+outputs/
+*__portfolio_*__*.ipynb
+
+# ── Cache e dati derivati ─────────────────────────────────────────────────────
+cache/*
+!cache/ticker_isin_overrides.csv
+inputs/company_cache.csv
+inputs/top_tickers_cache*.csv
+
+# ── Risultati WFO (pesanti, rigenerabili) ─────────────────────────────────────
+# Decommentare per escludere i risultati WFO dal versioning:
+# inputs/WFO_T_RUN_RESULTS/
+# inputs/WFO_R_RUN_RESULTS/
+
+# ── File pickle e binari pesanti ──────────────────────────────────────────────
+*.pkl
+*.pickle
+*.parquet
+*.feather
+
+# ── Chiavi API e credenziali ──────────────────────────────────────────────────
+*_Key.sh
+K-Strategy-Agent/cookies.json
+K-Strategy-Agent/processed_ids.json
+config/tslab_secrets.json
+
+# ── Jupyter ───────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+**/.ipynb_checkpoints/
+
+# ── K-Strategy-Agent: artefatti runtime ──────────────────────────────────────
+K-Strategy-Agent/agent.log
+K-Strategy-Agent/pdf_articles/
+K-Strategy-Agent/OLD/
+
+# ── File di backup editor ─────────────────────────────────────────────────────
+*~
+*.bak
+
+# ── Directory RECOVERY (snapshot manuali) ────────────────────────────────────
+*.RECOVERY/
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# ── Claude Code ───────────────────────────────────────────────────────────────
+.claude/
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Output rigenerabili: schede e diagnostiche ───────────────────────────────
+notebooks/dev/reports/plots/
+notebooks/dev/reports/scheda_tecnica/
+notebooks/dev/reports/MC_validation/
+notebooks/dev/data/ofc_reports/
+notebooks/dev/data/stability_reports/
+
+# ── Backup automatici con .SAVE ──────────────────────────────────────────────
+*.SAVE/
+
+# ── Editor lock files (Emacs, vim) ───────────────────────────────────────────
+**/.#*
+**/.~*
+
+# ── Working files temporanei dev ─────────────────────────────────────────────
+notebooks/dev/plot_save_fixes_*.txt
+notebooks/dev/plot_save_fixes_*.md
+
+# ── Config locale (file vero fuori da git, esempio tracked) ──
+scripts/portfolios.conf
+
+# ── Config locale con dati reali (template .example tracked) ────────────────
+scripts/portfolios.conf
+
+# ── Workspace locale non versionato ──────────────────────────────────────────
+Recovery/
+data/
+wget-log

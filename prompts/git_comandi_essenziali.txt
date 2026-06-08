@@ -1,0 +1,89 @@
+COMANDI GIT ESSENZIALI PER TSLAB
+=================================
+
+
+SALVARE LE MODIFICHE
+--------------------
+
+# Vedere cosa e' cambiato dall'ultimo commit
+git status
+
+# Vedere le modifiche riga per riga
+git diff notebooks/libs/k_functions.ipynb
+
+# Aggiungere file specifici
+git add notebooks/libs/k_functions.ipynb
+git add notebooks/libs/r_functions.ipynb
+
+# Aggiungere tutti i file modificati in una volta
+git add -A
+
+# Creare lo snapshot
+git commit -m "descrizione della modifica"
+
+
+VEDERE LA STORIA
+----------------
+
+# Lista dei commit (compatta)
+git log --oneline
+
+# Con date e autore
+git log --oneline --format="%h  %ad  %s" --date=short
+
+# Cosa e' cambiato in un commit specifico
+git show f7d8091
+
+
+TORNARE INDIETRO
+----------------
+
+# Scartare le modifiche NON ancora committate su un file
+git checkout -- notebooks/libs/k_functions.ipynb
+
+# Scartare TUTTE le modifiche non committate (attenzione: irreversibile)
+git checkout -- .
+
+# Vedere com'era un file in un commit precedente
+git show f7d8091:notebooks/libs/k_functions.ipynb
+
+
+BRANCH (per sperimentare senza rischi)
+---------------------------------------
+
+# Creare un branch e spostarsi
+git checkout -b esperimento-wfo
+
+# Tornare al main
+git checkout main
+
+# Unire il branch nel main (quando sei soddisfatto)
+git merge esperimento-wfo
+
+# Eliminare il branch
+git branch -d esperimento-wfo
+
+
+SITUAZIONI COMUNI
+-----------------
+
+# "Ho modificato il file sbagliato, voglio annullare"
+git checkout -- notebooks/libs/k_functions.ipynb
+
+# "Voglio vedere cosa ho cambiato rispetto all'ultimo commit"
+git diff
+
+# "Ho fatto un commit con il messaggio sbagliato"
+git commit --amend -m "messaggio corretto"   # solo se non hai condiviso il commit
+
+# "Qual era lo stato del progetto il 7 aprile?"
+git log --oneline --before="2026-04-07"
+
+
+REGOLA PRATICA
+--------------
+Fai un commit ogni volta che completi una modifica logica:
+  "rimosso overfitting_optimization_R1"
+  "aggiunta docstring a run_wfo_pipeline"
+  ecc.
+Meglio commit piccoli e frequenti che uno solo enorme.

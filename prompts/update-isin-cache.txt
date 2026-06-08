@@ -1,0 +1,172 @@
+Devo aggiornare/ricostruire un CSV con formato:
+
+Ticker,ISIN
+BAYN.DE,DE000BAY0017
+TEF.MC,ES0178430E18
+
+Input:
+- un notebook o file Python contenente liste di ticker;
+- un CSV precedente ticker/ISIN, se disponibile;
+- eventuali ticker placeholder come "sp100" e "nasdaq100".
+
+Obiettivo:
+creare un CSV globale finale `Ticker,ISIN`, deduplicato, con il maggior numero possibile di ISIN verificati.
+
+Liste da estrarre dal notebook:
+- stocks_euro
+- settoriali
+- multiasset_global_ucits
+- vanguard_etf
+- germany_plan_beneficiaries
+- italy_bigcap_tickers
+- eventuali placeholder/indici:
+  - nasdaq100
+  - sp100
+
+Procedura richiesta:
+
+1. Estrazione ticker
+   - Leggi il notebook/file allegato.
+   - Estrai tutte le liste indicate sopra.
+   - Unisci i ticker in un unico universo.
+   - Deduplica mantenendo ordine leggibile.
+   - Non inventare ticker non presenti, salvo espansione esplicita degli indici placeholder.
+
+2. Riutilizzo dati già disponibili
+   - Se nel notebook o nel CSV precedente esistono mappe ticker → ISIN, usale come prima fonte.
+   - Cerca anche nei commenti inline del notebook: alcuni ETF possono avere ISIN scritti nei commenti accanto ai ticker.
+   - Mantieni gli ISIN già verificati se formalmente validi.
+
+3. Espansione indici
+   - Se compare `sp100`, rimuovi il placeholder e sostituiscilo con i componenti effettivi dell’indice S&P 100.
+   - Se compare `nasdaq100`, rimuovi il placeholder e sostituiscilo con i componenti effettivi dell’indice Nasdaq-100.
+   - Per ogni componente degli indici, cerca e inserisci l’ISIN della specifica security.
+   - Attenzione alle share class:
+     - GOOG vs GOOGL
+     - BRK.B
+     - altri casi con classi azionarie distinte.
+   - Attenzione ai titoli non-USA o ADR/ADS:
+     - ASML
+     - ARM
+     - CCEP
+     - LIN
+     - NXPI
+     - PDD
+     - SHOP
+     - STX
+     - TRI
+     - altri casi analoghi.
+   - Non assumere che tutti gli ISIN siano US solo perché il ticker è quotato negli USA.
+
+4. Strategia ricerca ISIN per azioni
+   - Cerca per ticker + società + ISIN.
+   - Usa fonti affidabili come:
+     - sito investor relations della società;
+     - borse ufficiali;
+     - MarketScreener;
+     - Börse Frankfurt;
+     - Borsa Italiana;
+     - Euronext;
+     - Nasdaq/NYSE quando utile;
+     - Wikipedia solo come fonte secondaria di cross-check.
+   - Verifica che l’ISIN corrisponda alla security corretta, non solo al gruppo societario generico.
+
+5. Strategia ricerca ISIN per ETF/ETC/UCITS
+   - Per ticker con suffissi di mercato tipo `.MI`, `.DE`, `.PA`, `.AS`, `.L`, cerca anche il ticker base senza suffisso.
+   - Esempio:
+     - EM710.MI → cercare anche `EM710`
+     - EM57.MI → cercare anche `EM57`
+     - EM13.MI → cercare anche `EM13`
+   - Query utili:
+     - `<ticker_base> ISIN`
+     - `<ticker_base> ETF ISIN`
+     - `<ticker_base> UCITS ISIN`
+     - `<ticker_base> Borsa Italiana ISIN`
+     - `<ticker_base> justETF ISIN`
+   - Per ETF/ETC residui usa JustETF come fallback mirato:
+     - `https://www.justetf.com/it/search.html?query=<ticker_base>&search=ALL`
+   - Leggi la colonna `ISIN` nella pagina dei risultati JustETF.
+   - Esempi già validati:
+     - EM710.MI → LU1287023185
+     - EM57.MI → LU1287023003
+     - EM13.MI → LU1287022971
+   - Inserisci l’ISIN solo se il match tra ticker, fondo e descrizione è chiaro.
+   - Non usare un risultato ambiguo se JustETF mostra più strumenti non distinguibili.
+
+6. Normalizzazione ticker
+   - Mantieni nel CSV il ticker originale usato nel notebook, incluso suffisso:
+     - EM710.MI resta EM710.MI
+     - BAYN.DE resta BAYN.DE
+   - Usa ticker base solo come chiave di ricerca, non come sostituto nel CSV.
+   - Per i componenti degli indici USA usa i ticker standard:
+     - AAPL
+     - MSFT
+     - GOOGL
+     - GOOG
+     - BRK.B
+     - ecc.
+
+7. Validazione ISIN
+   - Ogni ISIN inserito deve:
+     - avere 12 caratteri;
+     - iniziare con codice paese a 2 lettere;
+     - superare il controllo formale del check digit ISIN.
+   - Se un ISIN non passa il check digit, non inserirlo nel file finale.
+   - Il check digit valida la forma dell’ISIN, ma non garantisce da solo la corrispondenza economica ticker-security: serve comunque coerenza con fonte e descrizione.
+
+8. Gestione mancanti
+   - Se dopo la ricerca un ticker resta ambiguo o non verificabile, lascia `ISIN` vuoto.
+   - Non inventare ISIN.
+   - Produci un file separato dei mancanti con:
+     - Ticker
+     - ticker_base usato per ricerca
+     - eventuale URL JustETF suggerito
+     - note sul motivo del mancato inserimento.
+
+9. Output richiesti
+   Genera almeno questi file:
+   - CSV globale finale:
+     - `tickers_isin_final.csv`
+     - colonne: `Ticker,ISIN`
+   - CSV mancanti:
+     - `tickers_isin_missing.csv`
+     - colonne consigliate: `Ticker,ticker_base,search_url,note`
+   - CSV audit:
+     - `tickers_isin_audit.csv`
+     - colonne consigliate:
+       - `Ticker`
+       - `ISIN`
+       - `source_type`
+       - `source_url_or_query`
+       - `method`
+       - `isin_check_digit_valid`
+       - `confidence`
+       - `notes`
+
+10. Regole di qualità
+   - Non dichiarare “trovato” se non c’è un match chiaro.
+   - Preferisci lasciare vuoto piuttosto che inserire un ISIN errato.
+   - Cita le fonti principali usate per componenti indice e ISIN.
+   - Segnala sempre:
+     - numero totale righe;
+     - numero ISIN compilati;
+     - numero mancanti;
+     - numero nuovi ISIN aggiunti rispetto alla versione precedente;
+     - lista dei mancanti residui.
+   - Quando aggiorni un file precedente, produci una nuova versione e indica chiaramente qual è il file operativo finale.
+
+Contesto già noto dall’ultima lavorazione:
+- Il file finale precedente era `tickers_isin_researched_v7_justetf_missing_scan.csv`.
+- Conteneva 308 righe.
+- Aveva 304 ISIN compilati.
+- Restavano 4 mancanti:
+  - AHYE.MI
+  - EMKTB.MI
+  - C50.MI
+  - XRES.MI
+- Erano già stati risolti via JustETF:
+  - EM710.MI → LU1287023185
+  - EM57.MI → LU1287023003
+  - EM13.MI → LU1287022971
+
+Quando esegui l’aggiornamento, parti dal file più recente disponibile, preserva gli ISIN già compilati e concentra la ricerca sui nuovi ticker e sui mancanti residui.

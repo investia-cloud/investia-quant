@@ -1,0 +1,15 @@
+# portfolios.conf
+# Lista portfolio + destinatari, sorgente unica per run_portfolios.sh
+# Formato:  portfolio_name:type:email1,email2,...
+#   type  = R (Rotational) | T (Trading)
+#   email = opzionale, usato da --mail customers (se vuoto -> fallback su EMAIL_ME)
+# Righe vuote e righe che iniziano con # sono ignorate.
+
+portfolio_us_trading_2026:T:cliente.us1@example.com,cliente.us2@example.com
+portfolio_euro_trading_2026:T:desk.euro@example.com,cliente.euro@example.com
+portfolio_alpha_world:R:clienti.world@example.com
+portfolio_alpha_euro:R:your.email@domain.tld,your.email@domain.tld
+portfolio_alpha_sect:R:
+portfolio_germany_plan:R:clienti.germania@example.com
+portfolio_alpha_sp100:R:
+portfolio_alpha_nasdaq100:R:

@@ -1,0 +1,2 @@
+rebal_date,tickers,carried,n_passed_filters,universe
+2026-03-31,"['CSMIB.MI', 'IBTM.MI', 'EM710.MI']",False,5,"['CSMIB.MI', 'EM13.MI', 'EM57.MI', 'EM710.MI', 'IBTM.MI']"

@@ -1,0 +1,11 @@
+{
+  "portfolio_title": "Alpha Euro",
+  "snapshot_date": "2026-05-19T11:59:04.610006",
+  "branch": "fix/r-mc-cluster-symmetry",
+  "bug_status": "PRESENT (pre-fix baseline)",
+  "files": {
+    "print_final_decision.txt": true,
+    "ptf_card.md": true,
+    "scheda_tecnica.pdf": true
+  }
+}
