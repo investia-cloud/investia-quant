@@ -1,8 +1,0 @@
-Year,ema_slow_range,roc_win_range,roc_neg_thr_bp_range,rv_upper_pct_range,persist_days_range,breakout_win_range,slope_lb_range,reentry_mode_range
-2020,180,63,1050,90,7,100,20,1
-2021,180,63,1050,90,7,200,30,2
-2022,180,63,1200,80,3,200,30,2
-2023,180,63,750,75,5,100,20,1
-2024,180,63,750,75,5,100,30,0
-2025,180,63,750,75,5,100,20,1
-2026,180,63,300,75,5,100,20,1

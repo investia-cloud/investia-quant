@@ -1,8 +1,0 @@
-Year,one_day_drop_bp_range,three_day_drop_bp_range,dd_fast_bp_range,vratio_up_tenths_range,wk_ema_weeks_range,wk_roc_weeks_range,wk_roc_neg_thr_bp_range,wk_brk_weeks_range,wk_persist_out_range,ma_fast_range,vratio_dn_tenths_range,ftd_bp_range,reentry_cooldown_range,reentry_mode_range
-2020,800,1200,800,18,22,13,600,10,2,20,12,180,0,0
-2021,800,1200,800,18,18,13,800,14,2,10,12,120,3,2
-2022,800,1200,800,18,18,13,600,10,2,10,12,180,3,0
-2023,800,1200,800,18,18,13,600,14,2,10,12,120,3,2
-2024,800,1200,800,18,22,13,600,10,2,10,12,120,0,0
-2025,800,1200,800,18,18,13,600,10,2,10,12,120,0,2
-2026,900,1200,800,18,18,13,800,10,1,10,12,120,0,0
