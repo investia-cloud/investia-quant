@@ -1,0 +1,2 @@
+rebal_date,tickers,carried,n_passed_filters,universe
+2026-03-31,"['XOM', 'COP', 'CVX']",False,23,"['BAC', 'BLK', 'BNY', 'CAT', 'COP', 'CVX', 'GM', 'JPM', 'LOW', 'MDLZ', 'MMM', 'MRK', 'MS', 'PFE', 'SCHW', 'T', 'TMO', 'TXN', 'UPS', 'USB', 'WFC', 'WMT', 'XOM']"
