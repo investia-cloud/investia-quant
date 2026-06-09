@@ -1,8 +1,0 @@
-Year,pcr_upper_bp_range,pcr_lower_bp_range,pcr_smooth_range,ma_len_range,direction_mode_range
-2020,120,55,7,40,1
-2021,120,60,7,40,1
-2022,130,55,6,20,0
-2023,135,70,8,20,1
-2024,135,70,8,20,1
-2025,145,55,8,20,1
-2026,145,70,8,20,1
