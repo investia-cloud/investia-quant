@@ -77,16 +77,6 @@ cp notebooks/libs_py/*.py "${RELEASE_DIR}/lib/"
 echo "  📦 Copia investia_quant/ → investia_quant/"
 cp investia_quant/*.py "${RELEASE_DIR}/investia_quant/"
 
-echo "  📦 Copia pyproject.toml"
-cp pyproject.toml "${RELEASE_DIR}/"
-
-echo "  📦 Copia requirements.lock (senza riga -e git+)"
-if [[ -f requirements.lock ]]; then
-    grep -v "^-e git+" requirements.lock > "${RELEASE_DIR}/requirements.lock"
-else
-    echo "  ⚠️  requirements.lock non trovato"
-fi
-
 # ---------------------------------------------------------------------------
 # 5) Copia dati runtime
 # ---------------------------------------------------------------------------
@@ -119,34 +109,27 @@ echo "🐍 Venv dir:    ${VENV_DIR}"
 # 1) Crea venv
 echo "🔧 Creazione venv..."
 python3 -m venv "${VENV_DIR}"
-
-# 2) Upgrade pip
 "${VENV_DIR}/bin/pip" install --quiet --upgrade pip
 
-# 3) Installa dipendenze (requirements.lock già ripulito da -e git+)
+# 2) Installa dipendenze senza versioni pinnate (compatibile con qualsiasi Python 3.x)
 echo "📦 Installazione dipendenze..."
-if [[ -f "${RELEASE_DIR}/requirements.lock" ]]; then
-    "${VENV_DIR}/bin/pip" install --quiet -r "${RELEASE_DIR}/requirements.lock"
-else
-    echo "⚠️  requirements.lock non trovato — installo dipendenze da pyproject.toml"
-    "${VENV_DIR}/bin/pip" install --quiet \
-        numpy pandas scipy scikit-learn matplotlib seaborn plotly \
-        vectorbt yfinance statsmodels reportlab Pillow joblib tqdm \
-        tqdm-joblib PyPortfolioOpt tabulate psutil pytz requests click
-fi
+"${VENV_DIR}/bin/pip" install \
+    numpy pandas scipy scikit-learn matplotlib seaborn plotly \
+    vectorbt yfinance statsmodels reportlab Pillow joblib tqdm \
+    tqdm-joblib PyPortfolioOpt tabulate psutil pytz requests click
 
-# 4) Registra lib/ nel sys.path via .pth
-echo "🔧 Registro lib/ nel sys.path..."
+# 3) Registra lib/ nel sys.path via .pth
 PY_VER=$("${VENV_DIR}/bin/python3" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+echo "🔧 Registro lib/ nel sys.path (python${PY_VER})..."
 echo "${RELEASE_DIR}/lib" > "${VENV_DIR}/lib/python${PY_VER}/site-packages/investia_libs.pth"
 echo "  ✅ lib/ → investia_libs.pth"
 
-# 5) Registra investia_quant/ nel sys.path via .pth
+# 4) Registra investia_quant/ nel sys.path via .pth
 echo "🔧 Registro investia_quant/ nel sys.path..."
 echo "${RELEASE_DIR}" > "${VENV_DIR}/lib/python${PY_VER}/site-packages/investia_quant.pth"
 echo "  ✅ investia_quant/ → investia_quant.pth"
 
-# 6) Crea wrapper CLI iq
+# 5) Crea wrapper CLI iq
 echo "🔧 Crea wrapper CLI iq..."
 cat > "${VENV_DIR}/bin/iq" << WRAPPER_EOF
 #!/bin/bash
@@ -158,7 +141,7 @@ WRAPPER_EOF
 chmod +x "${VENV_DIR}/bin/iq"
 echo "  ✅ wrapper iq creato"
 
-# 7) Crea .envrc per direnv
+# 6) Crea .envrc per direnv
 cat > "${RELEASE_DIR}/.envrc" << ENVRC_EOF
 export VIRTUAL_ENV="${VENV_DIR}"
 export PATH="${VENV_DIR}/bin:$PATH"
