@@ -68,7 +68,7 @@ echo "🚀 Creazione release ${VERSION} in ${RELEASE_DIR}..."
 # ---------------------------------------------------------------------------
 # 2) Verifica working tree pulito
 # ---------------------------------------------------------------------------
-if [[ -n "$(git status --porcelain 2>/dev/null)" ]]; then
+if [[ -n "$(git status --porcelain 2>/dev/null | grep -v '^?? releases/')" ]]; then
     echo "⚠️  Working tree non pulito. Committa o stasha prima di fare release."
     git status --short
     exit 1
