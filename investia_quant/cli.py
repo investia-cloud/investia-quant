@@ -215,7 +215,8 @@ def run(ptf, all_portfolios, rotational, trading, recipient, report_date, dry_ru
     sender_email, sender_password = _get_credentials(ns) if send_report else (None, None)
 
     for ptf_name, portfolio_obj, kind, rcpts in tasks:
-        click.echo(f"[iq run] Portafoglio: {ptf_name} ({kind}) — {portfolio_obj.get('Title', ptf_name)}")
+        rcpts_str = ", ".join(rcpts) if rcpts else "(nessuno)"
+        click.echo(f"[iq run] Portafoglio: {ptf_name} ({kind}) — destinatari: {rcpts_str}")
 
         if send_report and not rcpts:
             click.echo(f"[iq run] SKIP {ptf_name}: nessun destinatario.", err=True)
@@ -327,7 +328,8 @@ def report(ptf, all_portfolios, rotational, trading, recipient, start_date, end_
     sender_email, sender_password = _get_credentials(ns) if send else (None, None)
 
     for ptf_name, portfolio_obj, kind, rcpts in tasks:
-        click.echo(f"[iq report] Portafoglio: {ptf_name} ({kind}) — {portfolio_obj.get('Title', ptf_name)}")
+        rcpts_str = ", ".join(rcpts) if rcpts else "(nessuno)"
+        click.echo(f"[iq report] Portafoglio: {ptf_name} ({kind}) — destinatari: {rcpts_str}")
 
         if send and not rcpts:
             click.echo(f"[iq report] SKIP {ptf_name}: nessun destinatario.", err=True)
