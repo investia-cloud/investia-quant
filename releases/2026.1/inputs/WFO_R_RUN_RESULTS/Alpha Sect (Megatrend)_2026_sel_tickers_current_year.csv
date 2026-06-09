@@ -1,5 +1,0 @@
-rebal_date,tickers,carried,n_passed_filters,universe
-2026-01-30,['XLPS.MI'],False,7,"['XLBS.MI', 'XLCS.MI', 'XLIS.MI', 'XLKS.MI', 'XLPS.MI', 'XLVS.MI', 'XLYS.MI']"
-2026-02-27,['XLIS.MI'],False,6,"['XLBS.MI', 'XLCS.MI', 'XLIS.MI', 'XLPS.MI', 'XLUS.MI', 'XLVS.MI']"
-2026-03-31,['XLUS.MI'],False,4,"['XLBS.MI', 'XLIS.MI', 'XLPS.MI', 'XLUS.MI']"
-2026-04-30,['XLUS.MI'],False,7,"['XLBS.MI', 'XLCS.MI', 'XLIS.MI', 'XLKS.MI', 'XLPS.MI', 'XLUS.MI', 'XLYS.MI']"

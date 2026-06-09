@@ -1,7 +1,0 @@
-Window,rebalance_frequency,momentum_lookback_days,riskparity_lookback_days,n_top,use_acceleration,momentum_weight,filter_ema,filter_volatility,filter_min_momentum,TrainScore,TestScore
-2021-01-01→2021-12-31,QE,10,10,3,True,1.0,True,True,True,0.2889402052419565,-0.014874994079934423
-2022-01-01→2022-12-31,ME,20,20,3,True,0.5,True,False,True,0.3296996842064839,-0.14266713687011856
-2023-01-01→2023-12-31,QE,5,20,5,True,0.7,False,False,False,0.21511529007581998,0.16978027563936293
-2024-01-01→2024-12-31,ME,5,30,3,True,0.5,True,False,False,0.2738536882312179,0.1696011623367959
-2025-01-01→2025-12-31,QE,5,10,3,True,0.7,False,False,True,0.23103146055481383,0.38099474842386627
-2026-01-01→2026-12-31,QE,20,10,3,True,0.7,False,True,False,0.47516770516052964,

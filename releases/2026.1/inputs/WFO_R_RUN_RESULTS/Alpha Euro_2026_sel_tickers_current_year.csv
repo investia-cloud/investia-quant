@@ -1,2 +1,0 @@
-rebal_date,tickers,carried,n_passed_filters,universe
-2026-03-31,"['SAN.PA', 'TEF.MC', 'BAYN.DE']",False,10,"['ACX.MC', 'AIR.PA', 'BAYN.DE', 'G.MI', 'IBE.MC', 'ISP.MI', 'ITX.MC', 'SAN.PA', 'STLAM.MI', 'TEF.MC']"
