@@ -1,0 +1,8 @@
+Year,short_period_range,long_period_range,signal_period_range,fast_period_range,slow_period_range,macd_signal_range
+2020,30,60,15,5,20,5
+2021,30,60,15,5,20,5
+2022,30,60,15,5,20,5
+2023,30,60,10,5,25,7
+2024,30,70,5,5,25,7
+2025,30,65,5,10,20,13
+2026,30,60,10,10,20,11
