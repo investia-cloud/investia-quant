@@ -49,7 +49,6 @@ YEAR=$(date +%Y)
 if [[ $# -ge 1 ]]; then
     VERSION="$1"
 else
-    # Auto-incrementa: cerca releases/YEAR.N esistenti
     N=1
     while [[ -d "releases/${YEAR}.${N}" ]]; do
         N=$((N + 1))
@@ -122,12 +121,6 @@ echo "  📝 Genera scripts/install.sh"
 cat > "${RELEASE_DIR}/scripts/install.sh" << 'INSTALL_EOF'
 #!/usr/bin/env bash
 # install.sh — Setup ambiente sulla VPS per questa release
-#
-# Uso (dalla directory della release):
-#   ./scripts/install.sh
-#
-# Oppure con path assoluto:
-#   /path/to/releases/2026.1/scripts/install.sh
 
 set -euo pipefail
 
@@ -146,14 +139,20 @@ echo "📦 Installazione dipendenze..."
 if [[ -f "${RELEASE_DIR}/requirements.lock" ]]; then
     "${VENV_DIR}/bin/pip" install --quiet -r "${RELEASE_DIR}/requirements.lock"
 else
-    "${VENV_DIR}/bin/pip" install --quiet -e "${RELEASE_DIR}[runtime]"
+    "${VENV_DIR}/bin/pip" install --quiet "${RELEASE_DIR}"
 fi
 
 # Installa CLI iq
 echo "🔧 Installazione CLI iq..."
 "${VENV_DIR}/bin/pip" install --quiet -e "${RELEASE_DIR}"
 
-# Crea .envrc per direnv (opzionale)
+# Aggiungi lib/ al sys.path via file .pth
+echo "🔧 Registro lib/ nel sys.path del venv..."
+PY_VER=$("${VENV_DIR}/bin/python3" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+echo "${RELEASE_DIR}/lib" > "${VENV_DIR}/lib/python${PY_VER}/site-packages/investia_libs.pth"
+echo "  ✅ lib/ aggiunto a sys.path (investia_libs.pth)"
+
+# Crea .envrc per direnv
 cat > "${RELEASE_DIR}/.envrc" << ENVRC_EOF
 export VIRTUAL_ENV="${VENV_DIR}"
 export PATH="${VENV_DIR}/bin:$PATH"
@@ -164,12 +163,8 @@ ENVRC_EOF
 
 echo ""
 echo "✅ Installazione completata."
-echo ""
-echo "   Per attivare manualmente:"
-echo "   source ${VENV_DIR}/bin/activate"
-echo ""
-echo "   Per testare:"
-echo "   ${VENV_DIR}/bin/iq --help"
+echo "   Attiva con: source ${VENV_DIR}/bin/activate"
+echo "   Testa con:  ${VENV_DIR}/bin/iq --help"
 INSTALL_EOF
 chmod +x "${RELEASE_DIR}/scripts/install.sh"
 
@@ -181,15 +176,15 @@ cat > "${RELEASE_DIR}/scripts/crontab.txt" << CRON_EOF
 # investia-quant ${VERSION} — crontab entries
 # Incolla queste righe con: crontab -e
 #
-# Variabili ambiente (adatta i path alla VPS)
+# Adatta RELEASE_DIR e IQ al path reale sulla VPS
 # RELEASE_DIR=/home/luca/investia-quant/releases/current
-# IQ=/home/luca/investia-quant/releases/current/.venv/bin/iq
+# IQ=\${RELEASE_DIR}/.venv/bin/iq
 
 # R-portfolio: primo lunedì del mese alle 07:00
-0 7 1-7 * 1 IQ_INPUTS_DIR=\$RELEASE_DIR/inputs IQ_OUTPUTS_DIR=\$RELEASE_DIR/outputs IQ_CACHE_DIR=\$RELEASE_DIR/cache \$IQ run --ptf-all-r >> \$RELEASE_DIR/logs/r_run.log 2>&1
+0 7 1-7 * 1 IQ_INPUTS_DIR=\${RELEASE_DIR}/inputs IQ_OUTPUTS_DIR=\${RELEASE_DIR}/outputs IQ_CACHE_DIR=\${RELEASE_DIR}/cache \${IQ} run --ptf-all-r >> \${RELEASE_DIR}/logs/r_run.log 2>&1
 
 # K-portfolio: ogni giorno feriale alle 18:30
-30 18 * * 1-5 IQ_INPUTS_DIR=\$RELEASE_DIR/inputs IQ_OUTPUTS_DIR=\$RELEASE_DIR/outputs IQ_CACHE_DIR=\$RELEASE_DIR/cache \$IQ run --ptf-all-k >> \$RELEASE_DIR/logs/k_run.log 2>&1
+30 18 * * 1-5 IQ_INPUTS_DIR=\${RELEASE_DIR}/inputs IQ_OUTPUTS_DIR=\${RELEASE_DIR}/outputs IQ_CACHE_DIR=\${RELEASE_DIR}/cache \${IQ} run --ptf-all-k >> \${RELEASE_DIR}/logs/k_run.log 2>&1
 CRON_EOF
 
 # ---------------------------------------------------------------------------
@@ -208,24 +203,13 @@ cat > "${RELEASE_DIR}/README.md" << README_EOF
 ## Deploy su VPS
 
 \`\`\`bash
-# 1. Copia la release sulla VPS
-rsync -av releases/${VERSION}/ tslab.investia.cloud:~/investia-quant/releases/${VERSION}/
-
-# 2. Sulla VPS: installa l'ambiente
-ssh tslab.investia.cloud "~/investia-quant/releases/${VERSION}/scripts/install.sh"
-
-# 3. Sulla VPS: aggiorna il symlink current
-ssh tslab.investia.cloud "ln -sfn ~/investia-quant/releases/${VERSION} ~/investia-quant/releases/current"
-
-# 4. Verifica
-ssh tslab.investia.cloud "~/investia-quant/releases/current/.venv/bin/iq --help"
+./scripts/deploy.sh ${VERSION}
 \`\`\`
 
 ## Rollback
 
 \`\`\`bash
-# Torna alla release precedente
-ssh tslab.investia.cloud "ln -sfn ~/investia-quant/releases/2026.0 ~/investia-quant/releases/current"
+ssh tslab.investia.cloud "ln -sfn ~/investia-quant/releases/<versione_precedente> ~/investia-quant/releases/current"
 \`\`\`
 
 ## Struttura
@@ -234,14 +218,14 @@ ssh tslab.investia.cloud "ln -sfn ~/investia-quant/releases/2026.0 ~/investia-qu
 ${VERSION}/
 ├── lib/                  librerie runtime
 ├── investia_quant/       CLI iq
-├── inputs/               dati WFO + config portafogli
+├── inputs/               dati WFO
 ├── cache/                cache ticker/ISIN
-├── outputs/              output report (vuota all'installazione)
+├── outputs/              output report (vuota)
 ├── scripts/
-│   ├── portfolios.conf   configurazione portafogli
-│   ├── install.sh        setup venv
-│   └── crontab.txt       entries cron
-└── .venv/                venv (creato da install.sh, non in git)
+│   ├── portfolios.conf
+│   ├── install.sh        setup venv + .pth per lib/
+│   └── crontab.txt
+└── .venv/                venv (non in git)
 \`\`\`
 README_EOF
 
@@ -254,15 +238,13 @@ ln -sfn "${VERSION}" "releases/current"
 # ---------------------------------------------------------------------------
 # 10) Riepilogo
 # ---------------------------------------------------------------------------
+COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 echo ""
 echo "✅ Release ${VERSION} creata."
-echo ""
 echo "   Directory: ${RELEASE_DIR}"
 echo "   Symlink:   releases/current → ${VERSION}"
 echo "   Commit:    ${COMMIT}"
 echo ""
 echo "   Prossimi passi:"
 echo "   1. git add releases/${VERSION}/ && git commit -m 'release: ${VERSION}'"
-echo "   2. rsync -av releases/${VERSION}/ tslab.investia.cloud:~/investia-quant/releases/${VERSION}/"
-echo "   3. ssh tslab.investia.cloud '~/investia-quant/releases/${VERSION}/scripts/install.sh'"
-echo "   4. ssh tslab.investia.cloud 'ln -sfn ~/investia-quant/releases/${VERSION} ~/investia-quant/releases/current'"
+echo "   2. ./scripts/deploy.sh ${VERSION}"
