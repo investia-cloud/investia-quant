@@ -16,6 +16,7 @@ import vectorbt as vbt
 import matplotlib.pyplot as plt
 import os
 from itertools import product
+from u_functions import *
 from typing import Union, List, Dict, Tuple, Any, Iterable, Optional
 import seaborn as sns
 import json
@@ -4516,7 +4517,8 @@ def load_trading_systems_batch(
             
 
         if strategy == "holding":
-            prices = get_clean_financial_data(symbol, end=end_date, auto_adjust=auto_adjust)["Close"]
+            # prices = get_clean_financial_data(symbol, end=end_date, auto_adjust=auto_adjust)["Close"]
+            prices = get_clean_financial_data(symbol, start=start_date, end=end_date, auto_adjust=auto_adjust)["Close"]
             
             pf = vbt.Portfolio.from_holding(
                 prices,
@@ -5708,7 +5710,11 @@ def run_ts_portfolio_performance(
         
     if verbose:
         print("\nRunning crea_portafoglio_combinato ...")
-
+        
+    # for i, ts in enumerate(portfolio_ts):
+    #         r = ts['portfolio'].returns()
+    #         print(f"DEBUG TS {i} ({ts.get('symbol','?')}) returns: {r.index.min()} → {r.index.max()}")
+    
     pf, pf_period, portfolios, synthetic_price_period = crea_portafoglio_combinato(
         portfolio_ts,
         start_date=analisys_start_date,

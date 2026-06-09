@@ -273,7 +273,7 @@ def report(ptf, recipient, start_date, end_date, verbose, no_send, wfo_results_d
                 wfo_results_dir=wfo_dir,
                 create_structure=False,
                 auto_adjust=True,
-                analisys_start_date=effective_start,
+                analisys_start_date=None,
                 analisys_end_date=end_date,
             )
             click.echo("[iq report] Completato.")
