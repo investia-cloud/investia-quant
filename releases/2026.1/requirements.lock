@@ -35,7 +35,6 @@ httpcore==1.0.9
 httpx==0.28.1
 idna==3.18
 ImageIO==2.37.3
--e git+ssh://git@github.com/investia-cloud/investia-quant.git@a364a6883f49a373c6ba655723af55d07720db76#egg=investia_quant
 ipykernel==7.2.0
 ipython==9.14.1
 ipython_pygments_lexers==1.1.1
