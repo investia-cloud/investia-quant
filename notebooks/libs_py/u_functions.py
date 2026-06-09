@@ -1243,7 +1243,9 @@ def print_dict_kv(d: dict, indent: int = 0):
 # ---------------------------------------------------------------------------
 def load_email_credentials(secrets_file: str = 'config/tslab_secrets.json') -> tuple:
     import json as _json, os as _os
-    for candidate in [secrets_file, _os.path.join('../../', secrets_file)]:
+    _release_config = _os.path.join(_os.environ.get('IQ_INPUTS_DIR', ''), '..', 'config', 'tslab_secrets.json')
+    for candidate in [secrets_file, _os.path.join('../../', secrets_file), _release_config]:
+    # for candidate in [secrets_file, _os.path.join('../../', secrets_file)]:
         if _os.path.exists(candidate):
             sec = _json.load(open(candidate))
             return sec['sender_email'], sec['sender_password']
