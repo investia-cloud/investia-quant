@@ -90,6 +90,14 @@ cp -r cache/. "${RELEASE_DIR}/cache/"
 echo "  📦 Copia scripts/portfolios.conf"
 cp scripts/portfolios.conf "${RELEASE_DIR}/scripts/"
 
+echo "  📦 Copia config/tslab_secrets.json (se esiste)"
+if [[ -f config/tslab_secrets.json ]]; then
+    mkdir -p "${RELEASE_DIR}/config"
+    cp config/tslab_secrets.json "${RELEASE_DIR}/config/"
+else
+    echo "  ⚠️  config/tslab_secrets.json non trovato — copiarlo manualmente sulla VPS"
+fi
+
 # ---------------------------------------------------------------------------
 # 6) Genera install.sh
 # ---------------------------------------------------------------------------
