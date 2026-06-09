@@ -1,8 +1,0 @@
-Year,lb1_range,lb2_range,lb3_range,ema_span_range,thresh_range,use_median_range
-2020,60,120,120,0,0.0,True
-2021,60,120,120,0,0.05,True
-2022,60,120,120,0,0.05,True
-2023,60,120,120,0,0.05,True
-2024,20,120,120,0,0.05,True
-2025,20,120,120,0,0.05,True
-2026,60,120,120,0,0.05,True

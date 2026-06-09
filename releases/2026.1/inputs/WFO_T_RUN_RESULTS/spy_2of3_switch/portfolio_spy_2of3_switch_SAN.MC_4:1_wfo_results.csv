@@ -1,8 +1,0 @@
-Year,sma_fast_range,sma_slow_range,slope_lb_range,persist_in_range,persist_out_range,roc_win_range,roc_neg_thr_bp_range,brk_win_range,reentry_mode_range
-2020,70,240,30,3,7,63,1000,100,0
-2021,70,240,30,1,7,63,400,100,0
-2022,50,220,30,3,5,63,1000,100,1
-2023,40,240,30,3,7,63,1000,100,1
-2024,40,240,30,3,7,63,1000,100,0
-2025,50,240,30,1,7,63,1000,100,1
-2026,40,220,30,1,7,63,400,100,1

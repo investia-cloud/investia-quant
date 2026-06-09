@@ -1,2 +1,0 @@
-rebal_date,tickers,carried,n_passed_filters,universe
-2026-03-31,"['1U1.DE', 'ADV.DE', 'DHL.DE']",False,6,"['1U1.DE', 'ADV.DE', 'DHL.DE', 'FRA.DE', 'IFX.DE', 'KBX.DE']"

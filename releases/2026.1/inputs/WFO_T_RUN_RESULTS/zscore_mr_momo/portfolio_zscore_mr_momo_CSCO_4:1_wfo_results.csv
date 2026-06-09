@@ -1,8 +1,0 @@
-Year,ema_trend_span_range,adx_period_range,adx_thresh_range,z_window_range,entry_z_range,exit_z_range,z_shift_range,donchian_range,momo_shift_range
-2020,50,10,18,15,2.0,2.0,1,20,1
-2021,100,10,18,15,2.0,2.0,1,20,1
-2022,50,10,18,15,2.0,2.0,2,20,1
-2023,100,10,18,15,2.0,2.0,1,20,1
-2024,100,10,18,40,2.0,2.0,2,20,1
-2025,30,14,20,40,2.0,2.0,1,20,1
-2026,30,10,20,40,2.0,2.0,1,20,1

@@ -1,8 +1,0 @@
-Year,Best_Params,Best_Engine_Params,use_trend_rng,sma_l_rng,bb_p_rng,bb_k10_rng,crsi_thr_rng,rsi2_exit_rng
-2020,"{'use_trend_rng': 0, 'sma_l_rng': 150, 'bb_p_rng': 25, 'bb_k10_rng': 20, 'crsi_thr_rng': 25, 'rsi2_exit_rng': 90}",,0,150,25,20,25,90
-2021,"{'use_trend_rng': 0, 'sma_l_rng': 150, 'bb_p_rng': 25, 'bb_k10_rng': 20, 'crsi_thr_rng': 25, 'rsi2_exit_rng': 90}",,0,150,25,20,25,90
-2022,"{'use_trend_rng': 0, 'sma_l_rng': 150, 'bb_p_rng': 25, 'bb_k10_rng': 20, 'crsi_thr_rng': 25, 'rsi2_exit_rng': 90}",,0,150,25,20,25,90
-2023,"{'use_trend_rng': 0, 'sma_l_rng': 150, 'bb_p_rng': 25, 'bb_k10_rng': 20, 'crsi_thr_rng': 25, 'rsi2_exit_rng': 80}",,0,150,25,20,25,80
-2024,"{'use_trend_rng': 0, 'sma_l_rng': 150, 'bb_p_rng': 25, 'bb_k10_rng': 20, 'crsi_thr_rng': 25, 'rsi2_exit_rng': 80}",,0,150,25,20,25,80
-2025,"{'use_trend_rng': 0, 'sma_l_rng': 150, 'bb_p_rng': 25, 'bb_k10_rng': 20, 'crsi_thr_rng': 20, 'rsi2_exit_rng': 85}",,0,150,25,20,20,85
-2026,"{'use_trend_rng': 0, 'sma_l_rng': 150, 'bb_p_rng': 25, 'bb_k10_rng': 20, 'crsi_thr_rng': 20, 'rsi2_exit_rng': 85}",,0,150,25,20,20,85
