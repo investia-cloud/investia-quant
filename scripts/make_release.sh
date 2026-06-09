@@ -7,7 +7,7 @@
 #
 # Esempi:
 #   ./scripts/make_release.sh          # versione auto: 2026.1, 2026.2, ...
-#   ./scripts/make_release.sh 2026.1   # versione esplicita
+#   ./scripts/make_release.sh 2026.1   # versione esplicita (sovrascrive se esiste)
 # =============================================================================
 
 set -euo pipefail
@@ -40,9 +40,10 @@ fi
 
 RELEASE_DIR="releases/${VERSION}"
 
+# Sovrascrive se esiste
 if [[ -d "$RELEASE_DIR" ]]; then
-    echo "❌ Release $VERSION esiste già: $RELEASE_DIR" >&2
-    exit 1
+    echo "  ⚠️  Release $VERSION esiste già — sovrascrittura in corso..."
+    rm -rf "$RELEASE_DIR"
 fi
 
 echo "🚀 Creazione release ${VERSION} in ${RELEASE_DIR}..."
@@ -76,10 +77,12 @@ cp notebooks/libs_py/*.py "${RELEASE_DIR}/lib/"
 echo "  📦 Copia investia_quant/ → investia_quant/"
 cp investia_quant/*.py "${RELEASE_DIR}/investia_quant/"
 
-echo "  📦 Copia pyproject.toml + requirements.lock"
+echo "  📦 Copia pyproject.toml"
 cp pyproject.toml "${RELEASE_DIR}/"
+
+echo "  📦 Copia requirements.lock (senza riga -e git+)"
 if [[ -f requirements.lock ]]; then
-    cp requirements.lock "${RELEASE_DIR}/"
+    grep -v "^-e git+" requirements.lock > "${RELEASE_DIR}/requirements.lock"
 else
     echo "  ⚠️  requirements.lock non trovato"
 fi
@@ -104,8 +107,6 @@ echo "  📝 Genera scripts/install.sh"
 cat > "${RELEASE_DIR}/scripts/install.sh" << 'INSTALL_EOF'
 #!/usr/bin/env bash
 # install.sh — Setup ambiente sulla VPS per questa release
-#
-# Uso: ./scripts/install.sh
 
 set -euo pipefail
 
@@ -119,31 +120,33 @@ echo "🐍 Venv dir:    ${VENV_DIR}"
 echo "🔧 Creazione venv..."
 python3 -m venv "${VENV_DIR}"
 
-# 2) Installa dipendenze da requirements.lock (no git clone)
+# 2) Upgrade pip
+"${VENV_DIR}/bin/pip" install --quiet --upgrade pip
+
+# 3) Installa dipendenze (requirements.lock già ripulito da -e git+)
 echo "📦 Installazione dipendenze..."
 if [[ -f "${RELEASE_DIR}/requirements.lock" ]]; then
-    "${VENV_DIR}/bin/pip" install --quiet --no-deps -r "${RELEASE_DIR}/requirements.lock" || \
     "${VENV_DIR}/bin/pip" install --quiet -r "${RELEASE_DIR}/requirements.lock"
 else
-    echo "⚠️  requirements.lock non trovato — installo da pyproject.toml (solo dipendenze)"
+    echo "⚠️  requirements.lock non trovato — installo dipendenze da pyproject.toml"
     "${VENV_DIR}/bin/pip" install --quiet \
         numpy pandas scipy scikit-learn matplotlib seaborn plotly \
         vectorbt yfinance statsmodels reportlab Pillow joblib tqdm \
         tqdm-joblib PyPortfolioOpt tabulate psutil pytz requests click
 fi
 
-# 3) Registra lib/ nel sys.path via .pth
+# 4) Registra lib/ nel sys.path via .pth
 echo "🔧 Registro lib/ nel sys.path..."
 PY_VER=$("${VENV_DIR}/bin/python3" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
 echo "${RELEASE_DIR}/lib" > "${VENV_DIR}/lib/python${PY_VER}/site-packages/investia_libs.pth"
 echo "  ✅ lib/ → investia_libs.pth"
 
-# 4) Registra investia_quant/ nel sys.path via .pth
+# 5) Registra investia_quant/ nel sys.path via .pth
 echo "🔧 Registro investia_quant/ nel sys.path..."
 echo "${RELEASE_DIR}" > "${VENV_DIR}/lib/python${PY_VER}/site-packages/investia_quant.pth"
 echo "  ✅ investia_quant/ → investia_quant.pth"
 
-# 5) Crea script wrapper iq nel venv
+# 6) Crea wrapper CLI iq
 echo "🔧 Crea wrapper CLI iq..."
 cat > "${VENV_DIR}/bin/iq" << WRAPPER_EOF
 #!/bin/bash
@@ -155,7 +158,7 @@ WRAPPER_EOF
 chmod +x "${VENV_DIR}/bin/iq"
 echo "  ✅ wrapper iq creato"
 
-# 6) Crea .envrc per direnv
+# 7) Crea .envrc per direnv
 cat > "${RELEASE_DIR}/.envrc" << ENVRC_EOF
 export VIRTUAL_ENV="${VENV_DIR}"
 export PATH="${VENV_DIR}/bin:$PATH"
@@ -176,9 +179,8 @@ chmod +x "${RELEASE_DIR}/scripts/install.sh"
 echo "  📝 Genera scripts/crontab.txt"
 cat > "${RELEASE_DIR}/scripts/crontab.txt" << CRON_EOF
 # investia-quant ${VERSION} — crontab entries
-# Adatta RELEASE_DIR al path reale sulla VPS
+# Adatta RELEASE_DIR al path reale sulla VPS prima di incollare in crontab -e
 # RELEASE_DIR=/home/luca/investia-quant/releases/current
-# IQ=\${RELEASE_DIR}/.venv/bin/iq
 
 # R-portfolio: primo lunedì del mese alle 07:00
 0 7 1-7 * 1 \${RELEASE_DIR}/.venv/bin/iq run --ptf-all-r >> \${RELEASE_DIR}/logs/r_run.log 2>&1
@@ -218,14 +220,14 @@ ssh <vps_host> "ln -sfn <install_dir>/investia-quant/releases/<versione_preceden
 \`\`\`
 ${VERSION}/
 ├── lib/                  librerie runtime (.py)
-├── investia_quant/       CLI iq (cli.py)
+├── investia_quant/       CLI iq
 ├── inputs/               dati WFO
 ├── cache/                cache ticker/ISIN
 ├── outputs/              output report (vuota)
 ├── logs/                 log cron (vuota)
 ├── scripts/
 │   ├── portfolios.conf
-│   ├── install.sh        setup venv + .pth + wrapper iq
+│   ├── install.sh
 │   └── crontab.txt
 └── .venv/                venv (creato da install.sh, non in git)
 \`\`\`
