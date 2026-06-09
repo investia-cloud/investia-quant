@@ -25,9 +25,22 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # Parametri
 # ---------------------------------------------------------------------------
-VERSION="${1:-}"
-VPS_HOST="${2:-tslab.investia.cloud}"
-INSTALL_DIR="${3:-~}"
+#VERSION="${1:-}"
+#VPS_HOST="${2:-tslab.investia.cloud}"
+#INSTALL_DIR="${3:-~}"
+
+# ---------------------------------------------------------------------------
+# Parametri
+# ---------------------------------------------------------------------------
+if [[ $# -lt 3 ]]; then
+    echo "Uso: ./scripts/deploy.sh VERSION VPS_HOST INSTALL_DIR"
+    echo "Es:  ./scripts/deploy.sh 2026.1 tslab.investia.cloud /home/luca"
+    exit 1
+fi
+
+VERSION="$1"
+VPS_HOST="$2"
+INSTALL_DIR="$3"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
