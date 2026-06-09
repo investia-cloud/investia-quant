@@ -1,0 +1,9 @@
+# investia-quant 2026.1 — crontab entries
+# Adatta RELEASE_DIR al path reale sulla VPS prima di incollare in crontab -e
+# RELEASE_DIR=/home/luca/investia-quant/releases/current
+
+# R-portfolio: primo lunedì del mese alle 07:00
+0 7 1-7 * 1 ${RELEASE_DIR}/.venv/bin/iq run --ptf-all-r >> ${RELEASE_DIR}/logs/r_run.log 2>&1
+
+# K-portfolio: ogni giorno feriale alle 18:30
+30 18 * * 1-5 ${RELEASE_DIR}/.venv/bin/iq run --ptf-all-k >> ${RELEASE_DIR}/logs/k_run.log 2>&1
