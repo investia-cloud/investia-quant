@@ -8,30 +8,12 @@
 # Esempi:
 #   ./scripts/make_release.sh          # versione auto: 2026.1, 2026.2, ...
 #   ./scripts/make_release.sh 2026.1   # versione esplicita
-#
-# Struttura prodotta:
-#   releases/2026.1/
-#   ├── lib/                  librerie runtime (libs_py/)
-#   ├── investia_quant/       CLI iq
-#   ├── pyproject.toml
-#   ├── requirements.lock
-#   ├── inputs/
-#   │   ├── WFO_T_RUN_RESULTS/
-#   │   └── WFO_R_RUN_RESULTS/
-#   ├── cache/
-#   ├── outputs/              (vuota)
-#   ├── scripts/
-#   │   ├── portfolios.conf
-#   │   ├── install.sh
-#   │   └── crontab.txt
-#   └── README.md
-#   releases/current -> releases/2026.1/  (symlink aggiornato)
 # =============================================================================
 
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
-# 0) Verifica che siamo nella root del progetto
+# 0) Verifica root progetto
 # ---------------------------------------------------------------------------
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
@@ -66,7 +48,7 @@ fi
 echo "🚀 Creazione release ${VERSION} in ${RELEASE_DIR}..."
 
 # ---------------------------------------------------------------------------
-# 2) Verifica working tree pulito
+# 2) Verifica working tree pulito (ignora releases/ non tracciata)
 # ---------------------------------------------------------------------------
 if [[ -n "$(git status --porcelain 2>/dev/null | grep -v '^?? releases/')" ]]; then
     echo "⚠️  Working tree non pulito. Committa o stasha prima di fare release."
@@ -81,6 +63,7 @@ mkdir -p "${RELEASE_DIR}/lib"
 mkdir -p "${RELEASE_DIR}/investia_quant"
 mkdir -p "${RELEASE_DIR}/inputs"
 mkdir -p "${RELEASE_DIR}/outputs"
+mkdir -p "${RELEASE_DIR}/logs"
 mkdir -p "${RELEASE_DIR}/cache"
 mkdir -p "${RELEASE_DIR}/scripts"
 
@@ -91,14 +74,14 @@ echo "  📦 Copia libs_py/ → lib/"
 cp notebooks/libs_py/*.py "${RELEASE_DIR}/lib/"
 
 echo "  📦 Copia investia_quant/ → investia_quant/"
-cp -r investia_quant/*.py "${RELEASE_DIR}/investia_quant/"
+cp investia_quant/*.py "${RELEASE_DIR}/investia_quant/"
 
 echo "  📦 Copia pyproject.toml + requirements.lock"
 cp pyproject.toml "${RELEASE_DIR}/"
 if [[ -f requirements.lock ]]; then
     cp requirements.lock "${RELEASE_DIR}/"
 else
-    echo "  ⚠️  requirements.lock non trovato — verrà generato da install.sh"
+    echo "  ⚠️  requirements.lock non trovato"
 fi
 
 # ---------------------------------------------------------------------------
@@ -121,6 +104,8 @@ echo "  📝 Genera scripts/install.sh"
 cat > "${RELEASE_DIR}/scripts/install.sh" << 'INSTALL_EOF'
 #!/usr/bin/env bash
 # install.sh — Setup ambiente sulla VPS per questa release
+#
+# Uso: ./scripts/install.sh
 
 set -euo pipefail
 
@@ -130,29 +115,47 @@ VENV_DIR="${RELEASE_DIR}/.venv"
 echo "📁 Release dir: ${RELEASE_DIR}"
 echo "🐍 Venv dir:    ${VENV_DIR}"
 
-# Crea venv
+# 1) Crea venv
 echo "🔧 Creazione venv..."
 python3 -m venv "${VENV_DIR}"
 
-# Installa dipendenze
+# 2) Installa dipendenze da requirements.lock (no git clone)
 echo "📦 Installazione dipendenze..."
 if [[ -f "${RELEASE_DIR}/requirements.lock" ]]; then
+    "${VENV_DIR}/bin/pip" install --quiet --no-deps -r "${RELEASE_DIR}/requirements.lock" || \
     "${VENV_DIR}/bin/pip" install --quiet -r "${RELEASE_DIR}/requirements.lock"
 else
-    "${VENV_DIR}/bin/pip" install --quiet "${RELEASE_DIR}"
+    echo "⚠️  requirements.lock non trovato — installo da pyproject.toml (solo dipendenze)"
+    "${VENV_DIR}/bin/pip" install --quiet \
+        numpy pandas scipy scikit-learn matplotlib seaborn plotly \
+        vectorbt yfinance statsmodels reportlab Pillow joblib tqdm \
+        tqdm-joblib PyPortfolioOpt tabulate psutil pytz requests click
 fi
 
-# Installa CLI iq
-echo "🔧 Installazione CLI iq..."
-"${VENV_DIR}/bin/pip" install --quiet -e "${RELEASE_DIR}"
-
-# Aggiungi lib/ al sys.path via file .pth
-echo "🔧 Registro lib/ nel sys.path del venv..."
+# 3) Registra lib/ nel sys.path via .pth
+echo "🔧 Registro lib/ nel sys.path..."
 PY_VER=$("${VENV_DIR}/bin/python3" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
 echo "${RELEASE_DIR}/lib" > "${VENV_DIR}/lib/python${PY_VER}/site-packages/investia_libs.pth"
-echo "  ✅ lib/ aggiunto a sys.path (investia_libs.pth)"
+echo "  ✅ lib/ → investia_libs.pth"
 
-# Crea .envrc per direnv
+# 4) Registra investia_quant/ nel sys.path via .pth
+echo "🔧 Registro investia_quant/ nel sys.path..."
+echo "${RELEASE_DIR}" > "${VENV_DIR}/lib/python${PY_VER}/site-packages/investia_quant.pth"
+echo "  ✅ investia_quant/ → investia_quant.pth"
+
+# 5) Crea script wrapper iq nel venv
+echo "🔧 Crea wrapper CLI iq..."
+cat > "${VENV_DIR}/bin/iq" << WRAPPER_EOF
+#!/bin/bash
+export IQ_INPUTS_DIR="${RELEASE_DIR}/inputs"
+export IQ_OUTPUTS_DIR="${RELEASE_DIR}/outputs"
+export IQ_CACHE_DIR="${RELEASE_DIR}/cache"
+exec "${VENV_DIR}/bin/python3" -c "from investia_quant.cli import app; app()" "\$@"
+WRAPPER_EOF
+chmod +x "${VENV_DIR}/bin/iq"
+echo "  ✅ wrapper iq creato"
+
+# 6) Crea .envrc per direnv
 cat > "${RELEASE_DIR}/.envrc" << ENVRC_EOF
 export VIRTUAL_ENV="${VENV_DIR}"
 export PATH="${VENV_DIR}/bin:$PATH"
@@ -163,8 +166,7 @@ ENVRC_EOF
 
 echo ""
 echo "✅ Installazione completata."
-echo "   Attiva con: source ${VENV_DIR}/bin/activate"
-echo "   Testa con:  ${VENV_DIR}/bin/iq --help"
+echo "   Testa con: ${VENV_DIR}/bin/iq --help"
 INSTALL_EOF
 chmod +x "${RELEASE_DIR}/scripts/install.sh"
 
@@ -174,17 +176,15 @@ chmod +x "${RELEASE_DIR}/scripts/install.sh"
 echo "  📝 Genera scripts/crontab.txt"
 cat > "${RELEASE_DIR}/scripts/crontab.txt" << CRON_EOF
 # investia-quant ${VERSION} — crontab entries
-# Incolla queste righe con: crontab -e
-#
-# Adatta RELEASE_DIR e IQ al path reale sulla VPS
+# Adatta RELEASE_DIR al path reale sulla VPS
 # RELEASE_DIR=/home/luca/investia-quant/releases/current
 # IQ=\${RELEASE_DIR}/.venv/bin/iq
 
 # R-portfolio: primo lunedì del mese alle 07:00
-0 7 1-7 * 1 IQ_INPUTS_DIR=\${RELEASE_DIR}/inputs IQ_OUTPUTS_DIR=\${RELEASE_DIR}/outputs IQ_CACHE_DIR=\${RELEASE_DIR}/cache \${IQ} run --ptf-all-r >> \${RELEASE_DIR}/logs/r_run.log 2>&1
+0 7 1-7 * 1 \${RELEASE_DIR}/.venv/bin/iq run --ptf-all-r >> \${RELEASE_DIR}/logs/r_run.log 2>&1
 
 # K-portfolio: ogni giorno feriale alle 18:30
-30 18 * * 1-5 IQ_INPUTS_DIR=\${RELEASE_DIR}/inputs IQ_OUTPUTS_DIR=\${RELEASE_DIR}/outputs IQ_CACHE_DIR=\${RELEASE_DIR}/cache \${IQ} run --ptf-all-k >> \${RELEASE_DIR}/logs/k_run.log 2>&1
+30 18 * * 1-5 \${RELEASE_DIR}/.venv/bin/iq run --ptf-all-k >> \${RELEASE_DIR}/logs/k_run.log 2>&1
 CRON_EOF
 
 # ---------------------------------------------------------------------------
@@ -203,29 +203,31 @@ cat > "${RELEASE_DIR}/README.md" << README_EOF
 ## Deploy su VPS
 
 \`\`\`bash
-./scripts/deploy.sh ${VERSION}
+./scripts/deploy.sh ${VERSION} <vps_host> <install_dir>
+# Es: ./scripts/deploy.sh ${VERSION} tslab.investia.cloud /home/luca
 \`\`\`
 
 ## Rollback
 
 \`\`\`bash
-ssh tslab.investia.cloud "ln -sfn ~/investia-quant/releases/<versione_precedente> ~/investia-quant/releases/current"
+ssh <vps_host> "ln -sfn <install_dir>/investia-quant/releases/<versione_precedente> <install_dir>/investia-quant/releases/current"
 \`\`\`
 
 ## Struttura
 
 \`\`\`
 ${VERSION}/
-├── lib/                  librerie runtime
-├── investia_quant/       CLI iq
+├── lib/                  librerie runtime (.py)
+├── investia_quant/       CLI iq (cli.py)
 ├── inputs/               dati WFO
 ├── cache/                cache ticker/ISIN
 ├── outputs/              output report (vuota)
+├── logs/                 log cron (vuota)
 ├── scripts/
 │   ├── portfolios.conf
-│   ├── install.sh        setup venv + .pth per lib/
+│   ├── install.sh        setup venv + .pth + wrapper iq
 │   └── crontab.txt
-└── .venv/                venv (non in git)
+└── .venv/                venv (creato da install.sh, non in git)
 \`\`\`
 README_EOF
 
@@ -246,5 +248,5 @@ echo "   Symlink:   releases/current → ${VERSION}"
 echo "   Commit:    ${COMMIT}"
 echo ""
 echo "   Prossimi passi:"
-echo "   1. git add releases/${VERSION}/ && git commit -m 'release: ${VERSION}'"
-echo "   2. ./scripts/deploy.sh ${VERSION}"
+echo "   1. git add releases/${VERSION}/ releases/current && git commit -m 'release: ${VERSION}'"
+echo "   2. ./scripts/deploy.sh ${VERSION} <vps_host> <install_dir>"
