@@ -27,6 +27,7 @@ dependencies = [
     "pytz",
     "requests",
     "click",
+    "lxml",
 ]
 
 [project.optional-dependencies]
