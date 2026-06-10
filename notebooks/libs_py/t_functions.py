@@ -7,6 +7,11 @@ t_functions.py — Refactored from notebooks/libs/t_functions.ipynb
 # =================================
 from typing import Optional, Iterable, Dict, Tuple, List, Union, Callable, Any
 import pandas as pd
+import numpy as np
+from itertools import product
+from u_functions import fetch_data_and_companies, my_display, RESET, BOLD
+from tqdm.auto import tqdm
+from tqdm.auto import tqdm
 
 # Importo le funzioni di utilita' generali
 # %run u_functions.ipynb

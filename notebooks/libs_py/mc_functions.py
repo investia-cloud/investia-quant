@@ -5,6 +5,12 @@ mc_functions.py — Refactored from notebooks/libs/mc_functions.ipynb
 from pypfopt import EfficientFrontier, risk_models, expected_returns
 import vectorbt as vbt
 import pandas as pd
+import numpy as np
+import yfinance as yf
+from datetime import datetime
+from typing import Optional, Dict, List, Union, Any
+import plotly.graph_objects as go
+from u_functions import (build_and_plot_portfolio_contributions, download_data, generate_lazy_portfolio_performance, plot_cumulative_and_rolling_returns, plot_monthly_returns, plot_multiple_portfolios)
 
 def optimize_portfolio(tickers, start_date, end_date, target_metric, goal='max', num_trials=1000, init_cash=10000):
     """

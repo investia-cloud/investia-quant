@@ -5238,3 +5238,18 @@ def my_display(data: pd.DataFrame, title: str = ""):
         display(data)
     except ImportError:
         print(data)
+def print_summary(
+    portfolio,
+    benchmark_portfolio=None,
+    sel_tickers=None,
+    alpha_analysis=True,
+    risk_free_rate=0.02,
+):
+    return create_portfolio_summary_refactored(
+        portfolio,
+        benchmark_portfolio=benchmark_portfolio,
+        sel_tickers=sel_tickers,
+        alpha_analysis=alpha_analysis,
+        risk_free_rate=risk_free_rate,
+        show=True,
+    )
