@@ -5229,3 +5229,12 @@ def _generate_portfolio_performance_core_refactored(
 # -------------------------
 # Backwards-compatible wrappers matching your original names
 # -------------------------
+
+def my_display(data: pd.DataFrame, title: str = ""):
+    if title:
+        print(title)
+    try:
+        from IPython.display import display
+        display(data)
+    except ImportError:
+        print(data)
