@@ -1,0 +1,8 @@
+# investia-quant 2026.1 — crontab entries
+# RELEASE_DIR=/home/luca/investia-quant/releases/current
+
+# K-portfolio: ogni giorno alle 08:00
+0 8 * * * ${RELEASE_DIR}/.venv/bin/iq run --trading --mail managers --mail customers >> ${RELEASE_DIR}/logs/k_run.log 2>&1
+
+# R-portfolio: primo del mese alle 08:00
+0 8 1 * * ${RELEASE_DIR}/.venv/bin/iq run --rotational --mail managers --mail customers >> ${RELEASE_DIR}/logs/r_run.log 2>&1

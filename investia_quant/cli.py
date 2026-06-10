@@ -141,20 +141,30 @@ def _load_portfolios_conf() -> list:
     return result
 
 
-def _resolve_recipient(mail_arg, ptf_recipients: list) -> list:
+def _resolve_recipient(mail_args, ptf_recipients: list) -> list:
     """
-    Ritorna lista destinatari.
+    Ritorna lista destinatari flat.
+    mail_args può essere stringa singola o tupla (multiple=True).
     Shortcut: me → _MAIL_ME, managers → _MAIL_MANAGERS, customers → ptf_recipients da conf.
     """
-    if mail_arg is None or mail_arg == "customers":
+    if not mail_args:
         return list(ptf_recipients)
-    if mail_arg == "me":
-        return [_MAIL_ME]
-    if mail_arg == "managers":
-        return list(_MAIL_MANAGERS)
-    return [mail_arg]
-
-
+    if isinstance(mail_args, str):
+        mail_args = (mail_args,)
+    result = []
+    for arg in mail_args:
+        if arg == "customers":
+            result.extend(ptf_recipients)
+        elif arg == "me":
+            result.append(_MAIL_ME)
+        elif arg == "managers":
+            result.extend(_MAIL_MANAGERS)
+        else:
+            result.append(arg)
+    # deduplicazione mantenendo ordine
+    seen = set()
+    return [x for x in result if not (x in seen or seen.add(x))]
+    
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -171,10 +181,10 @@ def app():
 
 @app.command()
 @click.option("--ptf", "--portfolio", default=None, help="Nome portafoglio (es. alpha_world, us_trading_2026)")
-@click.option("--all", "all_portfolios", is_flag=True, default=False, help="Esegui tutti i portafogli da portfolios.conf")
-@click.option("--rotational", is_flag=True, default=False, help="Esegui solo portafogli tipo R (rotational)")
-@click.option("--trading", is_flag=True, default=False, help="Esegui solo portafogli tipo T (trading)")
-@click.option("--recipient", "--mail", "--mailto", default=None, help="Destinatario: email, me, managers, customers")
+@click.option("--all", "--ptf-all", "all_portfolios", is_flag=True, default=False, help="Esegui tutti i portafogli da portfolios.conf")
+@click.option("--rotational", "--ptf-all-r", is_flag=True, default=False, help="Esegui solo portafogli tipo R (rotational)")
+@click.option("--trading", "--ptf-all-k", is_flag=True, default=False, help="Esegui solo portafogli tipo T (trading)")
+@click.option("--recipient", "--mail", "--mailto", multiple=True, default=None, help="Destinatario: email, me, managers, customers")
 @click.option("--report-date", default=None, help="Data fine report YYYY-MM-DD (default: oggi)")
 @click.option("--dry-run", is_flag=True, default=False, help="Simula senza inviare email")
 @click.option("--verbose", "-v", is_flag=True, default=False, help="Output verboso")
@@ -303,10 +313,10 @@ def run(ptf, all_portfolios, rotational, trading, recipient, report_date, dry_ru
 
 @app.command()
 @click.option("--ptf", "--portfolio", default=None, help="Nome portafoglio")
-@click.option("--all", "all_portfolios", is_flag=True, default=False, help="Esegui tutti i portafogli da portfolios.conf")
-@click.option("--rotational", is_flag=True, default=False, help="Esegui solo portafogli tipo R (rotational)")
-@click.option("--trading", is_flag=True, default=False, help="Esegui solo portafogli tipo T (trading)")
-@click.option("--recipient", "--mail", "--mailto", default=None, help="Destinatario: email, me, managers, customers")
+@click.option("--all", "--ptf-all", "all_portfolios", is_flag=True, default=False, help="Esegui tutti i portafogli da portfolios.conf")
+@click.option("--rotational", "--ptf-all-r", is_flag=True, default=False, help="Esegui solo portafogli tipo R (rotational)")
+@click.option("--trading", "--ptf-all-k", is_flag=True, default=False, help="Esegui solo portafogli tipo T (trading)")
+@click.option("--recipient", "--mail", "--mailto", multiple=True, default=None, help="Destinatario: email, me, managers, customers")
 @click.option("--start-date", default=None,
               help="Data inizio analisi YYYY-MM-DD (default: 2015-01-01 per R, YTD per K)")
 @click.option("--end-date", default=None, help="Data fine analisi YYYY-MM-DD")
