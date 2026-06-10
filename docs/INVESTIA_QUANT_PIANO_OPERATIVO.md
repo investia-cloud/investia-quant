@@ -483,3 +483,43 @@ k_tickers, k_strategies, k_portfolios, r_portfolios, l_portfolios
    - `notebooks/runtime/_bootstrap_runtime.ipynb` → dismissione
    - `notebooks/runtime/libs/` → verificare, dismissione se duplicato
    - Regola finale: in production gira solo `libs_py/` + `investia_quant/` + `scripts/`
+
+
+## Sessione 09/06/2026 — Fix iq report K + Release versionata + CLI potenziata
+
+**Branch**: `refactor/libs-py`
+
+### Completato
+
+**Fix `iq report K` periodo YTD** ✓
+Tre bug risolti che causavano periodo `2026-05-08 → 2026-06-08` invece di `2026-01-02 → 2026-06-08`:
+- `k_functions.py`: aggiunto `from u_functions import *` (load_ohlcv non trovata)
+- `k_functions.py`: ramo `holding` in `load_trading_systems_batch` non passava `start_date` a `get_clean_financial_data`
+- `cli.py`: `analisys_start_date=None` per K (YTD gestito da `crea_portafoglio_combinato` con comportamento legacy)
+
+**Task 3 — Release versionata** ✓
+- `scripts/make_release.sh`: crea `releases/YYYY.N/` con codice frozen, dati WFO, cache, config, secrets
+- `scripts/deploy.sh`: rsync + install.sh + symlink `current` sulla VPS (parametri obbligatori: VERSION, VPS_HOST, INSTALL_DIR)
+- `releases/2026.1/` deployata su `tslab.investia.cloud:/home/luca/investia-quant/releases/2026.1/`
+- Venv per release (`releases/2026.1/.venv/`) — isolamento completo, rollback garantito
+- `lib/` e `investia_quant/` registrati via `.pth` (no `pip install -e`, no git clone sulla VPS)
+- direnv installato sulla VPS
+
+**CLI `iq` potenziata** ✓
+- `--rotational/--trading/--all`: esegue portafogli per tipo da `portfolios.conf`
+- Alias `--portfolio` per `--ptf`, `--mail/--mailto` per `--recipient`
+- Shortcut `--mail me/managers/customers`
+- Validazione: obbligatorio `--ptf` oppure uno tra `--rotational/--trading/--all`
+- Stampa destinatari risolti anche con `--no-send/--dry-run`
+
+### Pendenti
+
+1. **Cleanup JN runtime** — dopo validazione completa CLI:
+   - `notebooks/runtime/R_Run_Portfolio.ipynb` → dismissione
+   - `notebooks/runtime/K_Run_Portfolio.ipynb` → dismissione
+   - `notebooks/runtime/_bootstrap_runtime.ipynb` → dismissione
+   - `notebooks/runtime/libs/` → verifica + dismissione se duplicato
+
+2. **Task 1.4** — smoke test `k_run_portfolio()`: un FAIL rimasto, target 10/10
+
+3. **Crontab VPS** — configurare cron su `tslab.investia.cloud` usando `releases/current/scripts/crontab.txt` come riferimento
