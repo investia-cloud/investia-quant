@@ -177,7 +177,7 @@ def app():
 @click.option("--recipient", "--mail", "--mailto", default=None, help="Destinatario: email, me, managers, customers")
 @click.option("--report-date", default=None, help="Data fine report YYYY-MM-DD (default: oggi)")
 @click.option("--dry-run", is_flag=True, default=False, help="Simula senza inviare email")
-@click.option("--verbose", is_flag=True, default=False, help="Output verboso")
+@click.option("--verbose", "-v", is_flag=True, default=False, help="Output verboso")
 @click.option("--no-send", is_flag=True, default=False, help="Non inviare email (solo esegui)")
 @click.option("--wfo-results-dir", default=None, help="Override directory risultati WFO")
 def run(ptf, all_portfolios, rotational, trading, recipient, report_date, dry_run, verbose, no_send, wfo_results_dir):
@@ -214,67 +214,87 @@ def run(ptf, all_portfolios, rotational, trading, recipient, report_date, dry_ru
     send_report = not no_send and not dry_run
     sender_email, sender_password = _get_credentials(ns) if send_report else (None, None)
 
+    ok_count = 0
+    err_count = 0
+
     for ptf_name, portfolio_obj, kind, rcpts in tasks:
         rcpts_str = ", ".join(rcpts) if rcpts else "(nessuno)"
-        click.echo(f"[iq run] Portafoglio: {ptf_name} ({kind}) — destinatari: {rcpts_str}")
 
         if send_report and not rcpts:
-            click.echo(f"[iq run] SKIP {ptf_name}: nessun destinatario.", err=True)
+            click.echo(f"[iq run] {ptf_name} ({kind}) → SKIP: nessun destinatario.", err=True)
+            err_count += 1
             continue
 
-        if kind == "R":
-            r_run_portfolio = ns.get("r_run_portfolio")
-            if r_run_portfolio is None:
-                raise click.ClickException("r_run_portfolio non trovata in r_functions.")
-            wfo_dir = wfo_results_dir or ns.get("_TSLAB_RUNTIME_R_WFO_RESULTS_DIR", "../../inputs/WFO_R_RUN_RESULTS")
-            if send_report:
-                for rcpt in rcpts:
-                    click.echo(f"[iq run] r_run_portfolio → {rcpt}")
-                    out = r_run_portfolio(
-                        portfolio=portfolio_obj,
-                        report_end_date=report_date,
-                        year=None,
-                        wfo_results_dir=wfo_dir,
-                        sender_email=sender_email,
-                        sender_password=sender_password,
-                        recipient_email=rcpt,
-                        subject=None,
-                        verbose=verbose,
-                        dry_run=dry_run,
-                        debug=verbose,
-                    )
-                    click.echo(f"[iq run] Completato. Output: {out}")
-            else:
-                click.echo(f"[iq run] --no-send attivo: r_run_portfolio NON eseguito ({ptf_name}).")
+        try:
+            if kind == "R":
+                r_run_portfolio = ns.get("r_run_portfolio")
+                if r_run_portfolio is None:
+                    raise click.ClickException("r_run_portfolio non trovata in r_functions.")
+                wfo_dir = wfo_results_dir or ns.get("_TSLAB_RUNTIME_R_WFO_RESULTS_DIR", "../../inputs/WFO_R_RUN_RESULTS")
+                if send_report:
+                    for rcpt in rcpts:
+                        if verbose:
+                            click.echo(f"[iq run] r_run_portfolio → {rcpt}")
+                        out = r_run_portfolio(
+                            portfolio=portfolio_obj,
+                            report_end_date=report_date,
+                            year=None,
+                            wfo_results_dir=wfo_dir,
+                            sender_email=sender_email,
+                            sender_password=sender_password,
+                            recipient_email=rcpt,
+                            subject=None,
+                            verbose=verbose,
+                            dry_run=dry_run,
+                            debug=verbose,
+                        )
+                        if verbose:
+                            click.echo(f"[iq run] Output: {out}")
+                else:
+                    if verbose:
+                        click.echo(f"[iq run] --no-send attivo: r_run_portfolio NON eseguito ({ptf_name}).")
 
-        elif kind == "K":
-            k_run_portfolio = ns.get("k_run_portfolio")
-            if k_run_portfolio is None:
-                raise click.ClickException("k_run_portfolio non trovata in k_functions.")
-            wfo_dir = wfo_results_dir or ns.get("_TSLAB_RUNTIME_T_WFO_RESULTS_DIR", "../../inputs/WFO_T_RUN_RESULTS")
-            if send_report:
-                for rcpt in rcpts:
-                    click.echo(f"[iq run] k_run_portfolio → {rcpt}")
-                    out = k_run_portfolio(
-                        portfolio_cfg=portfolio_obj,
-                        report_end_date=report_date,
-                        verbose=verbose,
-                        wfo_results_dir=wfo_dir,
-                        create_structure=False,
-                        sender_email=sender_email,
-                        sender_password=sender_password,
-                        recipient_email=rcpt,
-                        subject=None,
-                        check_open_trades=False,
-                        check_close_trades=False,
-                        generate_charts=True,
-                        max_attachments_mb=15,
-                        max_attachments_count=10,
-                        attach_mode="signals_only",
-                    )
-                    click.echo(f"[iq run] Completato. Output: {out}")
-            else:
-                click.echo(f"[iq run] --no-send attivo: k_run_portfolio NON eseguito ({ptf_name}).")
+            elif kind == "K":
+                k_run_portfolio = ns.get("k_run_portfolio")
+                if k_run_portfolio is None:
+                    raise click.ClickException("k_run_portfolio non trovata in k_functions.")
+                wfo_dir = wfo_results_dir or ns.get("_TSLAB_RUNTIME_T_WFO_RESULTS_DIR", "../../inputs/WFO_T_RUN_RESULTS")
+                if send_report:
+                    for rcpt in rcpts:
+                        if verbose:
+                            click.echo(f"[iq run] k_run_portfolio → {rcpt}")
+                        out = k_run_portfolio(
+                            portfolio_cfg=portfolio_obj,
+                            report_end_date=report_date,
+                            verbose=verbose,
+                            wfo_results_dir=wfo_dir,
+                            create_structure=False,
+                            sender_email=sender_email,
+                            sender_password=sender_password,
+                            recipient_email=rcpt,
+                            subject=None,
+                            check_open_trades=False,
+                            check_close_trades=False,
+                            generate_charts=True,
+                            max_attachments_mb=15,
+                            max_attachments_count=10,
+                            attach_mode="signals_only",
+                        )
+                        if verbose:
+                            click.echo(f"[iq run] Output: {out}")
+                else:
+                    if verbose:
+                        click.echo(f"[iq run] --no-send attivo: k_run_portfolio NON eseguito ({ptf_name}).")
+
+            click.echo(f"[iq run] {ptf_name} ({kind}) → {rcpts_str} ✓")
+            ok_count += 1
+
+        except Exception as exc:
+            click.echo(f"[iq run] {ptf_name} ({kind}) → ERRORE: {exc}", err=True)
+            err_count += 1
+
+    total = ok_count + err_count
+    click.echo(f"[iq run] Completato: {ok_count}/{total} portafogli, {err_count} errori.")
 
 
 # ---------------------------------------------------------------------------
