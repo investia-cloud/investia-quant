@@ -8,14 +8,14 @@
 ## Stato attuale
 
 **Branch `main`** aggiornato e pulito. Ultimi commit:
-db2efd2  feat(cli): --mail multiplo, alias --ptf-all/--ptf-all-r/--ptf-all-k; add crontab.txt
-49c3cb0  feat(cli): output iq run minimale di default + --verbose; fix(deps): lxml
-81f5392  fix(deps): aggiungi lxml a pyproject.toml
-26daa97  chore(cleanup): dismissione notebooks/runtime/ — sostituita da CLI iq + libs_py
-23e8918  release: 2026.1
+fix(libs-py): import mancanti r/u/t/mc_functions; bootstrap dev con reload automatico
+fix(k-strategies): pct_change fill_method=None per FutureWarning pandas
+feat(cli): --mail multiplo, alias --ptf-all/--ptf-all-r/--ptf-all-k; add crontab.txt
+feat(cli): output iq run minimale di default + --verbose; fix(deps): lxml
 
 **Sessione 10/06**: branch `refactor/libs-py` completato e mergiato su main.
 CLI `iq` production-ready, runtime VPS operativo con crontab aggiornato.
+Tutti i JN attivi in dev verificati e funzionanti con il nuovo bootstrap.
 
 **Working tree**: clean.
 
@@ -561,13 +561,92 @@ Crontab installato sulla VPS (sostituisce le vecchie entry `/opt/TSlab/`).
 - `refactor/libs-py` mergiato su `main`, branch eliminato
 - Push `origin/main`
 
-### Prossimi lavori (fuori da refactor/libs-py)
+---
+
+## Sessione 10/06/2026 (parte 2) — Fix libs_py + Bootstrap dev + Verifica JN attivi
+
+**Branch**: `main` (patch dirette)
+
+### Completato
+
+**Bootstrap dev migrato** ✓ — `notebooks/dev/_bootstrap_dev.ipynb`
+- Sostituito `%run ../libs/*.ipynb` con `import` da `libs_py/`
+- Aggiunto reload automatico (`importlib.reload`) — `%run _bootstrap_dev.ipynb` ricarica
+  i moduli modificati senza restart kernel
+- Import espliciti variabili `_TSLAB_*` da `u_functions` (escluse da `import *` per underscore)
+
+**Fix import mancanti in libs_py/** ✓
+- `r_functions.py`: aggiunto `import time`, `from joblib import Parallel, delayed`,
+  `from u_functions import (my_display, Emoji, BOLD, RESET, DIM, compare_selection_columns,
+  build_company_df_with_cache, download_data, extract_tickers_from_wikipedia,
+  generate_rotational_portfolio_performance, now, send_email_report, send_portfolio_performance)`
+- `u_functions.py`: aggiunta `my_display` (versione Jupyter-friendly con IPython.display),
+  aggiunta `print_summary` (wrapper su `create_portfolio_summary_refactored`)
+- `t_functions.py`: aggiunto `import numpy as np`, `from itertools import product`,
+  `from tqdm.auto import tqdm`, `from u_functions import (fetch_data_and_companies, my_display, RESET, BOLD)`
+- `mc_functions.py`: aggiunto `import numpy as np`, `import yfinance as yf`,
+  `from datetime import datetime`, `from typing import ...`, `import plotly.graph_objects as go`,
+  `from u_functions import (build_and_plot_portfolio_contributions, download_data, ...)`
+
+**Fix dipendenze venv dev** ✓
+- `lxml` installato nel venv dev
+- `kaleido` downgrade a 0.2.1 + `plotly` downgrade a 5.24.1 (kaleido 1.x richiede Chrome esterno,
+  incompatibile con ambiente headless; combinazione 0.2.1/5.24.1 consolidata e stabile)
+
+**Verifica tutti i JN attivi** ✓
+- `R_Asset_v2` ✓ — pipeline completa funzionante
+- `R_Strategies` ✓ — funzionante (valore operativo da rivalutare)
+- `WFO_Framwork` ✓ — funzionante (strategie agente via `%run` temporaneo)
+- `WFO_Strategy_Panel` ✓ — funzionante
+- `MyCurvo` ✓ — esecuzione completa senza errori
+
+**Archiviati in OLD/** ✓
+- `notebooks/dev/R_Asset.ipynb` → `notebooks/dev/OLD/`
+- `notebooks/dev/MotecarloClaude.ipynb` → `notebooks/dev/OLD/`
+
+### Prossimi lavori
+
+**Priorità alta:**
 
 1. **Rilancio 3 PTF rimanenti** (Italy Big Cap, Alpha Sect, Alpha Euro) — lavoro
    interattivo su `R_Asset_v2`, baseline aggiornata con narrativa corretta post-fix 24/05
 
-2. **Potenziamento Block B** — sorgenti di skill alternative al momentum (Risk-adjusted,
-   Idiosyncratic, Low-vol, Quality, Multi-factor). Da fare dopo baseline aggiornata.
+2. **Cleanup notebooks/libs/ e scripts/ obsoleti** — ora che tutti i JN attivi girano
+   con il nuovo bootstrap, `notebooks/libs/` può essere dismessa (o archiviata in OLD/).
+   Scripts obsoleti: `run_portfolios.sh`, `run_portfolios_v1.sh`, `run_portfolios_v2.sh`,
+   `portfolios.conf~`, `InstallRunTime.txt`.
+   Branch: `chore/cleanup-obsolete`
 
-3. **Agente relazioni tecniche** — automazione generazione PDF per tutti i PTF.
+**Priorità media:**
+
+3. **Migrazione strategie K-Agent in k_strategies.py** — le strategie generate dall'agente
+   sono in `K-Strategy-Agent/strategies.ipynb` e vengono caricate via `%run` nei JN dev.
+   L'agente va modificato per appendere direttamente a `k_strategies.py`.
+   Branch: `feature/k-agent-output-to-py`
+
+4. **Unificazione WFO_Framwork + WFO_Strategy_Panel** — i due JN hanno overlap
+   significativo. Analisi funzioni definite nei JN (non in libs), identificare differenze,
+   migrare in `k_functions.py`, unificare in un unico JN. Capire rapporto con agente K-strategy.
+   Branch: `feature/wfo-panel-unification`
+
+5. **Potenziamento Block B** — sorgenti di skill alternative al momentum (Risk-adjusted,
+   Idiosyncratic, Low-vol, Quality, Multi-factor). Da fare dopo baseline PTF aggiornata.
+
+**Priorità bassa:**
+
+6. **Agente relazioni tecniche** — automazione generazione PDF per tutti i PTF.
    Infrastruttura CLI + libs_py ora stabile, dipendenza soddisfatta.
+
+7. **R_Strategies** — JN esplorativo, valore operativo da chiarire. Contiene
+   `select_top_performing_stocks_NEW` con API vectorbt 1.0.0 da aggiornare (`from_returns`
+   non più disponibile → sostituita con `from_holding` + conversione returns→prezzi).
+
+8. **MyCurvo** — destinato a diventare modulo Lazy Portfolios su `investia-platform` (Fase 4).
+   Refactor dedicato quando la piattaforma sarà pronta.
+
+**Note tecniche emerse:**
+- `notebooks/libs/` contiene ~260 funzioni non portate in `libs_py/` — la maggior parte
+  sono private, deprecate (BAD/OLD) o versioni superate (_R1, _R2). Le funzioni pubbliche
+  mancanti effettivamente usate dai JN attivi sono state aggiunte puntualmente in questa sessione.
+- `lxml` aggiunto a `pyproject.toml` e installato nella release 2026.1
+- `kaleido` pinnato a 0.2.1 + `plotly` 5.24.1 per compatibilità `write_image`
