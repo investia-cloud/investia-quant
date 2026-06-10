@@ -1,28 +1,25 @@
-# TSlab — Piano Operativo
+# investia-quant — Piano Operativo
 
-**Ultimo aggiornamento**: 24 maggio 2026
-**Root progetto**: `/home/luca/TSlab_project`
+**Ultimo aggiornamento**: 10 giugno 2026
+**Root progetto**: `~/investia-quant`
 
 ---
 
 ## Stato attuale
 
-**Branch `main`** aggiornato e pulito. Ultimi commit storici:
-34e2479  data: aggiornamento sel_tickers per relazioni tecniche
-f710533  chore(tooling): scripts wrapper + direnv
-0538d7e  feat(report): tabella holdings con ISIN + localizzazione italiana
-7519138  Merge fix/r-mc-cluster-symmetry
-7a1a193  fix(r-portfolio): MC §7/§8 sdoppiamento std/cluster + cluster fragmentation
-d2b6c71  chore(snapshot): baseline pre-fix MC su 3 portfolio
+**Branch `main`** aggiornato e pulito. Ultimi commit:
+db2efd2  feat(cli): --mail multiplo, alias --ptf-all/--ptf-all-r/--ptf-all-k; add crontab.txt
+49c3cb0  feat(cli): output iq run minimale di default + --verbose; fix(deps): lxml
+81f5392  fix(deps): aggiungi lxml a pyproject.toml
+26daa97  chore(cleanup): dismissione notebooks/runtime/ — sostituita da CLI iq + libs_py
+23e8918  release: 2026.1
 
-**Sessione 24/05** (questo documento): branch `fix/mc-narrative-per-path` con tre fix
-concatenati di reporting MC. In commit.
+**Sessione 10/06**: branch `refactor/libs-py` completato e mergiato su main.
+CLI `iq` production-ready, runtime VPS operativo con crontab aggiornato.
 
-**Working tree**: clean (esclusi deliberatamente `notebooks/dev/R_Asset_v2.ipynb` per
-output celle e `wget-log` per log temporanei).
+**Working tree**: clean.
 
-**Branch parcheggiati**:
-- `refactor/runtime-revamp-2026` — refactor lib `.ipynb` → `.py`, parcheggiato a sotto-fase 1.4
+**Branch parcheggiati**: nessuno.
 
 ---
 
@@ -512,14 +509,65 @@ Tre bug risolti che causavano periodo `2026-05-08 → 2026-06-08` invece di `202
 - Validazione: obbligatorio `--ptf` oppure uno tra `--rotational/--trading/--all`
 - Stampa destinatari risolti anche con `--no-send/--dry-run`
 
-### Pendenti
+### Pendenti (tutti chiusi nella sessione 10/06)
 
-1. **Cleanup JN runtime** — dopo validazione completa CLI:
-   - `notebooks/runtime/R_Run_Portfolio.ipynb` → dismissione
-   - `notebooks/runtime/K_Run_Portfolio.ipynb` → dismissione
-   - `notebooks/runtime/_bootstrap_runtime.ipynb` → dismissione
-   - `notebooks/runtime/libs/` → verifica + dismissione se duplicato
+1. ~~Cleanup JN runtime~~ ✓
+2. ~~Task 1.4 smoke test~~ ✓ (chiuso senza fix — non bloccante)
+3. ~~Crontab VPS~~ ✓
 
-2. **Task 1.4** — smoke test `k_run_portfolio()`: un FAIL rimasto, target 10/10
 
-3. **Crontab VPS** — configurare cron su `tslab.investia.cloud` usando `releases/current/scripts/crontab.txt` come riferimento
+## Sessione 10/06/2026 — Chiusura refactor/libs-py + CLI production-ready
+
+**Branch**: `refactor/libs-py` → mergiato su `main`
+
+### Completato
+
+**Task 1.4 — smoke test k_run_portfolio()** — chiuso senza fix (non bloccante)
+
+**Cleanup notebooks/runtime/** ✓ — commit `26daa97`
+- Eliminata intera directory `notebooks/runtime/` (16 file, 65.410 righe)
+- In produzione gira solo `libs_py/` + `investia_quant/` + `scripts/`
+
+**Fix lxml** ✓
+- `lxml` aggiunto a `pyproject.toml` (mancava, causava crash su `portfolio_alpha_sp100`)
+- Installato manualmente nel venv `releases/2026.1/.venv/` sulla VPS
+
+**CLI `iq run` output minimale** ✓ — commit `49c3cb0`
+- Output default: una riga per portafoglio (`✓` o `ERRORE`) + riga finale `Completato N/M`
+- `--verbose / -v`: output completo (sel_tickers, summary_df, ecc.)
+- Gestione eccezioni per-portafoglio: un FAIL non blocca gli altri
+
+**CLI `iq` ulteriori miglioramenti** ✓ — commit `db2efd2`
+- `--mail` accetta valori multipli (`--mail managers --mail customers`)
+- Alias `--ptf-all` (tutti), `--ptf-all-r` (solo R), `--ptf-all-k` (solo K)
+- `_resolve_recipient` refactored per gestire tupla di shortcut + deduplicazione
+
+**scripts/crontab.txt** ✓ — aggiunto al repo
+```
+# K-portfolio: ogni giorno alle 08:00
+0 8 * * * ${RELEASE_DIR}/.venv/bin/iq run --trading --mail managers --mail customers >> ...
+
+# R-portfolio: primo del mese alle 08:00
+0 8 1 * * ${RELEASE_DIR}/.venv/bin/iq run --rotational --mail managers --mail customers >> ...
+```
+Crontab installato sulla VPS (sostituisce le vecchie entry `/opt/TSlab/`).
+
+**Fix FutureWarning pandas** ✓
+- `k_strategies.py`: tutte le chiamate `.pct_change()` → `.pct_change(fill_method=None)`
+- Inclusa riga 5323: `c.pct_change(1)` → `c.pct_change(1, fill_method=None)`
+- VPS aggiornata via rsync
+
+**Merge e chiusura branch** ✓
+- `refactor/libs-py` mergiato su `main`, branch eliminato
+- Push `origin/main`
+
+### Prossimi lavori (fuori da refactor/libs-py)
+
+1. **Rilancio 3 PTF rimanenti** (Italy Big Cap, Alpha Sect, Alpha Euro) — lavoro
+   interattivo su `R_Asset_v2`, baseline aggiornata con narrativa corretta post-fix 24/05
+
+2. **Potenziamento Block B** — sorgenti di skill alternative al momentum (Risk-adjusted,
+   Idiosyncratic, Low-vol, Quality, Multi-factor). Da fare dopo baseline aggiornata.
+
+3. **Agente relazioni tecniche** — automazione generazione PDF per tutti i PTF.
+   Infrastruttura CLI + libs_py ora stabile, dipendenza soddisfatta.
