@@ -2429,7 +2429,7 @@ def ind_pvt_fisher_pvt(df: pd.DataFrame) -> pd.Series:
         return pd.Series(dtype=float, index=df.index)
     close = df['Close'].astype(float)
     vol   = df['Volume'].fillna(0.0).astype(float)
-    ret   = close.pct_change().fillna(0.0)
+    ret   = close.pct_change(fill_method=None).fillna(0.0)
     pvt   = (ret * vol).cumsum()
     return pvt
 
@@ -5320,7 +5320,7 @@ def ind_spy_mr_crsi_bbands_crsi(df: pd.DataFrame,
             streak.iloc[i] = 0
     rsi_streak = _rsi(streak, streak_rsi_len)
 
-    roc1 = c.pct_change(1)
+    roc1 = c.pct_change(1, fill_method=None)
     # percent rank dell’ultimo ROC1 negli ultimi prank_lb giorni (0..100)
     def _prank(s: pd.Series, lb: int) -> pd.Series:
         roll = s.rolling(lb, min_periods=1)
@@ -6727,7 +6727,7 @@ def ind_vol_regime_hv(df: pd.DataFrame, hv_lookback: int = 20) -> pd.Series:
     Historical Volatility (HV) semplice: std dei rendimenti su finestra rolling.
     Usa 'Close' (già adjusted nella tua versione di yfinance).
     """
-    ret = df['Close'].pct_change()
+    ret = df['Close'].pct_change(fill_method=None)
     hv = ret.rolling(hv_lookback, min_periods=hv_lookback).std()
     return hv
 
@@ -6906,7 +6906,7 @@ def strategy_vol_regime(data: pd.DataFrame, params: dict, year: int | None = Non
 
 def ind_vol_regime_v2_hv(df: pd.DataFrame, hv_lookback: int = 20) -> pd.Series:
     """Historical Volatility semplice su rendimenti di Close."""
-    ret = df['Close'].pct_change()
+    ret = df['Close'].pct_change(fill_method=None)
     hv = ret.rolling(hv_lookback, min_periods=hv_lookback).std()
     return hv
 
@@ -7108,7 +7108,7 @@ def ind_pcr_ma_pcr(df: pd.DataFrame, smooth: int = 5, source: str = "auto") -> p
             pcr_raw = puts / calls
             return _roll_mean(pcr_raw, smooth).rename("PCR_S")
         # --- Fallback DUV proxy (auto-contenuto) ---
-        ret = df["Close"].pct_change()
+        ret = df["Close"].pct_change(fill_method=None)
         w = max(3, int(smooth))
 
         if "Volume" in df.columns:
@@ -7236,7 +7236,7 @@ def strategy_pcr_ma(data: pd.DataFrame, params: dict, year: int | None = None):
 #             return _roll_mean(pcr_raw, smooth).rename("PCR_S")
 
 #         # --- Fallback D/U auto-contenuto ---
-#         ret = df["Close"].pct_change()
+#         ret = df["Close"].pct_change(fill_method=None)
 #         w = max(3, int(smooth))
 
 #         if "Volume" in df.columns:
@@ -7384,7 +7384,7 @@ def ind_qqq_trend_vol_rvperc(df: pd.DataFrame, stdev_win: int = 20, perc_win: in
     Ritorna: (rv_ann, rv_perc)
     """
     close = pd.to_numeric(df["Close"], errors="coerce")
-    ret = close.pct_change()
+    ret = close.pct_change(fill_method=None)
     rv_ann = ret.rolling(int(stdev_win), min_periods=stdev_win//2).std().mul(np.sqrt(252)).rename("RV")
     # Percentile rolling della RV: rank pct dell'ultimo valore nella finestra
     def last_rank_pct(x):
@@ -7730,7 +7730,7 @@ def ind_spy_uptrend_dip_rvperc(df: pd.DataFrame, stdev_win: int = 20, perc_win: 
     Ritorna: (RV, RV_PERC)
     """
     close = pd.to_numeric(df["Close"], errors="coerce")
-    ret = close.pct_change()
+    ret = close.pct_change(fill_method=None)
     rv = ret.rolling(int(stdev_win), min_periods=max(5, int(stdev_win)//2)).std().mul(np.sqrt(252)).rename("RV")
     def _last_rank_pct(x):
         xs = pd.Series(x)
@@ -7843,7 +7843,7 @@ def ind_spy_quarter_switch_roc(df: pd.DataFrame, window: int = 63) -> pd.Series:
 # === Realized Vol percentile (shock detector) ===
 def ind_spy_quarter_switch_rvperc(df: pd.DataFrame, stdev_win: int = 20, perc_win: int = 120):
     close = pd.to_numeric(df["Close"], errors="coerce")
-    ret = close.pct_change()
+    ret = close.pct_change(fill_method=None)
     rv = ret.rolling(int(stdev_win), min_periods=max(5, int(stdev_win)//2)).std().mul(np.sqrt(252)).rename("RV")
     def _last_rank_pct(x):
         xs = pd.Series(x)
@@ -8045,7 +8045,7 @@ def ind_spy_adaptive_trail_vol(df: pd.DataFrame, vol_win: int = 20) -> pd.Series
     Output in forma frazionaria (es. 0.05 = 5%).
     """
     close = pd.to_numeric(df["Close"], errors="coerce")
-    ret = close.pct_change()
+    ret = close.pct_change(fill_method=None)
     vol = ret.rolling(int(vol_win), min_periods=max(5, int(vol_win)//2)).std().mul(np.sqrt(int(vol_win)))
     return vol.rename(f"VOL_{int(vol_win)}")
 
@@ -8314,7 +8314,7 @@ def ind_spy_black_swan_vratio(df: pd.DataFrame, short_win: int = 5, long_win: in
     vratio    = vol_short / vol_long
     """
     close = pd.to_numeric(df["Close"], errors="coerce")
-    ret = close.pct_change()
+    ret = close.pct_change(fill_method=None)
     vs = ret.rolling(int(short_win), min_periods=max(3, int(short_win)//2)).std()
     vl = ret.rolling(int(long_win),  min_periods=max(5, int(long_win)//2)).std()
     vratio = (vs / vl).rename(f"VRATIO_{int(short_win)}_{int(long_win)}")
@@ -8401,7 +8401,7 @@ def strategy_spy_black_swan(data: pd.DataFrame, params: dict, year: int | None =
     df = data.copy()
     # Ritorni 1d e 3d
     close = pd.to_numeric(df["Close"], errors="coerce")
-    r1 = close.pct_change().rename("R1")
+    r1 = close.pct_change(fill_method=None).rename("R1")
     r3 = (close / close.shift(3) - 1.0).rename("R3")
 
     # Vol ratio, DD fast, EMA fast, Breakout
@@ -8444,7 +8444,7 @@ def strategy_spy_black_swan(data: pd.DataFrame, params: dict, year: int | None =
 # === Volatility ratio (vol breve / vol lunga) ===
 def ind_spy_hybrid_guard_vratio(df: pd.DataFrame, short_win: int = 5, long_win: int = 20):
     close = pd.to_numeric(df["Close"], errors="coerce")
-    ret = close.pct_change()
+    ret = close.pct_change(fill_method=None)
     vshort = ret.rolling(int(short_win), min_periods=max(3, int(short_win)//2)).std()
     vlong  = ret.rolling(int(long_win),  min_periods=max(5, int(long_win)//2)).std()
     vratio = (vshort / vlong).rename(f"VRATIO_{int(short_win)}_{int(long_win)}")
@@ -8537,7 +8537,7 @@ def strategy_spy_hybrid_guard(data: pd.DataFrame, params: dict, year: int | None
     # --- (1) Indicatori su tutto il df
     df = data.copy()
     close = pd.to_numeric(df["Close"], errors="coerce")
-    r1 = close.pct_change().rename("R1")
+    r1 = close.pct_change(fill_method=None).rename("R1")
     r3 = (close / close.shift(3) - 1.0).rename("R3")
 
     _, _, df["VRATIO"] = ind_spy_hybrid_guard_vratio(df, short_win=5, long_win=20)
@@ -8581,7 +8581,7 @@ def strategy_spy_hybrid_guard(data: pd.DataFrame, params: dict, year: int | None
 # === Vol ratio: vol breve / vol lunga (su rendimenti daily) ===
 def ind_spy_circuit_mix_vratio(df: pd.DataFrame, short_win: int = 5, long_win: int = 20):
     close = pd.to_numeric(df["Close"], errors="coerce")
-    ret = close.pct_change()
+    ret = close.pct_change(fill_method=None)
     vshort = ret.rolling(int(short_win), min_periods=max(3, int(short_win)//2)).std()
     vlong  = ret.rolling(int(long_win),  min_periods=max(5, int(long_win)//2)).std()
     vratio = (vshort / vlong).rename(f"VRATIO_{int(short_win)}_{int(long_win)}")
@@ -8694,7 +8694,7 @@ def strategy_spy_circuit_mix(data: pd.DataFrame, params: dict, year: int | None 
     # --- (1) Indicatori su tutto il df
     df = data.copy()
     close = pd.to_numeric(df["Close"], errors="coerce")
-    r1 = close.pct_change().rename("R1")
+    r1 = close.pct_change(fill_method=None).rename("R1")
     r3 = (close / close.shift(3) - 1.0).rename("R3")
 
     _, _, df["VRATIO"]   = ind_spy_circuit_mix_vratio(df, short_win=5, long_win=20)
@@ -8761,7 +8761,7 @@ def _shift_bool(sig: pd.Series) -> pd.Series:
 # ---- indicatori --------------------------------------------------------------
 def ind_spy_circuit_plus_vratio(df: pd.DataFrame, short_win: int = 5, long_win: int = 20):
     close = pd.to_numeric(df["Close"], errors="coerce")
-    ret = close.pct_change()
+    ret = close.pct_change(fill_method=None)
     vshort = ret.rolling(int(short_win), min_periods=max(3, int(short_win)//2)).std()
     vlong  = ret.rolling(int(long_win),  min_periods=max(5, int(long_win)//2)).std().replace(0, np.nan)
     vratio = (vshort / vlong).rename(f"VRATIO_{int(short_win)}_{int(long_win)}")
@@ -8843,7 +8843,7 @@ def strategy_spy_circuit_plus(data: pd.DataFrame, params: dict, year: int | None
     # (1) Indicatori su tutto il df
     df = data.copy()
     close = pd.to_numeric(df["Close"], errors="coerce")
-    r1 = close.pct_change().rename("R1")
+    r1 = close.pct_change(fill_method=None).rename("R1")
     r3 = (close / close.shift(3) - 1.0).rename("R3")
     _, _, df["VRATIO"] = ind_spy_circuit_plus_vratio(df, short_win=5, long_win=20)
     df["DD_FAST"] = ind_spy_circuit_plus_fastdd(df, win=10)
@@ -9047,7 +9047,7 @@ def ind_dbma_matrix_series(df: pd.DataFrame,
     close = df['Close']
 
     # Volatilità realizzata su mom_period per normalizzare il momentum
-    ret = close.pct_change()
+    ret = close.pct_change(fill_method=None)
     vol = ret.rolling(mom_period, min_periods=1).std(ddof=0).replace(0, np.nan)
 
     # Momentum percentuale su mom_period
