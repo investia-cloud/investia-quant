@@ -9,11 +9,11 @@
 
 **Branch `main`** aggiornato e pulito. Ultimi commit:
 ```
+feat(k-agent): migra output da JN a k_strategies_agent.py (22 strategie + agent redirect)
+chore: cleanup notebooks/dev/ — rimuovi artefatti refactor e dir obsolete
+docs: piano operativo riscritto — struttura pulita post sessione 11/06
 feat(cli): implementa iq analyze — runner headless pipeline R-portfolio
 chore(notebooks): rinomina JN dev a naming coerente
-docs: aggiorna piano operativo — iq analyze design + rename JN
-feat(cli): --mail multiplo, alias --ptf-all/--ptf-all-r/--ptf-all-k; add crontab.txt
-feat(cli): output iq run minimale di default + --verbose; fix(deps): lxml
 ```
 
 **Working tree**: clean.
@@ -29,7 +29,7 @@ feat(cli): output iq run minimale di default + --verbose; fix(deps): lxml
 | `notebooks/dev/lazy_portfolio_analyst.ipynb` | Lazy portfolios (futuro modulo piattaforma) |
 | `notebooks/dev/R_Strategies.ipynb` | Rotazionale su strategie/metodi — ruolo da chiarire |
 | `notebooks/dev/_bootstrap_dev.ipynb` | Bootstrap import libs_py con reload automatico |
-| `K-Strategy-Agent/k_strategy_agent_output.ipynb` | Output generato dall'agente K-strategy |
+| `K-Strategy-Agent/k_strategy_agent_output.ipynb` | Archivio storico strategie agente (read-only) |
 
 ### CLI `iq` — comandi disponibili
 
@@ -65,49 +65,33 @@ Baseline aggiornata con narrativa corretta (post-fix 24/05). Da fare in
 Dopo questa baseline sarà possibile valutare il Potenziamento Block B
 (sorgenti di skill alternative al momentum).
 
-**2. Cleanup obsoleti**
-
-Branch: `chore/cleanup-obsolete`
-
-- `notebooks/libs/` — ~260 funzioni, la maggior parte private/deprecate/superate.
-  Le funzioni pubbliche usate dai JN attivi sono già in `libs_py/`. Archiviare in OLD/.
-- Scripts obsoleti: `run_portfolios.sh`, `run_portfolios_v1.sh`, `run_portfolios_v2.sh`,
-  `portfolios.conf~`, `InstallRunTime.txt`
-
 ### Priorità media
 
-**3. Migrazione strategie K-Agent in k_strategies.py**
-
-Le strategie generate dall'agente sono in `k_strategy_agent_output.ipynb` e vengono
-caricate via `%run` nei JN dev. L'agente va modificato per appendere direttamente
-a `k_strategies.py`.
-Branch: `feature/k-agent-output-to-py`
-
-**4. Unificazione k_strategy_inspector + k_strategy_panel**
+**2. Unificazione k_strategy_inspector + k_strategy_panel**
 
 I due JN hanno overlap significativo. Analisi funzioni definite nei JN (non in libs),
 identificare differenze, migrare in `k_functions.py`, unificare in un unico JN.
 Branch: `feature/wfo-panel-unification`
 
-**5. Potenziamento Block B**
+**3. Potenziamento Block B**
 
 Sorgenti di skill alternative al momentum: Risk-adjusted, Idiosyncratic, Low-vol,
 Quality, Multi-factor. Da fare dopo baseline PTF aggiornata (punto 1).
 
 ### Priorità bassa
 
-**6. Agente relazioni tecniche**
+**4. Agente relazioni tecniche**
 
 Batch su tutti i PTF: chiama `run_r_portfolio_analysis()` in loop.
 Dipende da: `iq analyze` ora stabile ✓. Da pianificare.
 
-**7. R_Strategies**
+**5. R_Strategies**
 
 JN esplorativo — rotazionale su strategie/metodi/pesi anziché titoli.
 Ruolo operativo da chiarire. Contiene `select_top_performing_stocks_NEW`
 con API vectorbt 1.0.0 da aggiornare (`from_returns` → `from_holding`).
 
-**8. lazy_portfolio_analyst (MyCurvo)**
+**6. lazy_portfolio_analyst (MyCurvo)**
 
 Destinato a modulo Lazy Portfolios su `investia-platform` (Fase 4).
 Refactor dedicato quando la piattaforma sarà pronta.
@@ -311,9 +295,10 @@ Fix import mancanti in r/u/t/mc_functions.py.
 Fix: lxml, kaleido 0.2.1 + plotly 5.24.1, pct_change FutureWarning.
 Verifica tutti i JN attivi ✓. Crontab VPS installato.
 
-### Sessione 11/06/2026 — Rename JN + iq analyze
+### Sessione 11/06/2026 — Rename JN + iq analyze + cleanup + k-agent
 
-Branch `chore/rename-notebooks` + `feature/iq-analyze` → mergiati su main.
+Branch `chore/rename-notebooks` + `feature/iq-analyze` + `feature/k-agent-output-to-py` → mergiati su main.
+Cleanup `notebooks/dev/` diretto su main (file non tracciati).
 
 Rename JN dev: R_Asset_v2 → r_portfolio_analyst, WFO_Framwork → k_strategy_inspector,
 WFO_Strategy_Panel → k_strategy_panel, MyCurvo → lazy_portfolio_analyst,
@@ -322,6 +307,13 @@ K-Strategy-Agent/strategies → k_strategy_agent_output. ✓
 iq analyze implementato: `run_r_portfolio_analysis()` in `r_functions.py`,
 command `analyze` in `cli.py`. Fix headless (matplotlib Agg, display rimossa,
 plot condizionato, fallback pf_rot). Test su `portfolio_alpha_fact` ✓
+
+Cleanup `notebooks/dev/`: rimossi artefatti refactor, PNG, dir obsolete
+(mc_results/, reports/, snapshots/, _workbench/, data/, ptf_cards/, OLD/). ✓
+
+K-Agent migrato: `k_strategy_agent_output.ipynb` → `k_strategies_agent.py` (22 strategie).
+`agent.py` modificato: output redirect da JN a `notebooks/libs_py/k_strategies_agent.py`.
+Funzioni notebook (`load_or_create_notebook`, `save_notebook`) conservate ma non più chiamate. ✓
 
 Definizione architettura `iq analyze` e distinzione comandi CLI approvate.
 Convenzione `EFFORT` nei prompt Code introdotta.
