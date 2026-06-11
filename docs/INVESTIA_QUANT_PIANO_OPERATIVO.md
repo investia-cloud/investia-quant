@@ -1,6 +1,6 @@
 # investia-quant — Piano Operativo
 
-**Ultimo aggiornamento**: 10 giugno 2026
+**Ultimo aggiornamento**: 11 giugno 2026
 **Root progetto**: `~/investia-quant`
 
 ---
@@ -8,755 +8,320 @@
 ## Stato attuale
 
 **Branch `main`** aggiornato e pulito. Ultimi commit:
-fix(libs-py): import mancanti r/u/t/mc_functions; bootstrap dev con reload automatico
-fix(k-strategies): pct_change fill_method=None per FutureWarning pandas
+```
+feat(cli): implementa iq analyze — runner headless pipeline R-portfolio
+chore(notebooks): rinomina JN dev a naming coerente
+docs: aggiorna piano operativo — iq analyze design + rename JN
 feat(cli): --mail multiplo, alias --ptf-all/--ptf-all-r/--ptf-all-k; add crontab.txt
 feat(cli): output iq run minimale di default + --verbose; fix(deps): lxml
-
-**Sessione 10/06**: branch `refactor/libs-py` completato e mergiato su main.
-CLI `iq` production-ready, runtime VPS operativo con crontab aggiornato.
-Tutti i JN attivi in dev verificati e funzionanti con il nuovo bootstrap.
+```
 
 **Working tree**: clean.
-
 **Branch parcheggiati**: nessuno.
 
----
+### Notebooks dev attivi
 
-## Lavori chiusi nella sessione 24/05
+| File | Ruolo |
+|---|---|
+| `notebooks/dev/r_portfolio_analyst.ipynb` | Analisi interattiva R-portfolio — solo Luca |
+| `notebooks/dev/k_strategy_panel.ipynb` | Pannello multi-strategia K |
+| `notebooks/dev/k_strategy_inspector.ipynb` | Analisi approfondita singola strategia K |
+| `notebooks/dev/lazy_portfolio_analyst.ipynb` | Lazy portfolios (futuro modulo piattaforma) |
+| `notebooks/dev/R_Strategies.ipynb` | Rotazionale su strategie/metodi — ruolo da chiarire |
+| `notebooks/dev/_bootstrap_dev.ipynb` | Bootstrap import libs_py con reload automatico |
+| `K-Strategy-Agent/k_strategy_agent_output.ipynb` | Output generato dall'agente K-strategy |
 
-Tre fix di reporting MC, applicati sullo stesso branch `fix/mc-narrative-per-path`:
+### CLI `iq` — comandi disponibili
 
-### Fix #1 — Plot MC per-path (sub-directory std/ e cluster/)
-
-**Problema**: in `R_Asset_v2.ipynb` §7 le due chiamate consecutive a 
-`run_all_mc_methods_rotational` (Standard + Cluster) condividevano lo stesso 
-`plots_dir`. La seconda sovrascriveva i PNG della prima. Conseguenza: la relazione 
-PDF mostrava sempre figure del path Cluster anche nelle sezioni Standard, 
-producendo incoerenze numeriche visibili (es. Actual 8.3% nella tabella Standard 
-con CAGR vbt 4.0%).
-
-**Fix**: sub-directory `plots_dir/std/` e `plots_dir/cluster/`, salvati ai 
-rispettivi percorsi; `_img_sub(subdir, fname)` in `generate_relazione_tecnica` per 
-risolvere il path corretto; rinumerazione figure §5: Fig. 5a-c (Std B1/B2/skill), 
-Fig. 6a-c (Cluster B1/B2/skill), Fig. 7a-c (Std A1/A2/CI), Fig. 8a-c (Cluster 
-A1/A2/CI). Totale: 12 figure MC al posto di 6.
-
-PTF card markdown aggiornata di conseguenza: ogni file MC viene cercato in 
-`std/...` e `cluster/...`.
-
-### Fix #2 — Etichettatura figure
-
-Assorbito in Fix #1 (le caption ora dichiarano esplicitamente "Path Standard" o 
-"Path Cluster"). Nessun lavoro aggiuntivo richiesto.
-
-### Fix #3 — Narrativa MC per-path (B-005 + B-006)
-
-**B-005**: le sezioni 6.b/6.c citavano sempre numeri del path Standard anche 
-quando il path raccomandato era Cluster. **B-006**: `compute_skill_profile` 
-mappava (B1 PASS, S3 FAIL) → 'Timing-driven' anziché 'Selection-driven' 
-(nomenclatura invertita), e ignorava B2.
-
-Fix integrato:
-
-- Nuova `compute_skill_profile` basata su (B1, B2):
-  - B1 PASS + B2 PASS → 'Strong'
-  - B1 PASS + B2 FAIL → 'Selection-driven'
-  - B1 FAIL + B2 PASS → 'Timing-driven'
-  - B1 FAIL + B2 FAIL → 'No-skill'
-  
-  Ritorna tupla `(profile_std, profile_cluster)`.
-
-- Nuovo helper `_recommended_path(ofc_std, ofc_cluster)` → 'cluster' / 'std' / None
-  (tie-break: Cluster preferito quando entrambi promossi).
-
-- `_diagnose_mc` esteso: nuovi argomenti `mc_skill_cluster`, `mc_ci_cluster`, 
-  `recommended_path`. Strategia narrativa **Opzione C**: focus sul path 
-  raccomandato + nota di contrasto sull'alternativo. Posizione percentile reale 
-  dell'Actual rispetto alla distribuzione bootstrap A1 (non più frase hardcoded 
-  "ben sopra il p95", che era anche fattualmente sbagliata).
-
-- `_build_verdict_text` esteso con `skill_profile_cluster` opzionale e caveat 
-  per-profile (testi separati per Strong / Selection-driven / Timing-driven / 
-  No-skill).
-
-- Nuova `_build_verdict_text_compact` per box alternativo (sfondo grigio chiaro) 
-  che mostra metriche essenziali del path non raccomandato.
-
-- `generate_relazione_tecnica`: nuovo parametro `skill_profile_cluster`, riga 
-  "Skill Profile" della tabella §7 sdoppiata Standard/Cluster, secondo verdict 
-  box compatto aggiunto dopo il principale.
-
-**Risolto in passing**: anche il campo `Periodo analisi` di pag. 1 (che mostrava 
-"2015-01-01 → None") è stato corretto aggiornando la chiamata 
-`generate_relazione_tecnica` in `R_Asset_v2.ipynb` con `period = 
-(str(pipeline_start_date), _today_iso)`.
-
-### Verifica post-fix su Alpha World Vanguard
-
-Relazione 24/05 rigenerata:
-
-| Sezione | Pre-fix | Post-fix |
+| Comando | Scopo | Stato |
 |---|---|---|
-| Fig. 5a/b (Standard B1/B2) | mostrava Actual Cluster 8.3% | Actual Std 2.7% ✓ |
-| Fig. 6a/b (Cluster B1/B2) | identica a 5a/b | Actual Cl 8.3%, p=0.001 ✓ |
-| Tabella §7 Skill Profile | "No-skill / No-skill" | "No-skill / Selection-driven" ✓ |
-| §6.b paragrafo iniziale | "Entrambi FAIL... No-skill" | "Path Cluster, B1 PASS, Selection-driven" ✓ |
-| §6.c posizione Actual | "ben sopra il p95" (hardcoded, falso) | "tra mediana (9.2%) e p95 (17.2%)" ✓ |
-| §7 verdict box | uno solo | principale (Cluster) + compatto alternativo (Std) ✓ |
+| `iq run --ptf/--rotational/--trading/--all` | Runtime operativo — segnali ai gestori | ✅ Production |
+| `iq report --ptf/--rotational/--trading/--all` | Statistiche YTD PTF deployati | ✅ Production |
+| `iq analyze --ptf/--universe` | Pipeline R completa — relazione tecnica PDF | ✅ Implementato 11/06 |
 
-Tutti i test post-fix passati. Stabilità tra esecuzioni 19/05 → 22/05 → 24/05 
-confermata: nessuno "swing" del p-value B1 (era diagnosi errata, vedi B-004).
+### VPS produzione
+
+- `tslab.investia.cloud` — release `2026.1` deployata
+- Crontab attivo: K-portfolio ore 08:00 giornaliero, R-portfolio ore 08:00 primo del mese
+- Rollback: symlink `current` → `releases/2026.1/`
 
 ---
 
 ## Lavori in piedi, in ordine di priorità
 
-### 1. Potenziamento Block B — sorgenti di skill alternative al momentum (priorità alta)
+### Priorità alta
 
-**Problema reale emerso**: dei 4 PTF analizzati, solo Alpha World Cluster ha B1 PASS 
-in modo robusto (p=0.001). Pattern dell'inventario 22/05:
+**1. Rilancio 3 PTF rimanenti**
 
-| PTF | Universo | B1 cluster | OFC cluster |
+Baseline aggiornata con narrativa corretta (post-fix 24/05). Da fare in
+`r_portfolio_analyst.ipynb` — lavoro interattivo di Luca.
+
+| PTF | Universo | B1 cluster (22/05) | OFC cluster |
 |---|---|---|---|
 | Italy Big Cap | 19 | 0.349 borderline | PROMOTED |
-| Alpha Sect Megatrend | 9 | **0.015 PASS** | PROMOTED |
-| Alpha World Vanguard | 38 | 0.001 PASS (confermato 24/05) | PROMOTED |
+| Alpha Sect Megatrend | 9 | 0.015 PASS | PROMOTED |
 | Alpha Euro | 36 | 0.218 borderline | PROMOTED |
 
-Pattern: universi piccoli/settoriali (Alpha Sect) e universi grandi pre-filtrati 
-da clustering (Alpha World) mostrano skill rotazionale rilevabile dal Block B. 
-Gli universi medi (Italy, Euro) restano borderline. **B2 (timing) è sempre FAIL.**
+Dopo questa baseline sarà possibile valutare il Potenziamento Block B
+(sorgenti di skill alternative al momentum).
 
-**Direzioni di lavoro discusse**:
-- Risk-adjusted momentum (Sharpe ranking)
-- Idiosyncratic momentum (residui post-neutralizzazione fattori sistematici)
-- Low-volatility factor
-- Quality factor (ROE, ROIC, debt/equity)
-- Mean reversion (orizzonti corti/lunghi)
-- Multi-factor compositi (momentum + low-vol + quality)
-- Cross-sectional z-score ranking
+**2. Cleanup obsoleti**
 
-**Prossimo passo**: prima della creazione di nuovi modelli, rilanciare R_Asset_v2 
-sugli altri 3 PTF (Italy Big Cap, Alpha Sect, Alpha Euro) per riconfermare i 
-numeri con la nuova narrativa corretta. Solo dopo questa baseline aggiornata 
-decideremo dove intervenire.
+Branch: `chore/cleanup-obsolete`
 
-### 2. Refactor `runtime-revamp-2026` (lavoro grosso, atteso)
+- `notebooks/libs/` — ~260 funzioni, la maggior parte private/deprecate/superate.
+  Le funzioni pubbliche usate dai JN attivi sono già in `libs_py/`. Archiviare in OLD/.
+- Scripts obsoleti: `run_portfolios.sh`, `run_portfolios_v1.sh`, `run_portfolios_v2.sh`,
+  `portfolios.conf~`, `InstallRunTime.txt`
 
-**Cosa**: conversione delle librerie principali da `.ipynb` a `.py`. La cartella 
-`notebooks/libs_py/` contiene già parti del refactor in corso.
+### Priorità media
 
-**Perché serve**:
-- I notebook si dirtano continuamente per output celle (es. R_Asset_v2)
-- Test automatizzati impraticabili su `.ipynb`
-- Import tra notebook fragile vs import Python standard
-- Diff Git leggibile su `.py`, illeggibile su `.ipynb`
+**3. Migrazione strategie K-Agent in k_strategies.py**
 
-**Stato branch**: parcheggiato a sotto-fase 1.4 interrotta. Prima di riprenderlo:
-```bash
-git log refactor/runtime-revamp-2026 --oneline | head -20
-git diff main..refactor/runtime-revamp-2026 --stat
-```
+Le strategie generate dall'agente sono in `k_strategy_agent_output.ipynb` e vengono
+caricate via `%run` nei JN dev. L'agente va modificato per appendere direttamente
+a `k_strategies.py`.
+Branch: `feature/k-agent-output-to-py`
 
-**Note pre-refactor**: B-004 chiuso senza fix (diagnosi errata), B-005 e B-006 
-risolti nella sessione 24/05. Il refactor parte da base MC stabile.
+**4. Unificazione k_strategy_inspector + k_strategy_panel**
 
-### 3. Agente automatico generazione relazioni tecniche
+I due JN hanno overlap significativo. Analisi funzioni definite nei JN (non in libs),
+identificare differenze, migrare in `k_functions.py`, unificare in un unico JN.
+Branch: `feature/wfo-panel-unification`
 
-**Cosa**: agente che legge i PTF disponibili e lancia R_Asset_v2 per generare/
-aggiornare schede e relazioni tecniche per tutti i portafogli.
+**5. Potenziamento Block B**
 
-**Perché serve**: attualmente 4 PTF analizzati. Con 15-20 PTF il pattern "skill 
-rotazionale per universo piccolo/clustered" diventerebbe statisticamente robusto. 
-È anche il presupposto per validare nuovi modelli di selezione (vedi punto 1).
+Sorgenti di skill alternative al momentum: Risk-adjusted, Idiosyncratic, Low-vol,
+Quality, Multi-factor. Da fare dopo baseline PTF aggiornata (punto 1).
 
-**Dipendenza**: conviene farlo **dopo** il refactor `.py` per avere libreria 
-testabile e CLI stabili.
+### Priorità bassa
 
-**Stato**: solo accennato, nessun lavoro iniziato.
+**6. Agente relazioni tecniche**
 
-### 4. Cose minori in coda
+Batch su tutti i PTF: chiama `run_r_portfolio_analysis()` in loop.
+Dipende da: `iq analyze` ora stabile ✓. Da pianificare.
 
-- `wget-log` — rimuovere fisicamente o aggiungere a `.gitignore`
-- `notebooks/libs/Untitled.ipynb` — se ricompare, non committarlo mai (scratch Jupyter)
-- Caveat "S3 borderline" in `_build_verdict_text`: la soglia attuale 
-  `abs(s3_pv - s3_thr) <= 0.05` non scatta per S3=0.182 vs soglia 0.10 (distanza 
-  0.082). Da rivedere se si vuole catturare meglio i casi borderline reali, ma 
-  non bloccante.
+**7. R_Strategies**
+
+JN esplorativo — rotazionale su strategie/metodi/pesi anziché titoli.
+Ruolo operativo da chiarire. Contiene `select_top_performing_stocks_NEW`
+con API vectorbt 1.0.0 da aggiornare (`from_returns` → `from_holding`).
+
+**8. lazy_portfolio_analyst (MyCurvo)**
+
+Destinato a modulo Lazy Portfolios su `investia-platform` (Fase 4).
+Refactor dedicato quando la piattaforma sarà pronta.
 
 ---
 
-## Sequenza operativa consigliata
+## Architettura `iq analyze`
 
-1. **Commit della sessione 24/05** — branch `fix/mc-narrative-per-path` su main
-2. **Rilancio 3 PTF rimanenti** (Italy Big Cap, Alpha Sect, Alpha Euro) per 
-   baseline aggiornata con narrativa corretta
-3. **Discussione "sorgenti di skill alternative"** sulla base dei numeri 
-   aggiornati dei 4 PTF
-4. **Refactor `runtime-revamp-2026`** — lavoro grosso, ma con reporting MC ora 
-   solido è meno rischioso
-5. **Agente automatico relazioni tecniche** — sopra infrastruttura refactored
-
----
-
-## Storia bug (issue tracker)
-
-Sezione tipo issue tracker: tutti i bug noti del progetto con sintomo, diagnosi, 
-fix. Stato: OPEN (in corso) / RESOLVED (chiuso) / CLOSED (chiuso senza fix 
-perché diagnosi errata o non applicabile).
-
-### B-001 — `run_rotational_engine` fallisce con `duplicate labels` su universi ampi · RESOLVED
-
-**Sintomo**: `ValueError: cannot reindex on an axis with duplicate labels` 
-nella costruzione di `rankings = pd.DataFrame(rank_records).T` (riga ~559 
-di `r_functions`).
-
-**Affliggeva**: `portfolio_alpha_world` (universo con ~20 ETF `.MI`).
-
-**Causa effettiva**: ticker presenti sia in `tickers` (universo principale) 
-sia in `risk_off_tickers` venivano duplicati a valle, propagandosi fino a 
-generare index non univoco in `rank_records`. NON era un problema dei dati 
-o di storia parziale come inizialmente ipotizzato.
-
-**Fix**: in `R_Asset_v2.ipynb`, prima del download di `risk_off_data`, 
-deduplica `risk_off_tickers` rispetto a `tickers` con variabile dedicata 
-idempotente:
-```python
-risk_off_tickers_uniq = [t for t in risk_off_tickers if t not in tickers]
-risk_off_data = download_data(risk_off_tickers_uniq, ...) if risk_off_tickers else None
-```
-
-**Fix commit**: branch `fix/r-mc-cluster-symmetry`, "fix(r-portfolio): 
-risolve duplicate labels + Universe too small".
-
-### B-002 — `reduce_grid_via_stability` rifiuta portfolio con universo piccolo · RESOLVED
-
-**Sintomo**: `ValueError: Universe too small: N tickers available, need >= M 
-(max(n_top_anchors)=K + 3 margin)`.
-
-**Affliggeva**: `portfolio_alpha_sect` (9 ticker SPDR settoriali, servivano 11).
-
-**Fix**: graceful fallback in `reduce_grid_via_stability` di `r_functions` 
-per universi sotto soglia minima (fix applicato direttamente 
-dall'architetto).
-
-**Fix commit**: branch `fix/r-mc-cluster-symmetry`, stesso commit di B-001.
-
-### B-003 — `compare_selection_columns` fallisce con `'float' object is not iterable` · RESOLVED
-
-**Sintomo**: `TypeError: 'float' object is not iterable` in 
-`compare_selection_columns` (riga ~2910 di `r_functions`) durante il 
-confronto delle selezioni Risk ON/OFF vs Base.
-
-**Affliggeva**: `portfolio_germany_plan`.
-
-**Causa effettiva**: stessa di B-001 (ticker duplicati tra `tickers` e 
-`risk_off_tickers` propagavano NaN a livello di righe nei dataframe di 
-selezione).
-
-**Fix**: stesso fix di B-001 (deduplica risk_off_tickers).
-
-**Fix commit**: branch `fix/r-mc-cluster-symmetry`, stesso commit di B-001.
-
-### B-004 — Presunto bug CAGR warmup in MC functions · CLOSED (non era un bug)
-
-**Sintomo originale**: si era osservato uno swing del p-value B1 di Alpha World da
-p=0.980 FAIL (19/05) a p=0.001 PASS (22/05) in 3 giorni di calendario, attribuito
-a un presunto bug nel calcolo CAGR delle MC functions.
-
-**Diagnosi reale (ispezione 24/05)**: i due numeri NON si riferiscono allo stesso
-test. Tra il 19/05 e il 22/05 è stata aggiunta in §7 del notebook la chiamata MC
-sul path Cluster (`pf_rot_cluster` / `sel_tickers_cluster`), che prima non veniva
-validata. Confronto puntuale tra le tre relazioni:
-- 19/05 §5.a: tabella unica, B1 = 0.980, Actual 2.7% → path **Standard**
-- 22/05 §5.a.1 Standard: B1 = 0.983, Actual ~2.7% → **stesso test, stabile**
-- 22/05 §5.a.2 Cluster: B1 = 0.001, Actual 8.2% → **nuovo test, non esisteva**
-- 24/05 (rerun): B1 Std = 0.985, B1 Cl = 0.001 → conferma stabilità
-
-Lo "swing" era confronto tra due PTF/path diversi, non instabilità della MC.
-
-**Mismatch CAGR_MC vs CAGR_vbt** (~12.19% vs ~8.26% sull'esempio Alpha World): 
-esiste ed è documentato by design in `_mc_print_portfolio_note()`:
-"MC uses (V_end/V_start)^(252/n)-1 (academic convention). vbt uses an internal
-annualization that differs systematically. Compare MC-Actual vs MC distributions
-only; do NOT mix vbt and MC values."
-
-Il mismatch è simmetrico tra Actual e Sim (stessa formula applicata a entrambi)
-quindi NON inquina il p-value B1/B2. Resta solo una differenza di display tra
-header (`_mc_cagr_quick`) e tabella WFO/vbt, accettata by design.
-
-**Azione**: nessun fix necessario. Voce chiusa senza fix.
-
-### B-005 — Sezioni narrative 6.b/6.c di Relazione Tecnica · RESOLVED
-
-**Sintomo**: le sezioni 6.b/6.c citavano sempre i numeri del path Standard anche 
-quando il path raccomandato era Cluster, producendo testi incoerenti con le 
-tabelle e le figure circostanti.
-
-**Esempio Alpha World 22/05**: §6.c diceva "CAGR p50 = 8.8%–9.1%" che erano i 
-percentili del path Standard, mentre il path raccomandato (Cluster) aveva CAGR 
-p50 = 12.1%–12.2%.
-
-**Causa**: `_diagnose_mc` e `_build_verdict_text` ricevevano solo `mc_skill` e 
-`mc_ci` (path standard), non `mc_skill_cluster` / `mc_ci_cluster`.
-
-**Fix**: strategia **Opzione C** — narrativa focalizzata sul path raccomandato + 
-nota di contrasto sull'alternativo. Implementata:
-- nuovo helper `_recommended_path` (Cluster preferito se promosso)
-- `_diagnose_mc` esteso con `mc_skill_cluster`, `mc_ci_cluster`, 
-  `recommended_path`
-- `_build_verdict_text` esteso con `skill_profile_cluster`, caveat per-profile 
-  (Selection-driven, Timing-driven, Strong, No-skill)
-- nuovo `_build_verdict_text_compact` per box alternativo
-- riga "Skill Profile" tabella §7 sdoppiata Standard/Cluster
-- CI §6.c: posizione percentile reale dell'Actual (calcolato), non più frase 
-  hardcoded "ben sopra il p95"
-
-**Dipendenza**: ha richiesto fix B-006 (nomenclatura corretta) come prerequisito.
-
-**Fix commit**: branch `fix/mc-narrative-per-path` (sessione 24/05).
-
-### B-006 — Nomenclatura invertita in compute_skill_profile · RESOLVED
-
-**Sintomo**: `compute_skill_profile` mappava (B1 PASS, S3 FAIL) → 'Timing-driven' 
-e (B1 FAIL, S3 PASS) → 'Selection-driven'. Nomenclatura invertita: B1 misura 
-skill di selezione (rotation reshuffle), quindi (B1 PASS, S3 FAIL) dovrebbe 
-essere 'Selection-driven'. Inoltre la logica ignorava completamente B2 
-(rebalance timing).
-
-**Affliggeva**: tutti i PTF. Per Alpha World 24/05 path Cluster (B1=0.001 PASS, 
-B2=0.606 FAIL, S3=0.182 FAIL) il profilo riportato era 'No-skill' invece del 
-corretto 'Selection-driven'.
-
-**Fix**: nuova `compute_skill_profile` basata su mappa (B1, B2):
-
-| B1 PASS | B2 PASS | Profile           |
-|---------|---------|-------------------|
-|   ✓     |   ✓     | Strong            |
-|   ✓     |   ✗     | Selection-driven  |
-|   ✗     |   ✓     | Timing-driven     |
-|   ✗     |   ✗     | No-skill          |
-
-S3 NON è più asse principale (rimane in `ofc_report` come metadata).
-
-**Fix commit**: branch `fix/mc-narrative-per-path`, stesso branch di B-005 
-(B-005 dipendeva da B-006).
-
----
-
-## Discussioni evolutive aperte (chat parallela)
-
-Spostate dall'utente in chat dedicata il 23/05 perché concettuali, non operative:
-
-- **Lettura corretta di B1**: il WFO ottimizza configurazione multi-parametro 
-  (momentum + volatilità + filtri + pesi), non solo momentum puro. La critica 
-  "momentum arbitragiato via" applicata al framework era imprecisa.
-
-- **Framing onesto del framework per presentazione cliente**: il framework 
-  documenta quando un componente funziona e quando no via MC validation rigorosa. 
-  È valore, non difetto. La frase "framework rotazionale che non rotaziona" era 
-  imprecisa e va sostituita con "framework che riconosce la natura dell'universo 
-  e adatta la fonte del valore". Confermata su Alpha World 24/05: il path Cluster 
-  è Selection-driven (skill di selezione PASS), il Standard è No-skill — la 
-  differenza è il clustering, non un problema del motore.
-
-- **B2 FAIL sistematico**: tutti i 4 PTF hanno B2 (rebalance timing) FAIL. 
-  Conferma: il timing mensile non aggiunge valore rispetto a timing random nei 
-  bucket di volatilità. Da considerare ribilanciamento meno frequente 
-  (trimestrale? semestrale?) per ridurre turnover senza perdere performance. 
-  Da validare empiricamente.
-
----
-
-## Convenzioni di lavoro (lezioni dal recente passato)
-
-- **Branch separati per ogni scope**, niente scope creep
-- **Disciplina del fix**: se in un branch dedicato a "X" emerge la necessità di 
-  fare anche "Y", documentare Y nel TODO e aprire branch separato, non estendere 
-  lo scope. Eccezione: dipendenze hard (es. B-005 richiedeva B-006 come 
-  prerequisito → unificati nello stesso branch ma commit message esplicito).
-- **Notebook .ipynb in dev** (es. `R_Asset_v2.ipynb`) si dirtano per output 
-  celle: non committarli a meno di modifiche reali al codice. Per skipparli 
-  durante commit usare `git add` esplicito sui file (non `git add .`)
-- **Patches manuali OK per fix piccoli e ben definiti**: l'utente preferisce 
-  risparmiare crediti Code quando le modifiche sono chirurgiche e copiabili a 
-  mano. Solo per fix più complessi o multi-file delegare a Code.
-- **Decisioni di design importanti vanno esplicitate**: anche scelte tecniche 
-  dell'assistente vanno nominate per validazione utente. Esempio (sessione 
-  24/05): la scelta di tie-break "Cluster preferito quando entrambi promossi" 
-  in `_recommended_path` è stata esplicitata e validata.
-- **Verifica visuale dei report PDF dopo ogni fix**: i bug più insidiosi (es. 
-  PNG sovrascritti, profile invertito) si vedono solo confrontando la relazione 
-  generata con i numeri attesi. La checklist puntuale sezione-per-sezione vale 
-  più di test automatici.
-
----
-
-## File chiave per riprendere il lavoro
-
-- **`TSlab_PIANO_OPERATIVO.md`** (questo file) — piano operativo + storia bug
-- **`notebooks/libs/r_functions.ipynb`** — libreria principale R-portfolio
-- **`notebooks/libs/u_functions.ipynb`** — utility functions (modificata per ISIN)
-- **`notebooks/dev/R_Asset_v2.ipynb`** — notebook principale R-portfolio, contiene 
-  cella §7 (MC Std + Cluster con sub-directory plot)
-- **`notebooks/libs_py/`** — libreria refactored parziale (branch refactor)
-- **`notebooks/dev/snapshots/pre_mc_fix/`** — baseline pre-fix MC su 3 portfolio
-- **`notebooks/dev/ptf_cards/`** — PTF Card markdown output
-- **`notebooks/dev/reports/runtime_revamp/`** — report del refactor
-- **`cache/ticker_isin_overrides.csv`** — mapping manuale Ticker→ISIN
-- **`scripts/run_portfolios_v2.sh`** — workflow lancio portafogli (target `manager`)
-
----
-
-## Note finali
-
-Questa chat ha portato a termine il blocco di fix di reporting MC (3 fix 
-concatenati, B-005 + B-006 risolti, B-004 chiuso senza fix come diagnosi errata) 
-e ha consolidato la documentazione fondendo `TODO.md` in questo file.
-
-Per riprendere in nuova chat è sufficiente allegare questo file e dire da quale 
-punto vuoi ripartire — il punto naturale ora è il rilancio dei 3 PTF rimanenti, 
-oppure direttamente la discussione sulle sorgenti di skill alternative.
-
-
-### Sessione 08/06/2026 — pyproject.toml + venv (Task 1.2 ✓)
-
-- Root progetto: ~/investia-quant (già rinominato)
-- Python: 3.12.3
-- Venv: ~/.venvs/investia-quant/
-- pyproject.toml compilato con dipendenze runtime + [dev]
-- pip install -e ".[dev]" completato senza errori
-- requirements.lock generato
-- iq registrato nel PATH (ModuleNotFoundError atteso: Task 1.3 pending)
-
-Fix durante compilazione:
-- build-backend: setuptools.backends.legacy:build → setuptools.build_meta
-- pypfopt → PyPortfolioOpt (nome PyPI corretto)
-
-Prossimo: Task 1.3 — scheletro CLI iq (investia_quant/cli.py)
-
-
----
-
-## Sessione 08/06/2026 — Refactor libs_py + CLI iq
-
-**Branch**: `refactor/libs-py`
-**Root progetto**: `~/investia-quant` (rinominato da TSlab_project)
-
-### Completato
-
-**Task 1.2 ✓** — pyproject.toml + venv
-- Python 3.12.3, venv `~/.venvs/investia-quant/`
-- `pip install -e ".[dev]"` OK
-- Fix: build-backend e pypfopt → PyPortfolioOpt
-
-**Task 1.3 ✓** — CLI `iq` scheletro + implementazione completa
-- `iq run` R e K — validato su ciclo reale, mail inviata e ricevuta
-- `iq report` R — validato, figure complete, periodo corretto
-- `iq report` K — funzionante, periodo YTD by design (maggio-giugno perché load_trading_systems_batch scarica solo ultimo periodo runtime)
-- `iq analyze` — placeholder (Fase 2)
-
-**libs_py/ completo** — 11 librerie convertite da .ipynb a .py, tutte AST OK:
-u_functions, r_functions, k_functions, s_functions, t_functions, mc_functions,
-k_tickers, k_strategies, k_portfolios, r_portfolios, l_portfolios
-
-**Fix applicati durante sessione:**
-- `r_portfolios.py`: aggiunto `from k_tickers import *` per risolvere dipendenze
-- `k_functions.py`: aggiunto `from k_strategies import *` per _resolve_strategy via globals()
-- `k_functions.py`: aggiunto `analisys_start_date/end_date` a `run_ts_portfolio_performance` e `load_trading_systems_batch`
-- `u_functions.py`: aggiunto patch con funzioni grafiche mancanti (plot_cumulative_and_rolling_returns, plot_annual_performance, plot_year_returns_histogram, plot_ticker_frequencies, plot_total_return_per_ticker) e versione completa di `_generate_portfolio_performance_core_refactored`
-- `cli.py`: default start_date differenziato (R: 2015-01-01, K: YTD)
-
-### Pendente
-
-1. **`iq report` K — periodo YTD** — `load_trading_systems_batch` hardcoda `start_date = datetime(end_date.year - 2, 1, 1)`. Il periodo risultante è sempre ~1 mese. Da confrontare con comportamento notebook per capire se era già così o il notebook gestiva diversamente.
-
-2. **Task 3 — Release versionata** — struttura `releases/2026.x/` + symlink `current`
-
-3. **Cleanup JN runtime** — dopo validazione completa CLI:
-   - `notebooks/runtime/R_Run_Portfolio.ipynb` → dismissione
-   - `notebooks/runtime/K_Run_Portfolio.ipynb` → dismissione
-   - `notebooks/runtime/_bootstrap_runtime.ipynb` → dismissione
-   - `notebooks/runtime/libs/` → verificare, dismissione se duplicato
-   - Regola finale: in production gira solo `libs_py/` + `investia_quant/` + `scripts/`
-
-
-## Sessione 09/06/2026 — Fix iq report K + Release versionata + CLI potenziata
-
-**Branch**: `refactor/libs-py`
-
-### Completato
-
-**Fix `iq report K` periodo YTD** ✓
-Tre bug risolti che causavano periodo `2026-05-08 → 2026-06-08` invece di `2026-01-02 → 2026-06-08`:
-- `k_functions.py`: aggiunto `from u_functions import *` (load_ohlcv non trovata)
-- `k_functions.py`: ramo `holding` in `load_trading_systems_batch` non passava `start_date` a `get_clean_financial_data`
-- `cli.py`: `analisys_start_date=None` per K (YTD gestito da `crea_portafoglio_combinato` con comportamento legacy)
-
-**Task 3 — Release versionata** ✓
-- `scripts/make_release.sh`: crea `releases/YYYY.N/` con codice frozen, dati WFO, cache, config, secrets
-- `scripts/deploy.sh`: rsync + install.sh + symlink `current` sulla VPS (parametri obbligatori: VERSION, VPS_HOST, INSTALL_DIR)
-- `releases/2026.1/` deployata su `tslab.investia.cloud:/home/luca/investia-quant/releases/2026.1/`
-- Venv per release (`releases/2026.1/.venv/`) — isolamento completo, rollback garantito
-- `lib/` e `investia_quant/` registrati via `.pth` (no `pip install -e`, no git clone sulla VPS)
-- direnv installato sulla VPS
-
-**CLI `iq` potenziata** ✓
-- `--rotational/--trading/--all`: esegue portafogli per tipo da `portfolios.conf`
-- Alias `--portfolio` per `--ptf`, `--mail/--mailto` per `--recipient`
-- Shortcut `--mail me/managers/customers`
-- Validazione: obbligatorio `--ptf` oppure uno tra `--rotational/--trading/--all`
-- Stampa destinatari risolti anche con `--no-send/--dry-run`
-
-### Pendenti (tutti chiusi nella sessione 10/06)
-
-1. ~~Cleanup JN runtime~~ ✓
-2. ~~Task 1.4 smoke test~~ ✓ (chiuso senza fix — non bloccante)
-3. ~~Crontab VPS~~ ✓
-
-
-## Sessione 10/06/2026 — Chiusura refactor/libs-py + CLI production-ready
-
-**Branch**: `refactor/libs-py` → mergiato su `main`
-
-### Completato
-
-**Task 1.4 — smoke test k_run_portfolio()** — chiuso senza fix (non bloccante)
-
-**Cleanup notebooks/runtime/** ✓ — commit `26daa97`
-- Eliminata intera directory `notebooks/runtime/` (16 file, 65.410 righe)
-- In produzione gira solo `libs_py/` + `investia_quant/` + `scripts/`
-
-**Fix lxml** ✓
-- `lxml` aggiunto a `pyproject.toml` (mancava, causava crash su `portfolio_alpha_sp100`)
-- Installato manualmente nel venv `releases/2026.1/.venv/` sulla VPS
-
-**CLI `iq run` output minimale** ✓ — commit `49c3cb0`
-- Output default: una riga per portafoglio (`✓` o `ERRORE`) + riga finale `Completato N/M`
-- `--verbose / -v`: output completo (sel_tickers, summary_df, ecc.)
-- Gestione eccezioni per-portafoglio: un FAIL non blocca gli altri
-
-**CLI `iq` ulteriori miglioramenti** ✓ — commit `db2efd2`
-- `--mail` accetta valori multipli (`--mail managers --mail customers`)
-- Alias `--ptf-all` (tutti), `--ptf-all-r` (solo R), `--ptf-all-k` (solo K)
-- `_resolve_recipient` refactored per gestire tupla di shortcut + deduplicazione
-
-**scripts/crontab.txt** ✓ — aggiunto al repo
-```
-# K-portfolio: ogni giorno alle 08:00
-0 8 * * * ${RELEASE_DIR}/.venv/bin/iq run --trading --mail managers --mail customers >> ...
-
-# R-portfolio: primo del mese alle 08:00
-0 8 1 * * ${RELEASE_DIR}/.venv/bin/iq run --rotational --mail managers --mail customers >> ...
-```
-Crontab installato sulla VPS (sostituisce le vecchie entry `/opt/TSlab/`).
-
-**Fix FutureWarning pandas** ✓
-- `k_strategies.py`: tutte le chiamate `.pct_change()` → `.pct_change(fill_method=None)`
-- Inclusa riga 5323: `c.pct_change(1)` → `c.pct_change(1, fill_method=None)`
-- VPS aggiornata via rsync
-
-**Merge e chiusura branch** ✓
-- `refactor/libs-py` mergiato su `main`, branch eliminato
-- Push `origin/main`
-
----
-
-## Sessione 10/06/2026 (parte 2) — Fix libs_py + Bootstrap dev + Verifica JN attivi
-
-**Branch**: `main` (patch dirette)
-
-### Completato
-
-**Bootstrap dev migrato** ✓ — `notebooks/dev/_bootstrap_dev.ipynb`
-- Sostituito `%run ../libs/*.ipynb` con `import` da `libs_py/`
-- Aggiunto reload automatico (`importlib.reload`) — `%run _bootstrap_dev.ipynb` ricarica
-  i moduli modificati senza restart kernel
-- Import espliciti variabili `_TSLAB_*` da `u_functions` (escluse da `import *` per underscore)
-
-**Fix import mancanti in libs_py/** ✓
-- `r_functions.py`: aggiunto `import time`, `from joblib import Parallel, delayed`,
-  `from u_functions import (my_display, Emoji, BOLD, RESET, DIM, compare_selection_columns,
-  build_company_df_with_cache, download_data, extract_tickers_from_wikipedia,
-  generate_rotational_portfolio_performance, now, send_email_report, send_portfolio_performance)`
-- `u_functions.py`: aggiunta `my_display` (versione Jupyter-friendly con IPython.display),
-  aggiunta `print_summary` (wrapper su `create_portfolio_summary_refactored`)
-- `t_functions.py`: aggiunto `import numpy as np`, `from itertools import product`,
-  `from tqdm.auto import tqdm`, `from u_functions import (fetch_data_and_companies, my_display, RESET, BOLD)`
-- `mc_functions.py`: aggiunto `import numpy as np`, `import yfinance as yf`,
-  `from datetime import datetime`, `from typing import ...`, `import plotly.graph_objects as go`,
-  `from u_functions import (build_and_plot_portfolio_contributions, download_data, ...)`
-
-**Fix dipendenze venv dev** ✓
-- `lxml` installato nel venv dev
-- `kaleido` downgrade a 0.2.1 + `plotly` downgrade a 5.24.1 (kaleido 1.x richiede Chrome esterno,
-  incompatibile con ambiente headless; combinazione 0.2.1/5.24.1 consolidata e stabile)
-
-**Verifica tutti i JN attivi** ✓
-- `R_Asset_v2` ✓ — pipeline completa funzionante
-- `R_Strategies` ✓ — funzionante (valore operativo da rivalutare)
-- `WFO_Framwork` ✓ — funzionante (strategie agente via `%run` temporaneo)
-- `WFO_Strategy_Panel` ✓ — funzionante
-- `MyCurvo` ✓ — esecuzione completa senza errori
-
-**Archiviati in OLD/** ✓
-- `notebooks/dev/R_Asset.ipynb` → `notebooks/dev/OLD/`
-- `notebooks/dev/MotecarloClaude.ipynb` → `notebooks/dev/OLD/`
-
-### Prossimi lavori
-
-**Priorità alta:**
-
-1. **Rilancio 3 PTF rimanenti** (Italy Big Cap, Alpha Sect, Alpha Euro) — lavoro
-   interattivo su `r_portfolio_analyst.ipynb` (ex R_Asset_v2), baseline aggiornata
-   con narrativa corretta post-fix 24/05.
-
-2. **Rename notebooks dev** — allineamento naming JN a convenzione coerente.
-   Branch: `chore/rename-notebooks`
-
-   | File attuale | Nome nuovo |
-   |---|---|
-   | `R_Asset_v2.ipynb` | `r_portfolio_analyst.ipynb` |
-   | `WFO_Strategy_Panel.ipynb` | `k_strategy_panel.ipynb` |
-   | `WFO_Framwork.ipynb` | `k_strategy_inspector.ipynb` |
-   | `MyCurvo.ipynb` | `lazy_portfolio_analyst.ipynb` |
-   | `K-Strategy-Agent/strategies.ipynb` | `k_strategy_agent_output.ipynb` |
-   | `R_Strategies.ipynb` | **invariato** (vedi nota sotto) |
-   | `_bootstrap_dev.ipynb` | **invariato** |
-
-   **Nota R_Strategies**: JN esplorativo — rotazionale su strategie/metodi/pesi
-   invece che su singoli titoli. Ruolo operativo da chiarire prima di rinominare
-   o dismettere. Contiene `select_top_performing_stocks_NEW` con API vectorbt 1.0.0
-   da aggiornare (`from_returns` → `from_holding` + conversione returns→prezzi).
-
-3. **Implementazione `iq analyze`** — runner headless pipeline R-portfolio.
-   Branch: `feature/iq-analyze`
-   Vedi sezione dedicata più avanti per design e prompt Code.
-
-4. **Cleanup notebooks/libs/ e scripts/ obsoleti** — ora che tutti i JN attivi girano
-   con il nuovo bootstrap, `notebooks/libs/` può essere dismessa (o archiviata in OLD/).
-   Scripts obsoleti: `run_portfolios.sh`, `run_portfolios_v1.sh`, `run_portfolios_v2.sh`,
-   `portfolios.conf~`, `InstallRunTime.txt`.
-   Branch: `chore/cleanup-obsolete`
-
-**Priorità media:**
-
-5. **Migrazione strategie K-Agent in k_strategies.py** — le strategie generate dall'agente
-   sono in `K-Strategy-Agent/k_strategy_agent_output.ipynb` e vengono caricate via `%run`
-   nei JN dev. L'agente va modificato per appendere direttamente a `k_strategies.py`.
-   Branch: `feature/k-agent-output-to-py`
-
-6. **Unificazione k_strategy_inspector + k_strategy_panel** — i due JN hanno overlap
-   significativo. Analisi funzioni definite nei JN (non in libs), identificare differenze,
-   migrare in `k_functions.py`, unificare in un unico JN. Capire rapporto con agente K-strategy.
-   Branch: `feature/wfo-panel-unification`
-
-7. **Potenziamento Block B** — sorgenti di skill alternative al momentum (Risk-adjusted,
-   Idiosyncratic, Low-vol, Quality, Multi-factor). Da fare dopo baseline PTF aggiornata.
-
-**Priorità bassa:**
-
-8. **Agente relazioni tecniche** — batch su tutti i PTF: chiama `run_r_portfolio_analysis()`
-   (implementata in `feature/iq-analyze`) in loop. Da fare dopo validazione `iq analyze`.
-
-9. **MyCurvo / lazy_portfolio_analyst** — destinato a diventare modulo Lazy Portfolios
-   su `investia-platform` (Fase 4). Refactor dedicato quando la piattaforma sarà pronta.
-
-**Note tecniche emerse:**
-- `notebooks/libs/` contiene ~260 funzioni non portate in `libs_py/` — la maggior parte
-  sono private, deprecate (BAD/OLD) o versioni superate (_R1, _R2). Le funzioni pubbliche
-  mancanti effettivamente usate dai JN attivi sono state aggiunte puntualmente in questa sessione.
-- `lxml` aggiunto a `pyproject.toml` e installato nella release 2026.1
-- `kaleido` pinnato a 0.2.1 + `plotly` 5.24.1 per compatibilità `write_image`
-
-
----
-
-## Architettura `iq analyze` — definizione approvata (11/06/2026)
-
-`iq analyze` è il runner headless della pipeline R-portfolio, distinto da
-`r_portfolio_analyst.ipynb` per output e destinatari, ma identico nella logica core.
-
-### Distinzione rispetto a `r_portfolio_analyst.ipynb` (ex R_Asset_v2)
+`iq analyze` è il runner headless della pipeline R-portfolio. Stesso calcolo
+di `r_portfolio_analyst.ipynb`, output diverso e destinatari diversi.
 
 | Aspetto | `r_portfolio_analyst.ipynb` | `iq analyze` |
 |---|---|---|
-| Utente | Solo Luca (architetto) | Gestori bancari (via webapp) |
+| Utente | Solo Luca | Gestori bancari (via webapp) |
 | Grafici | Plotly interattivo | Matplotlib/seaborn statici (PNG) |
-| Output | PDF + PTF card markdown + stampe intermedie | PDF + PNG scaricabili |
-| Esecuzione | Interattiva (celle, debug, esplorazione) | Headless, nessuna interazione |
-| Input universo | Config fissa per PTF (nel JN) | Dinamico (`--ptf` o `--universe CSV`) |
+| Output | PDF + PTF card + stampe intermedie | PDF + PNG scaricabili |
+| Esecuzione | Interattiva | Headless |
+| Input universo | Config fissa nel JN | `--ptf` o `--universe CSV` |
 
-### Funzione core — `run_r_portfolio_analysis()`
+### Funzione core
 
-Nuova funzione in `r_functions.py`. `cli.py` la chiama e basta.
+`run_r_portfolio_analysis()` in `r_functions.py` (~riga 13878).
+`cli.py` la chiama e basta — nessuna logica di pipeline in `cli.py`.
 
 ```python
 def run_r_portfolio_analysis(
-    portfolio_cfg: dict,           # oggetto portafoglio da r_portfolios.py
-    output_dir: str | Path,        # directory output PDF + PNG
+    portfolio_cfg: dict,
+    output_dir: str | Path,
     year: int | None = None,       # default: anno corrente
     start_date: str = "2015-01-01",
-    end_date: str | None = None,   # None = oggi
+    end_date: str | None = None,
     profile: str = "satellite",    # "satellite" | "core"
     verbose: bool = False,
-) -> dict:                         # ritorna paths: {"pdf": ..., "plots_dir": ...}
+) -> dict:   # {"pdf", "plots_dir", "ofc_std", "ofc_cluster", "skill_profile_std", "skill_profile_cluster"}
 ```
 
-### Pipeline headless (sequenza estratta da r_portfolio_analyst.ipynb — 11/06/2026)
+### Pipeline headless
 
 ```
 1.  Setup           tickers, dirs, date, wfo_results_dir, griglia
 2.  Download        fetch_data_and_companies(), download_data(), build_benchmark()
 3.  Risk-off        download_data(risk_off_tickers_uniq)
 4.  Stability       reduce_grid_via_stability() → reduced_grid
-5.  WFO Std         run_wfo_pipeline(use_clustering=False)
-6.  WFO Cluster     run_wfo_pipeline(use_clustering=True)
-7.  Compare         compare_wfo_pipelines()
+5.  WFO Std         run_wfo_pipeline(use_clustering=False, plot=False)
+6.  WFO Cluster     run_wfo_pipeline(use_clustering=True, plot=False)
+7.  Compare         compare_wfo_pipelines(plot=False)
 8.  OFC Std         overfitting_check_rotational()
 9.  OFC Cluster     overfitting_check_rotational()
-10. MC              run_all_mc_methods_rotational() × 2 (std + cluster)
+10. MC              run_all_mc_methods_rotational() x2 (std + cluster)
 11. Decisione       compute_skill_profile(), print_final_decision()
 12. Output          generate_ptf_card_md(), generate_relazione_tecnica()
 ```
 
-Tutti i plot: `save_plots=True`, `show_method_plots=False` (headless).
-Sub-directory `output_dir/std/` e `output_dir/cluster/` per i PNG MC.
+### Fix headless applicati (11/06/2026)
 
-### Opzioni CLI approvate
+- `matplotlib.use('Agg')` all'inizio di `run_r_portfolio_analysis`
+- `compare_wfo_pipelines`: aggiunto parametro `plot`, `fig.show()` condizionato
+- `analyze_portfolio_metrics`: rimossa `display()` ridondante (riga 2974)
+- `pf_rot_std` / `pf_rot_cluster`: fallback a `_base` quando `risk_off_data=None`
+  (portafogli senza risk-off tickers, es. `portfolio_alpha_fact`)
+
+### Opzioni CLI
 
 ```
-iq analyze --ptf <nome>             # PTF da r_portfolios registry
-iq analyze --universe <file.csv>    # universo ad hoc (ticker list)
-           --output-dir <path>      # default: outputs/reports/<nome>/<data>/
-           --profile satellite|core # default: satellite
-           --year <YYYY>            # default: anno corrente
-           --start-date <YYYY-MM-DD># default: 2015-01-01
+iq analyze --ptf <nome>              # PTF da r_portfolios registry
+iq analyze --universe <file.csv>     # universo ad hoc
+           --output-dir <path>       # default: outputs/reports/<nome>/<data>/
+           --profile satellite|core  # default: satellite
+           --year <YYYY>             # default: anno corrente
+           --start-date <YYYY-MM-DD> # default: 2015-01-01
            --verbose
 ```
 
 `--ptf` e `--universe` sono mutuamente esclusivi.
-Con `--universe`: nome PTF derivato dal filename CSV (senza estensione).
-File CSV: colonna `ticker` (header obbligatorio), una riga per ticker.
-Configurazione PTF sintetica: no benchmark esterno, no risk-off, profile da `--profile`.
+CSV: colonna `ticker` obbligatoria; cfg sintetica: no benchmark, no risk-off.
 
-### Stato implementazione
+---
 
-- [ ] `run_r_portfolio_analysis()` in `r_functions.py`
-- [ ] command `analyze` in `cli.py` (sostituisce placeholder righe 425-441)
-- [ ] test manuale su `portfolio_alpha_fact` (universo piccolo, rapido)
+## Convenzioni operative
 
-### Rename notebooks dev — approvato 11/06/2026
+- **Patch chirurgiche**: modifiche mirate, zero scope creep. Se emerge Y mentre
+  si lavora su X → documenta Y nel piano e apri branch separato.
+- **Il rerun lo fa sempre l'architetto**: Code non esegue rerun, non legge PDF/PNG.
+- **Commit solo dopo validazione visiva del PDF rigenerato**.
+- **Branch separati per ogni scope**: `fix/`, `feature/`, `chore/` — mai su main diretto
+  (eccezione: patch doc e fix < 5 righe già validati).
+- **Notebook `.ipynb`**: non committare per soli output celle. `git add` esplicito.
+- **Effort esplicito nei prompt Code**: `EFFORT: minimal / standard / verbose`.
+- **Decisioni di design vanno esplicitate** e validate prima di procedere.
+- **STOP SE nei prompt Code**: condizioni esplicite in cui Code si ferma e segnala.
 
-Branch: `chore/rename-notebooks`
+### Template prompt Code
 
-| File attuale | Nome nuovo |
-|---|---|
-| `R_Asset_v2.ipynb` | `r_portfolio_analyst.ipynb` |
-| `WFO_Strategy_Panel.ipynb` | `k_strategy_panel.ipynb` |
-| `WFO_Framwork.ipynb` | `k_strategy_inspector.ipynb` |
-| `MyCurvo.ipynb` | `lazy_portfolio_analyst.ipynb` |
-| `K-Strategy-Agent/strategies.ipynb` | `k_strategy_agent_output.ipynb` |
-| `R_Strategies.ipynb` | **invariato** — rotazionale su strategie/metodi/pesi anziché titoli; ruolo da chiarire |
-| `_bootstrap_dev.ipynb` | **invariato** |
+```
+Branch: [nome-branch]
+EFFORT: minimal | standard | verbose
+
+MODALITÀ: solo modifiche codice. NON eseguire rerun. NON leggere
+output generati. La verifica la fa l'architetto.
+
+CONTESTO:
+File: [nome_file]
+Funzione: [nome_funzione] (~riga [N])
+
+PROBLEMA:
+[Descrizione precisa con esempio concreto]
+
+OBIETTIVO:
+[Comportamento atteso dopo il fix]
+
+PATCH:
+[Logica del fix o pseudocodice]
+
+VERIFICA:
+Stampa righe toccate con numero di riga.
+AST OK su [file].
+
+STOP SE:
+- [condizione 1]
+- [condizione 2]
+Non risolvere autonomamente. Segnala e attendi istruzioni.
+```
+
+---
+
+## Storia bug (issue tracker)
+
+Stato: OPEN / RESOLVED / CLOSED (chiuso senza fix).
+
+### B-001 — `duplicate labels` su universi ampi · RESOLVED
+
+`ValueError: cannot reindex on an axis with duplicate labels` in `run_rotational_engine`.
+Causa: ticker in `tickers` e `risk_off_tickers` duplicati a valle.
+Fix: `risk_off_tickers_uniq = [t for t in risk_off_tickers if t not in tickers]`.
+Commit: `fix/r-mc-cluster-symmetry`.
+
+### B-002 — `reduce_grid_via_stability` rifiuta universo piccolo · RESOLVED
+
+`ValueError: Universe too small` su `portfolio_alpha_sect` (9 ticker, servivano 11).
+Fix: graceful fallback in `reduce_grid_via_stability` per universi sotto soglia.
+Commit: `fix/r-mc-cluster-symmetry`.
+
+### B-003 — `compare_selection_columns` fallisce con `float not iterable` · RESOLVED
+
+`TypeError` in `compare_selection_columns` su `portfolio_germany_plan`.
+Causa: stessa di B-001. Fix: stesso fix di B-001.
+Commit: `fix/r-mc-cluster-symmetry`.
+
+### B-004 — Presunto swing p-value B1 MC · CLOSED (non era un bug)
+
+Lo swing apparente (p=0.980 → p=0.001 in 3 giorni) era confronto tra path Standard
+e path Cluster, non instabilità della MC. Il mismatch CAGR_MC vs CAGR_vbt è by design
+(convenzione accademica vs interna vbt) e non inquina il p-value. Nessun fix.
+
+### B-005 — Narrativa 6.b/6.c sempre sul path Standard · RESOLVED
+
+Le sezioni narrative citavano numeri del path Standard anche quando raccomandato era
+Cluster. Fix: strategia Opzione C — narrativa focalizzata sul path raccomandato +
+nota di contrasto. Estesi `_diagnose_mc`, `_build_verdict_text`, aggiunto
+`_build_verdict_text_compact`. CI §6.c: percentile reale calcolato, non hardcoded.
+Commit: `fix/mc-narrative-per-path` (sessione 24/05).
+
+### B-006 — Nomenclatura invertita in `compute_skill_profile` · RESOLVED
+
+Mappa (B1 PASS, S3 FAIL) → 'Timing-driven' invece di 'Selection-driven'. B2 ignorato.
+Fix: nuova mappa basata su (B1, B2): Strong / Selection-driven / Timing-driven / No-skill.
+Commit: `fix/mc-narrative-per-path` (prerequisito di B-005).
+
+---
+
+## Storia sessioni
+
+### Sessione 24/05/2026 — Fix MC reporting
+
+Branch `fix/mc-narrative-per-path` → main.
+Fix #1: sub-directory `std/` e `cluster/` per plot MC (evita sovrascrittura PNG).
+Fix #2: etichettatura figure (assorbito in #1).
+Fix #3: narrativa per-path + B-005 + B-006.
+Verifica su Alpha World Vanguard: tutte le sezioni corrette ✓
+
+### Sessione 08/06/2026 — pyproject.toml + CLI iq scheletro
+
+Branch `refactor/libs-py`.
+Task 1.2: pyproject.toml + venv `~/.venvs/investia-quant/`.
+Task 1.3: CLI `iq` scheletro — `iq run` R e K validati, mail inviata ✓.
+libs_py/: 11 librerie convertite da .ipynb a .py, AST OK.
+
+### Sessione 09/06/2026 — Fix iq report K + Release versionata
+
+Branch `refactor/libs-py`.
+Fix `iq report K` periodo YTD (3 bug: import mancante, start_date, analisys_start_date).
+Release `2026.1` deployata su VPS con venv isolato e symlink `current`.
+CLI potenziata: `--rotational/--trading/--all`, alias, shortcut mail.
+
+### Sessione 10/06/2026 — Chiusura refactor/libs-py + bootstrap dev
+
+Branch `refactor/libs-py` → mergiato su main.
+Eliminata `notebooks/runtime/` (16 file, 65.410 righe).
+Bootstrap dev: `%run libs/*.ipynb` → `import` da `libs_py/` con reload automatico.
+Fix import mancanti in r/u/t/mc_functions.py.
+Fix: lxml, kaleido 0.2.1 + plotly 5.24.1, pct_change FutureWarning.
+Verifica tutti i JN attivi ✓. Crontab VPS installato.
+
+### Sessione 11/06/2026 — Rename JN + iq analyze
+
+Branch `chore/rename-notebooks` + `feature/iq-analyze` → mergiati su main.
+
+Rename JN dev: R_Asset_v2 → r_portfolio_analyst, WFO_Framwork → k_strategy_inspector,
+WFO_Strategy_Panel → k_strategy_panel, MyCurvo → lazy_portfolio_analyst,
+K-Strategy-Agent/strategies → k_strategy_agent_output. ✓
+
+iq analyze implementato: `run_r_portfolio_analysis()` in `r_functions.py`,
+command `analyze` in `cli.py`. Fix headless (matplotlib Agg, display rimossa,
+plot condizionato, fallback pf_rot). Test su `portfolio_alpha_fact` ✓
+
+Definizione architettura `iq analyze` e distinzione comandi CLI approvate.
+Convenzione `EFFORT` nei prompt Code introdotta.
