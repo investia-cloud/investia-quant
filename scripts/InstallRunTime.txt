@@ -1,4 +1,0 @@
-Installazione TSlab su Aruba:
-
-rsync -av --delete -n   TSlab_project --exclude .ipynb_checkpoints --exclude Tslab_project/prompts --exclude outputs/* --exclude *.RECOVERY --exclude *WFO_*DEV*  tslab.investia.cloud: 
-

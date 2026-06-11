@@ -1,1 +1,0 @@
-run_portfolios_v1.sh
