@@ -176,55 +176,6 @@ testabile e CLI stabili.
 
 **Stato**: solo accennato, nessun lavoro iniziato.
 
----
-
-### Architettura `iq analyze` — definizione approvata (11/06/2026)
-
-`iq analyze` è il runner headless della pipeline R-portfolio, distinto da
-`R_Asset_v2.ipynb` per output e destinatari, ma identico nella logica core.
-
-#### Distinzione rispetto a R_Asset_v2
-
-| Aspetto | `R_Asset_v2` (JN interattivo) | `iq analyze` (CLI / webapp) |
-|---|---|---|
-| Utente | Solo Luca (architetto) | Gestori bancari (via webapp) |
-| Grafici | Plotly interattivo | Matplotlib/seaborn statici (PNG) |
-| Output | PDF relazione tecnica + PTF card markdown + stampe intermedie | PDF relazione tecnica + PNG scaricabili |
-| Esecuzione | Interattiva (celle, debug, esplorazione) | Headless, nessuna interazione |
-| Input universo | Config fissa per PTF (hardcoded nel JN) | Dinamico (parametro CLI o upload via webapp) |
-
-#### Logica core condivisa
-
-WFO + clustering Ward + OFC + MC è **identica** in entrambi i casi.
-Tutto il calcolo risiede in `libs_py/` (r_functions, mc_functions, ecc.).
-`iq analyze` è un thin wrapper che chiama gli stessi moduli con output diverso.
-
-#### Pipeline webapp (target investia-platform)
-
-```
-Gestore definisce universo (ticker list via form web)
-        ↓
-webapp invoca  iq analyze --ptf <nome>  (o equivalente API)
-        ↓
-WFO + clustering + OFC + MC  (calcolo pesante, headless)
-        ↓
-PDF relazione tecnica + PNG grafici statici
-        ↓
-scaricabili dal gestore via portale
-```
-
-#### Note architetturali
-
-- Calcolo WFO su universi grandi può durare 10-30 minuti: la webapp dovrà
-  gestire l'esecuzione in modo **asincrono** (job queue + notifica o polling).
-  Questo è il pezzo architetturalmente più delicato — da progettare prima
-  dell'implementazione webapp.
-- `R_Asset_v2` rimane lo strumento di sviluppo e validazione dell'architetto.
-  Non è mai esposto all'esterno.
-- I grafici statici PNG sono già prodotti da alcune funzioni in `libs_py/`
-  (matplotlib/seaborn); verificare copertura completa prima di implementare
-  il comando.
-
 ### 4. Cose minori in coda
 
 - `wget-log` — rimuovere fisicamente o aggiungere a `.gitignore`
@@ -658,9 +609,32 @@ Crontab installato sulla VPS (sostituisce le vecchie entry `/opt/TSlab/`).
 **Priorità alta:**
 
 1. **Rilancio 3 PTF rimanenti** (Italy Big Cap, Alpha Sect, Alpha Euro) — lavoro
-   interattivo su `R_Asset_v2`, baseline aggiornata con narrativa corretta post-fix 24/05
+   interattivo su `r_portfolio_analyst.ipynb` (ex R_Asset_v2), baseline aggiornata
+   con narrativa corretta post-fix 24/05.
 
-2. **Cleanup notebooks/libs/ e scripts/ obsoleti** — ora che tutti i JN attivi girano
+2. **Rename notebooks dev** — allineamento naming JN a convenzione coerente.
+   Branch: `chore/rename-notebooks`
+
+   | File attuale | Nome nuovo |
+   |---|---|
+   | `R_Asset_v2.ipynb` | `r_portfolio_analyst.ipynb` |
+   | `WFO_Strategy_Panel.ipynb` | `k_strategy_panel.ipynb` |
+   | `WFO_Framwork.ipynb` | `k_strategy_inspector.ipynb` |
+   | `MyCurvo.ipynb` | `lazy_portfolio_analyst.ipynb` |
+   | `K-Strategy-Agent/strategies.ipynb` | `k_strategy_agent_output.ipynb` |
+   | `R_Strategies.ipynb` | **invariato** (vedi nota sotto) |
+   | `_bootstrap_dev.ipynb` | **invariato** |
+
+   **Nota R_Strategies**: JN esplorativo — rotazionale su strategie/metodi/pesi
+   invece che su singoli titoli. Ruolo operativo da chiarire prima di rinominare
+   o dismettere. Contiene `select_top_performing_stocks_NEW` con API vectorbt 1.0.0
+   da aggiornare (`from_returns` → `from_holding` + conversione returns→prezzi).
+
+3. **Implementazione `iq analyze`** — runner headless pipeline R-portfolio.
+   Branch: `feature/iq-analyze`
+   Vedi sezione dedicata più avanti per design e prompt Code.
+
+4. **Cleanup notebooks/libs/ e scripts/ obsoleti** — ora che tutti i JN attivi girano
    con il nuovo bootstrap, `notebooks/libs/` può essere dismessa (o archiviata in OLD/).
    Scripts obsoleti: `run_portfolios.sh`, `run_portfolios_v1.sh`, `run_portfolios_v2.sh`,
    `portfolios.conf~`, `InstallRunTime.txt`.
@@ -668,30 +642,26 @@ Crontab installato sulla VPS (sostituisce le vecchie entry `/opt/TSlab/`).
 
 **Priorità media:**
 
-3. **Migrazione strategie K-Agent in k_strategies.py** — le strategie generate dall'agente
-   sono in `K-Strategy-Agent/strategies.ipynb` e vengono caricate via `%run` nei JN dev.
-   L'agente va modificato per appendere direttamente a `k_strategies.py`.
+5. **Migrazione strategie K-Agent in k_strategies.py** — le strategie generate dall'agente
+   sono in `K-Strategy-Agent/k_strategy_agent_output.ipynb` e vengono caricate via `%run`
+   nei JN dev. L'agente va modificato per appendere direttamente a `k_strategies.py`.
    Branch: `feature/k-agent-output-to-py`
 
-4. **Unificazione WFO_Framwork + WFO_Strategy_Panel** — i due JN hanno overlap
+6. **Unificazione k_strategy_inspector + k_strategy_panel** — i due JN hanno overlap
    significativo. Analisi funzioni definite nei JN (non in libs), identificare differenze,
    migrare in `k_functions.py`, unificare in un unico JN. Capire rapporto con agente K-strategy.
    Branch: `feature/wfo-panel-unification`
 
-5. **Potenziamento Block B** — sorgenti di skill alternative al momentum (Risk-adjusted,
+7. **Potenziamento Block B** — sorgenti di skill alternative al momentum (Risk-adjusted,
    Idiosyncratic, Low-vol, Quality, Multi-factor). Da fare dopo baseline PTF aggiornata.
 
 **Priorità bassa:**
 
-6. **Agente relazioni tecniche** — automazione generazione PDF per tutti i PTF.
-   Infrastruttura CLI + libs_py ora stabile, dipendenza soddisfatta.
+8. **Agente relazioni tecniche** — batch su tutti i PTF: chiama `run_r_portfolio_analysis()`
+   (implementata in `feature/iq-analyze`) in loop. Da fare dopo validazione `iq analyze`.
 
-7. **R_Strategies** — JN esplorativo, valore operativo da chiarire. Contiene
-   `select_top_performing_stocks_NEW` con API vectorbt 1.0.0 da aggiornare (`from_returns`
-   non più disponibile → sostituita con `from_holding` + conversione returns→prezzi).
-
-8. **MyCurvo** — destinato a diventare modulo Lazy Portfolios su `investia-platform` (Fase 4).
-   Refactor dedicato quando la piattaforma sarà pronta.
+9. **MyCurvo / lazy_portfolio_analyst** — destinato a diventare modulo Lazy Portfolios
+   su `investia-platform` (Fase 4). Refactor dedicato quando la piattaforma sarà pronta.
 
 **Note tecniche emerse:**
 - `notebooks/libs/` contiene ~260 funzioni non portate in `libs_py/` — la maggior parte
@@ -699,3 +669,94 @@ Crontab installato sulla VPS (sostituisce le vecchie entry `/opt/TSlab/`).
   mancanti effettivamente usate dai JN attivi sono state aggiunte puntualmente in questa sessione.
 - `lxml` aggiunto a `pyproject.toml` e installato nella release 2026.1
 - `kaleido` pinnato a 0.2.1 + `plotly` 5.24.1 per compatibilità `write_image`
+
+
+---
+
+## Architettura `iq analyze` — definizione approvata (11/06/2026)
+
+`iq analyze` è il runner headless della pipeline R-portfolio, distinto da
+`r_portfolio_analyst.ipynb` per output e destinatari, ma identico nella logica core.
+
+### Distinzione rispetto a `r_portfolio_analyst.ipynb` (ex R_Asset_v2)
+
+| Aspetto | `r_portfolio_analyst.ipynb` | `iq analyze` |
+|---|---|---|
+| Utente | Solo Luca (architetto) | Gestori bancari (via webapp) |
+| Grafici | Plotly interattivo | Matplotlib/seaborn statici (PNG) |
+| Output | PDF + PTF card markdown + stampe intermedie | PDF + PNG scaricabili |
+| Esecuzione | Interattiva (celle, debug, esplorazione) | Headless, nessuna interazione |
+| Input universo | Config fissa per PTF (nel JN) | Dinamico (`--ptf` o `--universe CSV`) |
+
+### Funzione core — `run_r_portfolio_analysis()`
+
+Nuova funzione in `r_functions.py`. `cli.py` la chiama e basta.
+
+```python
+def run_r_portfolio_analysis(
+    portfolio_cfg: dict,           # oggetto portafoglio da r_portfolios.py
+    output_dir: str | Path,        # directory output PDF + PNG
+    year: int | None = None,       # default: anno corrente
+    start_date: str = "2015-01-01",
+    end_date: str | None = None,   # None = oggi
+    profile: str = "satellite",    # "satellite" | "core"
+    verbose: bool = False,
+) -> dict:                         # ritorna paths: {"pdf": ..., "plots_dir": ...}
+```
+
+### Pipeline headless (sequenza estratta da r_portfolio_analyst.ipynb — 11/06/2026)
+
+```
+1.  Setup           tickers, dirs, date, wfo_results_dir, griglia
+2.  Download        fetch_data_and_companies(), download_data(), build_benchmark()
+3.  Risk-off        download_data(risk_off_tickers_uniq)
+4.  Stability       reduce_grid_via_stability() → reduced_grid
+5.  WFO Std         run_wfo_pipeline(use_clustering=False)
+6.  WFO Cluster     run_wfo_pipeline(use_clustering=True)
+7.  Compare         compare_wfo_pipelines()
+8.  OFC Std         overfitting_check_rotational()
+9.  OFC Cluster     overfitting_check_rotational()
+10. MC              run_all_mc_methods_rotational() × 2 (std + cluster)
+11. Decisione       compute_skill_profile(), print_final_decision()
+12. Output          generate_ptf_card_md(), generate_relazione_tecnica()
+```
+
+Tutti i plot: `save_plots=True`, `show_method_plots=False` (headless).
+Sub-directory `output_dir/std/` e `output_dir/cluster/` per i PNG MC.
+
+### Opzioni CLI approvate
+
+```
+iq analyze --ptf <nome>             # PTF da r_portfolios registry
+iq analyze --universe <file.csv>    # universo ad hoc (ticker list)
+           --output-dir <path>      # default: outputs/reports/<nome>/<data>/
+           --profile satellite|core # default: satellite
+           --year <YYYY>            # default: anno corrente
+           --start-date <YYYY-MM-DD># default: 2015-01-01
+           --verbose
+```
+
+`--ptf` e `--universe` sono mutuamente esclusivi.
+Con `--universe`: nome PTF derivato dal filename CSV (senza estensione).
+File CSV: colonna `ticker` (header obbligatorio), una riga per ticker.
+Configurazione PTF sintetica: no benchmark esterno, no risk-off, profile da `--profile`.
+
+### Stato implementazione
+
+- [ ] `run_r_portfolio_analysis()` in `r_functions.py`
+- [ ] command `analyze` in `cli.py` (sostituisce placeholder righe 425-441)
+- [ ] test manuale su `portfolio_alpha_fact` (universo piccolo, rapido)
+
+### Rename notebooks dev — approvato 11/06/2026
+
+Branch: `chore/rename-notebooks`
+
+| File attuale | Nome nuovo |
+|---|---|
+| `R_Asset_v2.ipynb` | `r_portfolio_analyst.ipynb` |
+| `WFO_Strategy_Panel.ipynb` | `k_strategy_panel.ipynb` |
+| `WFO_Framwork.ipynb` | `k_strategy_inspector.ipynb` |
+| `MyCurvo.ipynb` | `lazy_portfolio_analyst.ipynb` |
+| `K-Strategy-Agent/strategies.ipynb` | `k_strategy_agent_output.ipynb` |
+| `R_Strategies.ipynb` | **invariato** — rotazionale su strategie/metodi/pesi anziché titoli; ruolo da chiarire |
+| `_bootstrap_dev.ipynb` | **invariato** |
