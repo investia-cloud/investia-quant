@@ -423,22 +423,98 @@ def report(ptf, all_portfolios, rotational, trading, recipient, start_date, end_
 # ---------------------------------------------------------------------------
 
 @app.command()
-@click.option("--ptf", required=True, help="Nome portafoglio R")
+@click.option("--ptf", default=None,
+              help="Nome portafoglio R da registry (es. alpha_fact)")
+@click.option("--universe", default=None,
+              help="CSV con colonna 'ticker' — universo ad hoc")
+@click.option("--output-dir", default=None,
+              help="Directory output PDF + PNG (default: outputs/reports/<nome>/<data>/)")
+@click.option("--profile", default="satellite",
+              type=click.Choice(["satellite", "core"]),
+              help="Profilo OFC: satellite (default) o core")
+@click.option("--year", default=None, type=int,
+              help="Anno selezione WFO (default: anno corrente)")
+@click.option("--start-date", default="2015-01-01",
+              help="Inizio storico download (default: 2015-01-01)")
 @click.option("--verbose", is_flag=True, default=False)
-@click.option("--wfo-results-dir", default=None)
-def analyze(ptf, verbose, wfo_results_dir):
+def analyze(ptf, universe, output_dir, profile, year, start_date, verbose):
     """Lancia analisi R-portfolio (WFO + OFC + MC). Solo R-portfolio."""
+
+    # Validazione input
+    if ptf and universe:
+        raise click.ClickException("Usa --ptf oppure --universe, non entrambi.")
+    if not ptf and not universe:
+        raise click.ClickException("Specifica --ptf <nome> oppure --universe <file.csv>.")
+
     click.echo("[iq analyze] Caricamento librerie...")
     ns = _load_all_libs()
 
-    click.echo(f"[iq analyze] Risolvo portafoglio: {ptf}")
-    portfolio_obj, kind = _resolve_portfolio(ptf, ns)
+    run_r_portfolio_analysis = ns.get("run_r_portfolio_analysis")
+    if run_r_portfolio_analysis is None:
+        raise click.ClickException("run_r_portfolio_analysis non trovata in r_functions.")
 
-    if kind != "R":
-        raise click.ClickException(f"iq analyze supporta solo R-portfolio. '{ptf}' è un K-portfolio.")
+    # Risolvi portfolio_cfg
+    if ptf:
+        portfolio_obj, kind = _resolve_portfolio(ptf, ns)
+        if kind != "R":
+            raise click.ClickException(
+                f"iq analyze supporta solo R-portfolio. '{ptf}' è un K-portfolio."
+            )
+        ptf_name = ptf
+    else:
+        # --universe: carica CSV e costruisce cfg sintetico
+        import csv
+        from pathlib import Path as _Path
+        universe_path = _Path(universe)
+        if not universe_path.exists():
+            raise click.ClickException(f"File universe non trovato: {universe}")
+        with open(universe_path) as f:
+            reader = csv.DictReader(f)
+            if "ticker" not in (reader.fieldnames or []):
+                raise click.ClickException("Il CSV deve avere colonna 'ticker'.")
+            tickers_list = [row["ticker"].strip() for row in reader if row["ticker"].strip()]
+        if not tickers_list:
+            raise click.ClickException("Nessun ticker trovato nel CSV.")
+        ptf_name = universe_path.stem
+        portfolio_obj = {
+            "Title":              ptf_name,
+            "tickers":            tickers_list,
+            "benchmark_portfolio": None,
+            "benchmark_title":    None,
+            "risk_off_tickers":   [],
+        }
 
-    click.echo(f"[iq analyze] {portfolio_obj.get('Title', ptf)} — not implemented yet.")
-    click.echo("[iq analyze] Questo comando sarà implementato nella Fase 2 (CLI completa).")
+    # Risolvi output_dir
+    if output_dir is None:
+        import datetime
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        today = datetime.date.today().isoformat()
+        output_dir = os.path.join(root, "outputs", "reports", ptf_name, today)
+
+    click.echo(f"[iq analyze] Portafoglio: {portfolio_obj.get('Title', ptf_name)}")
+    click.echo(f"[iq analyze] Output dir:  {output_dir}")
+    click.echo(f"[iq analyze] Profile:     {profile}")
+    click.echo(f"[iq analyze] Avvio pipeline (WFO + OFC + MC)...")
+
+    try:
+        result = run_r_portfolio_analysis(
+            portfolio_cfg = portfolio_obj,
+            output_dir    = output_dir,
+            year          = year,
+            start_date    = start_date,
+            end_date      = None,
+            profile       = profile,
+            verbose       = verbose,
+        )
+        click.echo(f"[iq analyze] Completato.")
+        click.echo(f"  PDF:           {result['pdf']}")
+        click.echo(f"  Plots dir:     {result['plots_dir']}")
+        click.echo(f"  OFC Standard:  {'PROMOTED' if result['ofc_std'] else 'REJECTED'}")
+        click.echo(f"  OFC Cluster:   {'PROMOTED' if result['ofc_cluster'] else 'REJECTED'}")
+        click.echo(f"  Skill Std:     {result['skill_profile_std']}")
+        click.echo(f"  Skill Cluster: {result['skill_profile_cluster']}")
+    except Exception as exc:
+        raise click.ClickException(f"Pipeline fallita: {exc}")
 
 
 # ---------------------------------------------------------------------------

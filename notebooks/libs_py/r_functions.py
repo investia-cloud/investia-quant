@@ -2971,7 +2971,6 @@ def analyze_portfolio_metrics(
                 cmap="RdYlGn_r" if reverse else "RdYlGn",
                 low=0, high=0, axis=0
             )
-        display(styled.format("{:.2f}"))
 
     # -----------------------------------------------------------------
     # Radar chart opzionale
@@ -8245,6 +8244,7 @@ def compare_wfo_pipelines(
     portfolio_title : str  = "Portfolio",
     benchmark_title : str  = "Benchmark",
     plot_radar      : bool = True,
+    plot            : bool = True,
     start_date      : str  = None,
     end_date        : str  = None,
     save_plots      : bool = False,
@@ -8436,7 +8436,8 @@ def compare_wfo_pipelines(
                                    height=400, width=900, template='plotly_white',
                                    hovermode='x unified')
             _fig_cl.write_image(str(_pd / 'equity_cluster.png'))
-    fig.show()
+    if plot:
+        fig.show()
 
     # ------------------------------------------------------------------
     # 2. Tabella metriche + Radar (via analyze_portfolio_metrics)
@@ -13875,4 +13876,392 @@ def generate_relazione_tecnica(
     return output_path
 
 
+def run_r_portfolio_analysis(
+    portfolio_cfg: dict,
+    output_dir,
+    year: int | None = None,
+    start_date: str = "2015-01-01",
+    end_date=None,
+    profile: str = "satellite",
+    verbose: bool = False,
+) -> dict:
+    """
+    Esegue la pipeline completa R-portfolio in modalità headless.
+    Usata da `iq analyze` e dall'agente batch relazioni tecniche.
+
+    Args:
+        portfolio_cfg:  dict portafoglio da r_portfolios.py
+        output_dir:     Path directory output (PDF + PNG sub-dirs)
+        year:           anno di selezione WFO (default: anno corrente)
+        start_date:     inizio storico download (default: 2015-01-01)
+        end_date:       fine storico (default: None = oggi)
+        profile:        "satellite" | "core" — soglie OFC
+        verbose:        stampe intermedie
+
+    Returns:
+        dict con chiavi:
+            "pdf":       Path PDF relazione tecnica generato
+            "plots_dir": Path directory PNG
+            "ofc_std":   bool — OFC Standard promosso
+            "ofc_cluster": bool | None — OFC Cluster promosso
+            "skill_profile_std":     str
+            "skill_profile_cluster": str | None
+    """
+    import matplotlib
+    matplotlib.use('Agg')
+    from pathlib import Path
+    from datetime import date, timedelta
+    import os
+
+    # 1. SETUP
+    if year is None:
+        year = date.today().year
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    plots_dir = output_dir / "plots"
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    plots_dir_std     = plots_dir / "std"
+    plots_dir_cluster = plots_dir / "cluster"
+    plots_dir_std.mkdir(parents=True, exist_ok=True)
+    plots_dir_cluster.mkdir(parents=True, exist_ok=True)
+
+    portfolio_title     = portfolio_cfg["Title"]
+    tickers             = portfolio_cfg["tickers"]
+    benchmark_portfolio = portfolio_cfg.get("benchmark_portfolio")
+    benchmark_title     = portfolio_cfg.get("benchmark_title")
+    risk_off_tickers    = portfolio_cfg.get("risk_off_tickers", [])
+    init_cash           = portfolio_cfg.get("init_cash", 100_000)
+
+    tickers = (
+        extract_tickers_from_wikipedia(tickers, exclude=["GOOG"], rename={"BRK.B": "BRK-B"})
+        if isinstance(tickers, str)
+        else list(tickers)
+    )
+
+    wfo_results_dir = os.environ.get(
+        "IQ_OUTPUTS_DIR",
+        str(Path(__file__).parent.parent / "outputs")
+    )
+    wfo_file_save = f"{wfo_results_dir}/WFO_R_DEV_RESULTS/{portfolio_title}_{year}.wfo_summary.csv"
+
+    # 2. DOWNLOAD
+    lookback_buffer = 365
+    download_start = (
+        pd.to_datetime(start_date) - timedelta(days=lookback_buffer)
+    ).strftime("%Y-%m-%d")
+
+    stocks_data, company_data = fetch_data_and_companies(
+        tickers, download_start, end_date, normalize=False
+    )
+    stocks_data_raw = download_data(tickers, download_start, end_date, auto_adjust=False)
+    portfolio_cfg["stocks_data"] = stocks_data
+    portfolio_cfg["init_cash"]   = init_cash
+
+    if benchmark_portfolio:
+        benchmark_data     = build_benchmark(benchmark_portfolio,
+                                 stocks_data.index.min(), stocks_data.index.max()).replace(0, np.nan).ffill()
+        benchmark_data_raw = build_benchmark(benchmark_portfolio,
+                                 stocks_data.index.min(), stocks_data.index.max(),
+                                 auto_adjust=False).replace(0, np.nan).ffill()
+    elif benchmark_title:
+        benchmark_data     = download_data(benchmark_title, stocks_data.index.min(), end_date)
+        benchmark_data_raw = download_data(benchmark_title, stocks_data.index.min(), end_date, auto_adjust=False)
+    else:
+        benchmark_data = benchmark_data_raw = None
+
+    # 3. RISK-OFF
+    risk_off_tickers_uniq = [t for t in risk_off_tickers if t not in tickers]
+    risk_off_data = download_data(risk_off_tickers_uniq, download_start, end_date) if risk_off_tickers_uniq else None
+    if isinstance(risk_off_data, pd.Series):
+        risk_off_data = risk_off_data.to_frame()
+
+    # 4. GRIGLIA + STABILITY
+    full_grid = {
+        "rebalance_frequency":     ["QE", "ME"],
+        "momentum_lookback_days":  [10, 20, 40, 60],
+        "riskparity_lookback_days":[10, 20, 40, 60],
+        "n_top":                   [1, 5, 8, 10],
+        "use_acceleration":        [True, False],
+        "momentum_weight":         [0.5, 0.7, 1.0],
+        "filter_ema":              [True, False],
+        "filter_volatility":       [True, False],
+        "filter_min_momentum":     [True, False],
+    }
+    import itertools
+    n_full_trials = len(list(itertools.product(*full_grid.values())))
+
+    ratio   = "3:1"
+    metric  = "Sharpe Ratio"
+    cores   = -1
+    force_next_year_params = True
+
+    if len(tickers) > 3:
+        start_date_stability = stocks_data.dropna(how="all").index.min()
+        reduced_grid, stability_report = reduce_grid_via_stability(
+            ptf_config      = portfolio_cfg,
+            full_grid       = full_grid,
+            full_start_date = start_date_stability,
+            full_end_date   = end_date,
+            metric          = "CAGR",
+            k               = 3,
+            verbose         = verbose,
+        )
+        n_reduced_trials = len(list(itertools.product(*reduced_grid.values())))
+        stability_report_path = output_dir / f"{portfolio_title}_{year}_stability.csv"
+        stability_report.to_csv(stability_report_path, index=False)
+    else:
+        reduced_grid     = full_grid
+        stability_report = None
+        n_reduced_trials = n_full_trials
+
+    # Calcola pipeline_start_date
+    ratio_int = int(str(ratio).split(":")[0])
+    if benchmark_data is not None:
+        benchmark_start  = benchmark_data.dropna(how="all").index.min()
+    else:
+        benchmark_start  = stocks_data.dropna(how="all").index.min()
+    first_full_year     = pd.Timestamp(f"{benchmark_start.year + 1}-01-01")
+    pipeline_start_date = first_full_year - pd.DateOffset(years=ratio_int)
+
+    # 5. WFO STANDARD
+    results_std = run_wfo_pipeline(
+        stocks_data_raw        = stocks_data_raw,
+        stocks_data            = stocks_data,
+        benchmark_data         = benchmark_data,
+        benchmark_data_raw     = benchmark_data_raw,
+        tickers                = tickers,
+        risk_off_data          = risk_off_data,
+        ratio                  = ratio,
+        metric                 = metric,
+        start_date             = pipeline_start_date,
+        end_date               = end_date,
+        cores                  = cores,
+        verbose                = verbose,
+        force_next_year_params = force_next_year_params,
+        use_clustering         = False,
+        param_grid             = reduced_grid,
+        portfolio_title        = portfolio_title,
+        benchmark_title        = benchmark_title,
+        init_cash              = init_cash,
+        risk_on_off            = True,
+        plot                   = False,
+    )
+    pf_rot_std       = results_std["pf_rot"]
+    pf_rot_std_base  = results_std["pf_rot_base"]
+    if pf_rot_std is None:
+        pf_rot_std = pf_rot_std_base
+    regime           = results_std["regime"]
+    summary_df_std   = results_std["summary_df"]
+    sel_tickers_std      = results_std["sel_tickers"]
+    sel_tickers_std_base = results_std["sel_tickers_base"]
+
+    save_rotational_wfo_summary(
+        summary_df             = summary_df_std,
+        start_date             = start_date,
+        end_date               = end_date,
+        file_path              = wfo_file_save,
+        param_grid             = reduced_grid,
+        metric                 = metric,
+        ratio                  = ratio,
+        force_next_year_params = force_next_year_params,
+        extra_meta             = None,
+    )
+
+    # 6. WFO CLUSTER
+    results_cluster = run_wfo_pipeline(
+        stocks_data_raw    = stocks_data_raw,
+        stocks_data        = stocks_data,
+        benchmark_data     = benchmark_data,
+        benchmark_data_raw = benchmark_data_raw,
+        tickers            = tickers,
+        risk_off_data      = risk_off_data,
+        ratio              = ratio,
+        metric             = metric,
+        start_date         = pipeline_start_date,
+        end_date           = end_date,
+        cores              = cores,
+        verbose            = verbose,
+        force_next_year_params = force_next_year_params,
+        use_clustering     = True,
+        adaptive_k         = True,
+        adaptive_k_method  = "hybrid",
+        n_clusters         = 5,
+        lookback_days      = 504,
+        n_top_min          = 2,
+        param_grid         = full_grid,
+        portfolio_title    = portfolio_title,
+        benchmark_title    = benchmark_title,
+        init_cash          = init_cash,
+        risk_on_off        = True,
+        plot               = False,
+        save_plots         = True,
+        plots_dir          = plots_dir,
+    )
+    pf_rot_cluster       = results_cluster["pf_rot"]
+    pf_rot_cluster_base  = results_cluster["pf_rot_base"]
+    if pf_rot_cluster is None:
+        pf_rot_cluster = pf_rot_cluster_base
+    regime_cluster       = results_cluster["regime"]
+    summary_df_cluster   = results_cluster["summary_df"]
+    sel_tickers_cluster      = results_cluster["sel_tickers"]
+    sel_tickers_cluster_base = results_cluster["sel_tickers_base"]
+
+    # 7. COMPARE
+    metrics_df = compare_wfo_pipelines(
+        results_std     = results_std,
+        results_cluster = results_cluster,
+        portfolio_title = portfolio_title,
+        benchmark_title = benchmark_title,
+        plot_radar      = False,
+        plot            = False,
+        save_plots      = True,
+        plots_dir       = plots_dir,
+    )
+
+    # 8. OFC STANDARD
+    import json
+    ofc_passed_std, ofc_report_std = overfitting_check_rotational(
+        wfo_summary      = summary_df_std,
+        stocks_data      = stocks_data,
+        benchmark_data   = benchmark_data,
+        param_grid       = reduced_grid,
+        profile          = profile,
+        n_total_trials   = n_full_trials,
+        stability_report = stability_report,
+        seed             = 42,
+        verbose          = verbose,
+    )
+    ofc_report_std_path = output_dir / f"{portfolio_title}_{year}_ofc_std.json"
+    with open(ofc_report_std_path, "w") as f:
+        json.dump(ofc_report_std, f, default=str, indent=2)
+
+    # 9. OFC CLUSTER
+    ofc_passed_cluster, ofc_report_cluster = overfitting_check_rotational(
+        wfo_summary      = summary_df_cluster,
+        stocks_data      = stocks_data,
+        benchmark_data   = benchmark_data,
+        param_grid       = full_grid,
+        profile          = profile,
+        n_total_trials   = n_full_trials,
+        seed             = 42,
+        verbose          = verbose,
+    )
+    ofc_report_cluster_path = output_dir / f"{portfolio_title}_{year}_ofc_cluster.json"
+    with open(ofc_report_cluster_path, "w") as f:
+        json.dump(ofc_report_cluster, f, default=str, indent=2)
+
+    # 10. MONTE CARLO
+    mc_kwargs = dict(
+        stocks_data      = stocks_data,
+        benchmark_data   = benchmark_data,
+        tickers_master   = tickers,
+        init_cash        = init_cash,
+        n_simulations    = 1000,
+        seed             = 42,
+        block_size       = 10,
+        vol_window       = 60,
+        n_vol_quantiles  = 3,
+        show_method_plots    = False,
+        show_method_summaries= False,
+        save_plots           = True,
+    )
+    ci_results, ci_summary_df, skill_results, skill_summary_df = run_all_mc_methods_rotational(
+        pf_rot           = pf_rot_std,
+        pf_rot_base      = pf_rot_std_base,
+        regime           = regime,
+        sel_tickers      = sel_tickers_std,
+        sel_tickers_base = sel_tickers_std_base,
+        plots_dir        = plots_dir_std,
+        **mc_kwargs,
+    )
+    ci_results_cluster, ci_summary_df_cluster, skill_results_cluster, skill_summary_df_cluster = run_all_mc_methods_rotational(
+        pf_rot           = pf_rot_cluster,
+        pf_rot_base      = pf_rot_cluster_base,
+        regime           = regime_cluster,
+        sel_tickers      = sel_tickers_cluster,
+        sel_tickers_base = sel_tickers_cluster_base,
+        plots_dir        = plots_dir_cluster,
+        **mc_kwargs,
+    )
+
+    # 11. DECISIONE
+    skill_profile_std, skill_profile_cluster = compute_skill_profile(
+        mc_skill         = skill_results,
+        mc_skill_cluster = skill_results_cluster,
+    )
+
+    # 12. OUTPUT
+    _today_iso = date.today().isoformat()
+    _wfo_config = {
+        "ratio":            ratio,
+        "metric":           metric,
+        "n_full_trials":    n_full_trials,
+        "n_reduced_trials": n_reduced_trials,
+        "wfo_file_save":    wfo_file_save,
+        "use_clustering":   True,
+        "n_bootstrap_ofc":  1000,
+        "n_bootstrap_mc":   1000,
+    }
+    _cluster_result = results_cluster.get("cluster_result") if results_cluster else None
+    _metrics_comparison = {
+        "cluster_riskoff": results_cluster.get("pf_rot"),
+        "cluster_base":    results_cluster.get("pf_rot_base"),
+        "std_riskoff":     results_std.get("pf_rot"),
+        "std_base":        results_std.get("pf_rot_base"),
+        "benchmark":       results_std.get("pf_benchmark") or results_std.get("pf_benchmark_base"),
+    }
+
+    _card_path = output_dir / f"{portfolio_title.replace(' ', '_').lower()}_{year}.md"
+    _pdf_path  = output_dir / f"{portfolio_title}_{year}_Relazione_Tecnica.pdf"
+
+    generate_ptf_card_md(
+        portfolio_title    = portfolio_title,
+        year               = year,
+        profile            = profile,
+        benchmark          = benchmark_title,
+        period             = (str(pipeline_start_date), _today_iso),
+        universe_size      = len(tickers),
+        wfo_config         = _wfo_config,
+        cluster_result     = _cluster_result,
+        metrics_comparison = _metrics_comparison,
+        ofc_report_std     = ofc_report_std,
+        ofc_report_cluster = ofc_report_cluster,
+        mc_skill           = skill_results,
+        mc_ci              = ci_summary_df,
+        mc_skill_cluster   = skill_results_cluster,
+        mc_ci_cluster      = ci_summary_df_cluster,
+        skill_profile      = skill_profile_std,
+        output_path        = str(_card_path),
+    )
+
+    generate_relazione_tecnica(
+        portfolio_title       = portfolio_title,
+        year                  = year,
+        profile               = profile,
+        benchmark             = benchmark_title,
+        period                = (str(pipeline_start_date), _today_iso),
+        universe_size         = len(tickers),
+        wfo_config            = _wfo_config,
+        cluster_result        = _cluster_result,
+        metrics_comparison    = _metrics_comparison,
+        ofc_report_std        = ofc_report_std,
+        ofc_report_cluster    = ofc_report_cluster,
+        mc_skill              = skill_results,
+        mc_ci                 = ci_summary_df,
+        skill_profile         = skill_profile_std,
+        skill_profile_cluster = skill_profile_cluster,
+        plots_dir             = str(plots_dir),
+        output_path           = str(_pdf_path),
+        mc_skill_cluster      = skill_results_cluster,
+        mc_ci_cluster         = ci_summary_df_cluster,
+    )
+
+    return {
+        "pdf":                   _pdf_path,
+        "plots_dir":             plots_dir,
+        "ofc_std":               ofc_passed_std,
+        "ofc_cluster":           ofc_passed_cluster,
+        "skill_profile_std":     skill_profile_std,
+        "skill_profile_cluster": skill_profile_cluster,
+    }
 
