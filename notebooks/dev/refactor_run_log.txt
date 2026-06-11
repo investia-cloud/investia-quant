@@ -1,2 +1,0 @@
-[NbConvertApp] Converting notebook notebooks/dev/R_Asset_v2.ipynb to notebook
-[NbConvertApp] Writing 39600218 bytes to notebooks/dev/R_Asset_v2.ipynb
