@@ -176,6 +176,55 @@ testabile e CLI stabili.
 
 **Stato**: solo accennato, nessun lavoro iniziato.
 
+---
+
+### Architettura `iq analyze` — definizione approvata (11/06/2026)
+
+`iq analyze` è il runner headless della pipeline R-portfolio, distinto da
+`R_Asset_v2.ipynb` per output e destinatari, ma identico nella logica core.
+
+#### Distinzione rispetto a R_Asset_v2
+
+| Aspetto | `R_Asset_v2` (JN interattivo) | `iq analyze` (CLI / webapp) |
+|---|---|---|
+| Utente | Solo Luca (architetto) | Gestori bancari (via webapp) |
+| Grafici | Plotly interattivo | Matplotlib/seaborn statici (PNG) |
+| Output | PDF relazione tecnica + PTF card markdown + stampe intermedie | PDF relazione tecnica + PNG scaricabili |
+| Esecuzione | Interattiva (celle, debug, esplorazione) | Headless, nessuna interazione |
+| Input universo | Config fissa per PTF (hardcoded nel JN) | Dinamico (parametro CLI o upload via webapp) |
+
+#### Logica core condivisa
+
+WFO + clustering Ward + OFC + MC è **identica** in entrambi i casi.
+Tutto il calcolo risiede in `libs_py/` (r_functions, mc_functions, ecc.).
+`iq analyze` è un thin wrapper che chiama gli stessi moduli con output diverso.
+
+#### Pipeline webapp (target investia-platform)
+
+```
+Gestore definisce universo (ticker list via form web)
+        ↓
+webapp invoca  iq analyze --ptf <nome>  (o equivalente API)
+        ↓
+WFO + clustering + OFC + MC  (calcolo pesante, headless)
+        ↓
+PDF relazione tecnica + PNG grafici statici
+        ↓
+scaricabili dal gestore via portale
+```
+
+#### Note architetturali
+
+- Calcolo WFO su universi grandi può durare 10-30 minuti: la webapp dovrà
+  gestire l'esecuzione in modo **asincrono** (job queue + notifica o polling).
+  Questo è il pezzo architetturalmente più delicato — da progettare prima
+  dell'implementazione webapp.
+- `R_Asset_v2` rimane lo strumento di sviluppo e validazione dell'architetto.
+  Non è mai esposto all'esterno.
+- I grafici statici PNG sono già prodotti da alcune funzioni in `libs_py/`
+  (matplotlib/seaborn); verificare copertura completa prima di implementare
+  il comando.
+
 ### 4. Cose minori in coda
 
 - `wget-log` — rimuovere fisicamente o aggiungere a `.gitignore`
