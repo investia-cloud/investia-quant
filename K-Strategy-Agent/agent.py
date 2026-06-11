@@ -38,7 +38,9 @@ from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 MEDIUM_FEED_URL  = "https://medium.com/me/following-feed/writers/74a837c27e96"
 COOKIE_FILE      = Path(__file__).parent / "cookies.json"
 STATE_FILE       = Path(__file__).parent / "processed_ids.json"
-NOTEBOOK_FILE    = Path(__file__).parent / "strategies.ipynb"
+STRATEGIES_PY_FILE = (
+    Path(__file__).parent.parent / "notebooks" / "libs_py" / "k_strategies_agent.py"
+)
 PDF_FOLDER       = Path(__file__).parent / "pdf_articles"
 # Cartella con file .py da convertire in K-Strategy
 # Nomina i file come il titolo dell'articolo o con l'ID nell'URL
@@ -934,6 +936,27 @@ def load_or_create_notebook(path: Path) -> nbformat.NotebookNode:
     return nb
 
 
+def append_strategy_to_py(
+    code: str,
+    title: str,
+    url: str,
+    generated_at: str,
+    path: Path,
+) -> None:
+    """Appende una K-strategy a k_strategies_agent.py."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    header = (
+        f"\n\n# ─────────────────────────────────────\n"
+        f"# Fonte: {title}\n"
+        f"# URL:   {url}\n"
+        f"# Data:  {generated_at}\n"
+        f"# ─────────────────────────────────────\n\n"
+    )
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(header + code + "\n")
+    log.info(f"Strategia appesa a: {path}")
+
+
 def append_strategy_to_notebook(nb, code, title, url, generated_at):
     nb.cells.append(nbformat.v4.new_markdown_cell(
         f"## {title}\n- **Fonte**: [{url}]({url})\n- **Generata**: {generated_at}"
@@ -975,8 +998,6 @@ def run_agent() -> None:
     if not new_articles:
         log.info("Nessun articolo nuovo. Fine run.")
         return
-
-    nb = load_or_create_notebook(NOTEBOOK_FILE)
 
     for article in new_articles:
         log.info(f"→ {article['title'][:60]}")
@@ -1072,14 +1093,14 @@ def run_agent() -> None:
         strat_label  = f"strategy_{strat_name_m.group(1)}" if strat_name_m else "?"
         status_label = "⚠️  SALVATA CON ERRORI" if not ok else "✅ OK"
         log.info(f"  {status_label}  →  {strat_label}")
-        nb = append_strategy_to_notebook(
-            nb, code, article["title"], article["url"],
+        append_strategy_to_py(
+            code, article["title"], article["url"],
             datetime.now().strftime("%Y-%m-%d %H:%M"),
+            STRATEGIES_PY_FILE,
         )
         processed_ids.add(article["id"])
         time.sleep(2)
 
-    save_notebook(nb, NOTEBOOK_FILE)
     save_state(STATE_FILE, processed_ids)
     log.info("═══ Run completata ═══")
 
