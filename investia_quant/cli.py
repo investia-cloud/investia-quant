@@ -647,6 +647,42 @@ def k_analyze(strategies, tickers, ptf, output_dir, start_date, end_date,
 
 
 # ---------------------------------------------------------------------------
+# iq k-agent
+# ---------------------------------------------------------------------------
+
+@app.command("k-agent")
+@click.option("--max", "max_per_run", default=5, show_default=True,
+    help="Numero massimo di articoli da processare per run")
+@click.option("--llm", "llm_provider", default="ollama",
+    type=click.Choice(["ollama", "anthropic"]),
+    show_default=True, help="Provider LLM")
+@click.option("--model", default=None,
+    help="Modello LLM (default: qwen2.5-coder:7b per ollama, claude-sonnet-4-20250514 per anthropic)")
+@click.option("--verbose", "-v", is_flag=True, default=False)
+def k_agent(max_per_run, llm_provider, model, verbose):
+    """Genera nuove K-strategy leggendo articoli da feed RSS."""
+    import sys as _sys
+    agent_dir = str(Path(__file__).parent.parent / "K-Strategy-Agent")
+    if agent_dir not in _sys.path:
+        _sys.path.insert(0, agent_dir)
+    import agent as _agent
+
+    _agent.MAX_PER_RUN = max_per_run
+    _agent.LLM_PROVIDER = llm_provider
+    if model:
+        if llm_provider == "ollama":
+            _agent.OLLAMA_MODEL = model
+        else:
+            _agent.ANTHROPIC_MODEL = model
+    if verbose:
+        print(f"Provider : {llm_provider}")
+        print(f"Max      : {max_per_run}")
+        print(f"Model    : {model or '(default)'}")
+
+    _agent.run_agent()
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 

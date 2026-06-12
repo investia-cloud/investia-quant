@@ -28,6 +28,9 @@ dependencies = [
     "requests",
     "click",
     "lxml",
+    "playwright",
+    "pypdf",
+    "feedparser",
 ]
 
 [project.optional-dependencies]
