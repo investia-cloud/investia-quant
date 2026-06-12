@@ -1665,3 +1665,67 @@ def strategy_bb_expansion(data: pd.DataFrame, params: dict, year: int | None = N
     shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
     shifted_exits = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
     return shifted_entries, shifted_exits
+
+
+# ─────────────────────────────────────
+# Fonte: I Let a Strategy Generator Build My AMD Trade — Here’s the Truth It Revealed
+# URL:   https://medium.com/@Kryptera/i-let-a-strategy-generator-build-my-amd-trade-heres-the-truth-it-revealed-180aaf479441
+# Data:  2026-06-12 23:00
+# ─────────────────────────────────────
+
+############################
+# Strategy amd_momentum_rsi
+############################
+
+def ind_amd_momentum_rsi_momentum(df: pd.DataFrame, period: int = 10) -> pd.Series:
+    close = df['Close']
+    momentum = (close / close.shift(period)) * 100
+    return momentum
+
+def ind_amd_momentum_rsi_rsi(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    close = df['Close']
+    delta = close.diff()
+    up = delta.clip(lower=0)
+    down = -delta.clip(upper=0)
+    roll_up = up.ewm(span=period, adjust=False, min_periods=1).mean()
+    roll_down = down.ewm(span=period, adjust=False, min_periods=1).mean()
+    safe_roll_down = np.where(roll_down != 0, roll_down, 1.0)
+    rs = np.where(roll_down != 0, roll_up / safe_roll_down, 0.0)
+    rsi = 100 - (100 / (1 + rs))
+    return pd.Series(rsi, index=close.index)
+
+strategy_amd_momentum_rsi_param_ranges = {
+    'fast_period_range': range(3, 8, 2),
+    'slow_period_range': range(8, 16, 3),
+    'rsi_period_range': range(10, 21, 5),
+    'rsi_level_range': range(25, 36, 5),
+}
+
+def strategy_amd_momentum_rsi(data: pd.DataFrame, params: dict, year: int | None = None):
+    fast_p = params.get('fast_period_range')
+    slow_p = params.get('slow_period_range')
+    rsi_p = params.get('rsi_period_range')
+    rsi_level = params.get('rsi_level_range')
+    
+    df = data.copy()
+    
+    fast_momentum = ind_amd_momentum_rsi_momentum(df, period=fast_p)
+    slow_momentum = ind_amd_momentum_rsi_momentum(df, period=slow_p)
+    rsi = ind_amd_momentum_rsi_rsi(df, period=rsi_p)
+    
+    df['Fast_Momentum'] = fast_momentum
+    df['Slow_Momentum'] = slow_momentum
+    df['RSI'] = rsi
+    
+    if year is not None:
+        df = df[df.index.year == int(year)]
+    
+    momentum_cross_down = (df['Fast_Momentum'] < df['Slow_Momentum']) & (df['Fast_Momentum'].shift(1) >= df['Slow_Momentum'].shift(1))
+    rsi_exit_oversold = (df['RSI'] > rsi_level) & (df['RSI'].shift(1) <= rsi_level)
+    
+    entries = momentum_cross_down
+    exits = rsi_exit_oversold
+    
+    shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    shifted_exits = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    return shifted_entries, shifted_exits

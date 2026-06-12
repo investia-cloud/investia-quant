@@ -97,3 +97,4 @@ data/
 wget-log
 investia_quant.egg-info/
 releases/*/.venv/
+K-Strategy-Agent/Claude-K-strategy_Key.sh
