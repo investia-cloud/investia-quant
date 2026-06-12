@@ -8536,6 +8536,19 @@ def run_k_strategy_analysis(
     scenario: str = "B",
     dsr_threshold: float = 0.95,
     verbose: bool = False,
+    ratio: str = "4:1",
+    risk_free_rate: float = 0.02,
+    init_cash: float = 100_000.0,
+    fees: float = 0.001,
+    slippage: float = 0.002,
+    price_col: str = "Open",
+    selection_metric: str = "total_return",
+    warmup_years: int = 1,
+    save_results: bool = True,
+    wfo_results_dir: str | None = None,
+    override: bool = False,
+    n_simulations: int = 1_000,
+    block_size: int = 10,
 ) -> dict:
     """
     Pipeline completa analisi K-strategy headless.
@@ -8567,6 +8580,8 @@ def run_k_strategy_analysis(
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    if wfo_results_dir is None:
+        wfo_results_dir = str(Path(__file__).parent.parent.parent / "outputs" / "WFO_T_DEV_RESULTS")
     plots_dir = output_dir / "plots"
     plots_dir.mkdir(exist_ok=True)
 
@@ -8587,12 +8602,62 @@ def run_k_strategy_analysis(
         end_date=end_date,
         scenario="A",  # precheck permissivo: promozione affidata a OFC+DSR+MC
         show_progress=verbose,
-        save_results=False,
+        save_results=save_results,
         namespace=ns,
         verbose=verbose,
+        ratio=ratio,
+        risk_free_rate=risk_free_rate,
+        init_cash=init_cash,
+        fees=fees,
+        slippage=slippage,
+        price_col=price_col,
+        selection_metric=selection_metric,
+        warmup_years=warmup_years,
+        wfo_results_dir=wfo_results_dir,
+        override=override,
     )
 
-    if results_panel is None or len(results_panel) == 0:
+    if results_panel is None:
+        results_panel = {}
+
+    # ══════════════════════════════════════════
+    # STEP 1b — carica da disco coppie skippate
+    # ══════════════════════════════════════════
+    import pickle as _pickle
+
+    for ticker in tickers:
+        for strategy in strategies:
+            key = (ticker, strategy)
+            if key in results_panel:
+                continue  # già in memoria
+            # cerca i pkl su disco
+            p_file  = Path(wfo_results_dir) / strategy / f"portfolio_{strategy}_{ticker}_{ratio}_results.pkl"
+            bh_file = Path(wfo_results_dir) / strategy / f"portfolio_{strategy}_{ticker}_{ratio}_bh_results.pkl"
+            pre_file = Path(wfo_results_dir) / strategy / f"portfolio_{strategy}_{ticker}_{ratio}_precheck.pkl"
+            if not p_file.exists():
+                continue
+            try:
+                import vectorbt as vbt
+                portfolio = vbt.Portfolio.load(str(p_file))
+                bh_portfolio = None
+                if bh_file.exists():
+                    bh_portfolio = vbt.Portfolio.load(str(bh_file))
+                precheck = {}
+                if pre_file.exists():
+                    with open(pre_file, "rb") as f:
+                        precheck = _pickle.load(f)
+                results_panel[key] = {
+                    "portfolio":    portfolio,
+                    "bh_portfolio": bh_portfolio,
+                    "precheck":     precheck,
+                }
+                if verbose:
+                    print(f"[LOADED] {strategy}@{ticker}: caricato da disco")
+            except Exception as e:
+                if verbose:
+                    print(f"[LOAD ERROR] {strategy}@{ticker}: {e}")
+
+    if len(results_panel) == 0:
         return {
             "mode": mode,
             "results_panel": {},
@@ -8604,6 +8669,16 @@ def run_k_strategy_analysis(
     # ══════════════════════════════════════════
     # STEP 2 — DSR (Panel: filtro data snooping)
     # ══════════════════════════════════════════
+    if verbose:
+        for k, v in results_panel.items():
+            pf = v.get("portfolio")
+            try:
+                rets = pf.returns() if pf is not None else None
+                print(f"  DSR debug {k}: portfolio={pf is not None}, "
+                      f"returns len={len(rets) if rets is not None else 'None'}, "
+                      f"returns notna={rets.notna().sum() if rets is not None else 'N/A'}")
+            except Exception as e:
+                print(f"  DSR debug {k}: errore returns → {e}")
     df_dsr = compute_panel_dsr(results_panel)
     # Filtra coppie con DSR >= threshold
     if not df_dsr.empty and "dsr" in df_dsr.columns:
@@ -8642,32 +8717,71 @@ def run_k_strategy_analysis(
         except Exception:
             ofc_pass = False
 
-        # MC
-        try:
-            ts_returns = portfolio.returns().dropna().values
-            init_value = float(portfolio.value().iloc[0])
-            bh_return = float(portfolio.total_return())
-            bh_dd = abs(float(portfolio.max_drawdown()))
+        # MC — carica da disco se disponibile
+        mc_file = Path(wfo_results_dir) / strategy / \
+            f"portfolio_{strategy}_{ticker}_{ratio}_mc_results.pkl"
 
-            methods_results, mc_summary = run_all_mc_methods(
-                portfolio_returns=ts_returns,
-                init_value=init_value,
-                benchmark_return=bh_return,
-                benchmark_drawdown=bh_dd,
-                n_simulations=1000,
-                show_method_plots=False,
-                show_method_summaries=False,
-            )
-            # MC pass: almeno 2 metodi su 3 con p-value > 0.05
-            if mc_summary is not None and not mc_summary.empty:
-                pass_col = [c for c in mc_summary.columns if "pass" in c.lower() or "p_value" in c.lower()]
-                if pass_col:
-                    mc_pass = int(mc_summary[pass_col[0]].sum()) >= 2
+        mc_cached = False
+        if mc_file.exists() and not override:
+            try:
+                with open(mc_file, "rb") as f:
+                    mc_data = _pickle.load(f)
+                mc_pass = mc_data.get("mc_pass", False)
+                methods_results = mc_data.get("methods_results", {})
+                mc_summary = mc_data.get("mc_summary", None)
+                mc_cached = True
+                if verbose:
+                    print(f"  [MC CACHED] {ticker}@{strategy}")
+            except Exception as e:
+                if verbose:
+                    print(f"  [MC CACHE ERROR] {ticker}@{strategy}: {e}")
+
+        if not mc_cached:
+            try:
+                ts_returns = portfolio.returns().dropna().values
+                init_value = float(portfolio.value().iloc[0])
+                bh_return  = float(portfolio.total_return())
+                bh_dd      = abs(float(portfolio.max_drawdown()))
+
+                methods_results, mc_summary = run_all_mc_methods(
+                    portfolio_returns=ts_returns,
+                    init_value=init_value,
+                    benchmark_return=bh_return,
+                    benchmark_drawdown=bh_dd,
+                    n_simulations=n_simulations,
+                    show_method_plots=False,
+                    show_method_summaries=False,
+                    block_size=block_size,
+                )
+                import matplotlib.pyplot as _plt_mc
+                _plt_mc.close('all')
+
+                if mc_summary is not None and not mc_summary.empty:
+                    pass_col = [c for c in mc_summary.columns
+                                if "pass" in c.lower() or "p_value" in c.lower()]
+                    if pass_col:
+                        mc_pass = int(mc_summary[pass_col[0]].sum()) >= 2
+                    else:
+                        mc_pass = True
                 else:
-                    mc_pass = True  # fallback conservativo
-        except Exception as e:
-            if verbose:
-                print(f"  MC error {ticker}@{strategy}: {e}")
+                    mc_pass = False
+
+                # Salva MC su disco
+                if wfo_results_dir:
+                    mc_file.parent.mkdir(parents=True, exist_ok=True)
+                    with open(mc_file, "wb") as f:
+                        _pickle.dump({
+                            "mc_pass":         mc_pass,
+                            "methods_results": methods_results,
+                            "mc_summary":      mc_summary,
+                        }, f)
+                    if verbose:
+                        print(f"  [MC SAVED] {ticker}@{strategy}")
+
+            except Exception as e:
+                mc_pass = False
+                if verbose:
+                    print(f"  MC error {ticker}@{strategy}: {e}")
 
         dsr_row = df_dsr[
             (df_dsr["Ticker"] == ticker) & (df_dsr["Strategy"] == strategy)
@@ -8679,17 +8793,53 @@ def run_k_strategy_analysis(
         if is_promoted:
             promoted.append((ticker, strategy))
 
+        try:
+            cagr    = round(float(portfolio.annualized_return()) * 100, 2)
+        except Exception:
+            cagr    = np.nan
+        try:
+            maxdd   = round(abs(float(portfolio.max_drawdown())) * 100, 2)
+        except Exception:
+            maxdd   = np.nan
+        try:
+            bh_ret  = round(float(val.get("bh_portfolio").total_return()) * 100, 2) \
+                      if val.get("bh_portfolio") is not None else np.nan
+        except Exception:
+            bh_ret  = np.nan
+        try:
+            bh_dd   = round(abs(float(val.get("bh_portfolio").max_drawdown())) * 100, 2) \
+                      if val.get("bh_portfolio") is not None else np.nan
+        except Exception:
+            bh_dd   = np.nan
+
         rows.append({
             "Ticker":   ticker,
             "Strategy": strategy,
             "Sharpe":   round(sharpe, 3),
+            "CAGR%":    cagr,
+            "MaxDD%":   maxdd,
+            "BH_Ret%":  bh_ret,
+            "BH_DD%":   bh_dd,
             "DSR":      round(dsr_val, 3),
             "OFC":      "PASS" if ofc_pass else "FAIL",
             "MC":       "PASS" if mc_pass  else "FAIL",
             "Promoted": "PASS" if is_promoted else "FAIL",
         })
 
-    df_classification = pd.DataFrame(rows).sort_values("DSR", ascending=False).reset_index(drop=True)
+    if rows:
+        df_classification = pd.DataFrame(rows).sort_values(
+            "DSR", ascending=False).reset_index(drop=True)
+    else:
+        df_classification = pd.DataFrame(
+            columns=["Ticker", "Strategy", "Sharpe", "CAGR%", "MaxDD%", "BH_Ret%", "BH_DD%", "DSR", "OFC", "MC", "Promoted"])
+
+    if not df_classification.empty and wfo_results_dir:
+        from datetime import datetime as _dt
+        csv_name = f"classification_{_dt.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        csv_path = Path(wfo_results_dir) / csv_name
+        df_classification.to_csv(csv_path, index=False)
+        if verbose:
+            print(f"Classifica salvata: {csv_path}")
 
     # ══════════════════════════════════════════
     # STEP 4 — Salva classifica PNG
@@ -8718,7 +8868,7 @@ def run_k_strategy_analysis(
 
     if verbose:
         print(f"\nPromossi: {len(promoted)}/{len(pairs_after_dsr)}")
-        print(df_classification.to_string(index=False))
+    print(df_classification.to_string(index=False))
 
     _pio.show = _original_show
     _plt_show_patch.stop()

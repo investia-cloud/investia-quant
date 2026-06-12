@@ -523,19 +523,44 @@ def analyze(ptf, universe, output_dir, profile, year, start_date, verbose):
 # ---------------------------------------------------------------------------
 
 @app.command("k-analyze")
-@click.option("-s", "--strategies", multiple=True, required=True,
+@click.option("-s", "--strategies", multiple=True, default=None,
     help="Una o più strategie (es. -s dbma_matrix bollinger)")
-@click.option("-t", "--tickers", multiple=True, required=True,
+@click.option("-t", "--tickers", multiple=True, default=None,
     help="Uno o più ticker (es. -t NVDA AAPL)")
+@click.option("--ptf", default=None,
+    help="Nome K-portfolio (es. us_trading_2026) — estrae tickers automaticamente")
 @click.option("--output-dir", default=None,
     help="Directory output (default: outputs/k_analysis/<data>/)")
 @click.option("--start-date", default="2015-01-01")
 @click.option("--end-date", default=None)
+@click.option("--ratio", default="4:1", show_default=True,
+    help="Train:test ratio WFO")
+@click.option("--fees", default=0.001, show_default=True,
+    help="Commissioni per trade")
+@click.option("--slippage", default=0.002, show_default=True,
+    help="Slippage per trade")
+@click.option("--price-col", default="Open", show_default=True,
+    help="Colonna prezzo OHLCV")
+@click.option("--selection-metric", default="total_return", show_default=True,
+    help="Metrica selezione parametri WFO")
+@click.option("--init-cash", default=100_000.0, show_default=True,
+    help="Capitale iniziale")
+@click.option("--warmup-years", default=1, show_default=True,
+    help="Anni warmup WFO")
+@click.option("--wfo-results-dir", default=None,
+    help="Directory risultati WFO (default: outputs/WFO_T_DEV_RESULTS/)")
+@click.option("--override", is_flag=True, default=False,
+    help="Ricalcola risultati WFO già salvati")
+@click.option("--n-simulations", default=1_000, show_default=True,
+    help="Numero simulazioni Monte Carlo")
+@click.option("--block-size", default=10, show_default=True,
+    help="Block size per Block Bootstrap MC")
 @click.option("--verbose", "-v", is_flag=True, default=False)
-def k_analyze(strategies, tickers, output_dir, start_date, end_date, verbose):
+def k_analyze(strategies, tickers, ptf, output_dir, start_date, end_date,
+              ratio, fees, slippage, price_col, selection_metric, init_cash,
+              warmup_years, wfo_results_dir, override, n_simulations, block_size,
+              verbose):
     """Analisi K-strategy: inspector (1×1) o panel (N×M) in base agli argomenti."""
-    from datetime import datetime
-
     def _parse_list(vals):
         if not vals:
             return None
@@ -544,14 +569,40 @@ def k_analyze(strategies, tickers, output_dir, start_date, end_date, verbose):
             result.extend(v.split())
         return result or None
 
-    s = _parse_list(strategies)
-    t = _parse_list(tickers)
+    if ptf and tickers:
+        raise click.ClickException("--ptf e -t sono mutuamente esclusivi.")
+    if not ptf and not tickers:
+        raise click.ClickException("Specifica --ptf <nome> oppure -t <tickers>.")
+
+    ns = _load_all_libs()
+
+    if ptf:
+        ptf_obj, kind = _resolve_portfolio(ptf, ns)
+        if kind != "K":
+            raise click.ClickException(f"'{ptf}' è un R-portfolio. iq k-analyze accetta solo K-portfolio.")
+        t = list({ts["symbol"] for ts in ptf_obj.get("trading_systems", [])})
+        if not t:
+            raise click.ClickException(f"Nessun ticker trovato in '{ptf}'.")
+        if verbose:
+            print(f"PTF '{ptf}': {len(t)} tickers → {t}")
+    else:
+        t = _parse_list(tickers)
+
+    # Strategie: esplicite se -s passato, altrimenti tutte disponibili
+    s = _parse_list(strategies) if strategies else None
+    if s is None:
+        # Tutte le strategie disponibili nel namespace
+        s = [
+            k.replace("strategy_", "").replace("_param_ranges", "")
+            for k in ns
+            if k.startswith("strategy_") and k.endswith("_param_ranges")
+        ]
+        if verbose:
+            print(f"Strategie disponibili: {len(s)}")
 
     if len(s) == 1 and len(t) == 1:
-        mode = "inspector"
         print(f"Inspector: {s[0]}@{t[0]}")
     else:
-        mode = "panel"
         print(f"Panel: {len(s)} strategie × {len(t)} ticker")
 
     from datetime import datetime as _dt
@@ -559,7 +610,6 @@ def k_analyze(strategies, tickers, output_dir, start_date, end_date, verbose):
         Path(__file__).parent.parent / "outputs" / "k_analysis" /
         _dt.now().strftime("%Y%m%d_%H%M%S")
     )
-    ns = _load_all_libs()
     import importlib.util, sys as _sys
     lib = Path(__file__).parent.parent / "notebooks" / "libs_py" / "k_functions.py"
     spec = importlib.util.spec_from_file_location("k_functions", lib)
@@ -574,6 +624,18 @@ def k_analyze(strategies, tickers, output_dir, start_date, end_date, verbose):
         end_date=end_date,
         scenario="B",
         verbose=verbose,
+        ratio=ratio,
+        fees=fees,
+        slippage=slippage,
+        price_col=price_col,
+        selection_metric=selection_metric,
+        init_cash=init_cash,
+        warmup_years=warmup_years,
+        save_results=True,
+        wfo_results_dir=wfo_results_dir,
+        override=override,
+        n_simulations=n_simulations,
+        block_size=block_size,
     )
     print(f"Modalità  : {result['mode']}")
     print(f"Promossi  : {len(result['promoted'])}")
