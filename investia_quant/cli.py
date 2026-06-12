@@ -554,60 +554,34 @@ def k_analyze(strategies, tickers, output_dir, start_date, end_date, verbose):
         mode = "panel"
         print(f"Panel: {len(s)} strategie × {len(t)} ticker")
 
+    from datetime import datetime as _dt
     out_dir = output_dir or str(
-        Path.home() / "investia-quant" / "outputs" / "k_analysis" /
-        datetime.now().strftime("%Y%m%d_%H%M%S")
+        Path(__file__).parent.parent / "outputs" / "k_analysis" /
+        _dt.now().strftime("%Y%m%d_%H%M%S")
     )
-    print(f"Output dir: {out_dir}")
-    print(f"Periodo: {start_date} → {end_date or 'oggi'}")
+    ns = _load_all_libs()
+    import importlib.util, sys as _sys
+    lib = Path(__file__).parent.parent / "notebooks" / "libs_py" / "k_functions.py"
+    spec = importlib.util.spec_from_file_location("k_functions", lib)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
 
-    # TODO: collegare run_k_strategy_analysis() quando disponibile
-    print(f"TODO: implementare chiamata core ({mode})")
-
-
-# ---------------------------------------------------------------------------
-# iq k-test
-# ---------------------------------------------------------------------------
-
-@app.command("k-test")
-@click.option("-s", "--strategies", multiple=True, default=None,
-    help="Strategie da testare (default: tutte in k_strategies_agent.py)")
-@click.option("-t", "--tickers", multiple=True, default=None,
-    help="Ticker da testare (default: da PTF registry)")
-@click.option("--scenario", default="B",
-    type=click.Choice(["A","B","C","D","E"]),
-    help="Scenario precheck: A=esplorazione B=base C=media D=notebook E=produzione")
-@click.option("--pipeline", is_flag=True, default=False,
-    help="Pipeline B→E: stage1 filtro base, stage2 solo promossi")
-@click.option("--override", is_flag=True, default=False,
-    help="Ricalcola risultati WFO già salvati")
-@click.option("--dry-run", is_flag=True, default=False,
-    help="Mostra cosa verrebbe eseguito senza lanciare WFO")
-@click.option("--verbose", "-v", is_flag=True, default=False)
-def k_test(strategies, tickers, scenario, pipeline, override, dry_run, verbose):
-    """Test massivo strategie K: WFO su tutte le coppie strategia×ticker."""
-    def _parse_list(vals):
-        if not vals:
-            return None
-        result = []
-        for v in vals:
-            result.extend(v.split())
-        return result or None
-
-    agent_dir = str(Path(__file__).parent.parent / "K-Strategy-Agent")
-    if agent_dir not in sys.path:
-        sys.path.insert(0, agent_dir)
-    from test_strategies import run_strategy_tests, run_pipeline
-
-    s = _parse_list(strategies)
-    t = _parse_list(tickers)
-
-    if pipeline:
-        run_pipeline(dry_run=dry_run, only_strategies=s, only_tickers=t,
-                     override=override)
-    else:
-        run_strategy_tests(dry_run=dry_run, only_strategies=s, only_tickers=t,
-                           override=override, scenario=scenario)
+    result = mod.run_k_strategy_analysis(
+        strategies=s,
+        tickers=t,
+        output_dir=out_dir,
+        start_date=start_date,
+        end_date=end_date,
+        scenario="B",
+        verbose=verbose,
+    )
+    print(f"Modalità  : {result['mode']}")
+    print(f"Promossi  : {len(result['promoted'])}")
+    print(f"Output    : {result['plots_dir']}")
+    if result['promoted']:
+        print("Coppie promosse:")
+        for ticker, strategy in result['promoted']:
+            print(f"  {ticker} @ {strategy}")
 
 
 # ---------------------------------------------------------------------------

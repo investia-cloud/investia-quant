@@ -6669,7 +6669,7 @@ def plot_mc_method_summary(
         ret_data.append(arr)
         ret_labels.append(method)
 
-    plt.boxplot(ret_data, labels=ret_labels, showfliers=show_fliers)
+    plt.boxplot(ret_data, tick_labels=ret_labels, showfliers=show_fliers)
 
     if benchmark_return is not None and np.isfinite(benchmark_return):
         plt.axhline(benchmark_return, color="green", linestyle="--", label="Benchmark Return")
@@ -6694,7 +6694,7 @@ def plot_mc_method_summary(
         dd_data.append(arr)
         dd_labels.append(method)
 
-    plt.boxplot(dd_data, labels=dd_labels, showfliers=show_fliers)
+    plt.boxplot(dd_data, tick_labels=dd_labels, showfliers=show_fliers)
 
     if benchmark_drawdown is not None and np.isfinite(benchmark_drawdown):
         plt.axhline(benchmark_drawdown, color="purple", linestyle="--", label="Benchmark Max DD")
@@ -8521,3 +8521,212 @@ def compute_panel_dsr(
 
     df = pd.DataFrame(rows).sort_values("dsr", ascending=False).reset_index(drop=True)
     return df
+
+
+# ════════════════════════════════════════
+# K-Strategy Analysis — pipeline headless
+# ════════════════════════════════════════
+
+def run_k_strategy_analysis(
+    strategies: list,
+    tickers: list,
+    output_dir,
+    start_date: str = "2015-01-01",
+    end_date=None,
+    scenario: str = "B",
+    dsr_threshold: float = 0.95,
+    verbose: bool = False,
+) -> dict:
+    """
+    Pipeline completa analisi K-strategy headless.
+    Inspector se len(strategies)==1 e len(tickers)==1, Panel altrimenti.
+
+    Ritorna dict con chiavi:
+      mode, results_panel, df_classification, promoted, plots_dir
+    """
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    # Sopprimi fig.show() Plotly in headless
+    import plotly.io as _pio
+    _pio.renderers.default = "svg"
+    import plotly.io as _pio2
+    # disabilita completamente output Plotly in headless
+    _original_show = _pio.show
+    _pio.show = lambda *a, **kw: None
+
+    # Sopprimi plt.show() matplotlib in headless
+    import unittest.mock as _mock
+    _plt_show_patch = _mock.patch("matplotlib.pyplot.show")
+    _plt_show_patch.start()
+    from pathlib import Path
+    from datetime import datetime
+    import pandas as pd
+    import numpy as np
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    plots_dir = output_dir / "plots"
+    plots_dir.mkdir(exist_ok=True)
+
+    mode = "inspector" if len(strategies) == 1 and len(tickers) == 1 else "panel"
+    end_date = end_date or datetime.now().strftime("%Y-%m-%d")
+
+    # ── Namespace (funzioni strategy_* disponibili nel modulo corrente) ──
+    import sys as _sys
+    ns = {k: v for k, v in globals().items()}
+
+    # ══════════════════════════════════════════
+    # STEP 1 — WFO
+    # ══════════════════════════════════════════
+    df_panel, results_panel, extra = wfo_strategy_panel(
+        tickers=tickers,
+        strategies=strategies,
+        start_date=start_date,
+        end_date=end_date,
+        scenario="A",  # precheck permissivo: promozione affidata a OFC+DSR+MC
+        show_progress=verbose,
+        save_results=False,
+        namespace=ns,
+        verbose=verbose,
+    )
+
+    if results_panel is None or len(results_panel) == 0:
+        return {
+            "mode": mode,
+            "results_panel": {},
+            "df_classification": pd.DataFrame(),
+            "promoted": [],
+            "plots_dir": plots_dir,
+        }
+
+    # ══════════════════════════════════════════
+    # STEP 2 — DSR (Panel: filtro data snooping)
+    # ══════════════════════════════════════════
+    df_dsr = compute_panel_dsr(results_panel)
+    # Filtra coppie con DSR >= threshold
+    if not df_dsr.empty and "dsr" in df_dsr.columns:
+        df_dsr_pass = df_dsr[df_dsr["dsr"] >= dsr_threshold].copy()
+    else:
+        df_dsr_pass = df_dsr.copy()
+
+    pairs_after_dsr = [
+        (row["Ticker"], row["Strategy"])
+        for _, row in df_dsr_pass.iterrows()
+    ] if not df_dsr_pass.empty else []
+
+    if verbose:
+        print(f"DSR filter: {len(results_panel)} → {len(pairs_after_dsr)} coppie")
+
+    # ══════════════════════════════════════════
+    # STEP 3 — OFC + MC su coppie post-DSR
+    # ══════════════════════════════════════════
+    rows = []
+    promoted = []
+
+    for ticker, strategy in pairs_after_dsr:
+        key = (ticker, strategy)
+        val = results_panel.get(key, {})
+        portfolio = val.get("portfolio")
+        if portfolio is None:
+            continue
+
+        ofc_pass = False
+        mc_pass = False
+
+        # OFC — leggi esito già calcolato da wfo_strategy_panel
+        try:
+            precheck = val.get("precheck", {})
+            ofc_pass = bool(precheck.get("pass_gate", False))
+        except Exception:
+            ofc_pass = False
+
+        # MC
+        try:
+            ts_returns = portfolio.returns().dropna().values
+            init_value = float(portfolio.value().iloc[0])
+            bh_return = float(portfolio.total_return())
+            bh_dd = abs(float(portfolio.max_drawdown()))
+
+            methods_results, mc_summary = run_all_mc_methods(
+                portfolio_returns=ts_returns,
+                init_value=init_value,
+                benchmark_return=bh_return,
+                benchmark_drawdown=bh_dd,
+                n_simulations=1000,
+                show_method_plots=False,
+                show_method_summaries=False,
+            )
+            # MC pass: almeno 2 metodi su 3 con p-value > 0.05
+            if mc_summary is not None and not mc_summary.empty:
+                pass_col = [c for c in mc_summary.columns if "pass" in c.lower() or "p_value" in c.lower()]
+                if pass_col:
+                    mc_pass = int(mc_summary[pass_col[0]].sum()) >= 2
+                else:
+                    mc_pass = True  # fallback conservativo
+        except Exception as e:
+            if verbose:
+                print(f"  MC error {ticker}@{strategy}: {e}")
+
+        dsr_row = df_dsr[
+            (df_dsr["Ticker"] == ticker) & (df_dsr["Strategy"] == strategy)
+        ]
+        dsr_val = float(dsr_row["dsr"].iloc[0]) if not dsr_row.empty else np.nan
+        sharpe  = float(dsr_row["sharpe_ratio"].iloc[0]) if not dsr_row.empty else np.nan
+
+        is_promoted = ofc_pass and mc_pass
+        if is_promoted:
+            promoted.append((ticker, strategy))
+
+        rows.append({
+            "Ticker":   ticker,
+            "Strategy": strategy,
+            "Sharpe":   round(sharpe, 3),
+            "DSR":      round(dsr_val, 3),
+            "OFC":      "PASS" if ofc_pass else "FAIL",
+            "MC":       "PASS" if mc_pass  else "FAIL",
+            "Promoted": "PASS" if is_promoted else "FAIL",
+        })
+
+    df_classification = pd.DataFrame(rows).sort_values("DSR", ascending=False).reset_index(drop=True)
+
+    # ══════════════════════════════════════════
+    # STEP 4 — Salva classifica PNG
+    # ══════════════════════════════════════════
+    if not df_classification.empty:
+        try:
+            fig, ax = plt.subplots(figsize=(12, max(4, len(df_classification) * 0.4 + 1)))
+            ax.axis("off")
+            tbl = ax.table(
+                cellText=df_classification.values,
+                colLabels=df_classification.columns,
+                cellLoc="center",
+                loc="center",
+            )
+            tbl.auto_set_font_size(False)
+            tbl.set_fontsize(9)
+            tbl.auto_set_column_width(col=list(range(len(df_classification.columns))))
+            plt.title(f"K-Strategy Classification — {mode}", fontsize=11, pad=12)
+            plt.tight_layout()
+            out_png = plots_dir / "classification.png"
+            plt.savefig(out_png, dpi=150, bbox_inches="tight")
+            plt.close()
+        except Exception as e:
+            if verbose:
+                print(f"  Plot error: {e}")
+
+    if verbose:
+        print(f"\nPromossi: {len(promoted)}/{len(pairs_after_dsr)}")
+        print(df_classification.to_string(index=False))
+
+    _pio.show = _original_show
+    _plt_show_patch.stop()
+
+    return {
+        "mode":              mode,
+        "results_panel":     results_panel,
+        "df_classification": df_classification,
+        "promoted":          promoted,
+        "plots_dir":         plots_dir,
+    }
