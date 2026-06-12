@@ -1,6 +1,6 @@
 # investia-quant — Piano Operativo
 
-**Ultimo aggiornamento**: 11 giugno 2026
+**Ultimo aggiornamento**: 12 giugno 2026
 **Root progetto**: `~/investia-quant`
 
 ---
@@ -24,10 +24,10 @@ chore(notebooks): rinomina JN dev a naming coerente
 | File | Ruolo |
 |---|---|
 | `notebooks/dev/r_portfolio_analyst.ipynb` | Analisi interattiva R-portfolio — solo Luca |
-| `notebooks/dev/k_strategy_panel.ipynb` | Pannello multi-strategia K |
-| `notebooks/dev/k_strategy_inspector.ipynb` | Analisi approfondita singola strategia K |
-| `notebooks/dev/lazy_portfolio_analyst.ipynb` | Lazy portfolios (futuro modulo piattaforma) |
-| `notebooks/dev/R_Strategies.ipynb` | Rotazionale su strategie/metodi — ruolo da chiarire |
+| `notebooks/dev/k_strategy_panel.ipynb` | Analisi massiva multi-strategia/ticker + classificazione risultati — solo Luca |
+| `notebooks/dev/k_strategy_inspector.ipynb` | Analisi approfondita singola strategia:ticker — solo Luca |
+| `notebooks/dev/lazy_portfolio_analyst.ipynb` | Lazy portfolios — Luca (JN), tutti gli altri via web |
+| `notebooks/dev/R_Strategies.ipynb` | Rotazionale su strategie/metodi — esplorativo, solo Luca |
 | `notebooks/dev/_bootstrap_dev.ipynb` | Bootstrap import libs_py con reload automatico |
 | `K-Strategy-Agent/k_strategy_agent_output.ipynb` | Archivio storico strategie agente (read-only) |
 
@@ -47,54 +47,112 @@ chore(notebooks): rinomina JN dev a naming coerente
 
 ---
 
+## Architettura — 4 filiere
+
+### Filiera R-portfolio (rotazionale su titoli)
+
+| Aspetto | Dettaglio |
+|---|---|
+| JN dev | `r_portfolio_analyst.ipynb` — solo Luca |
+| CLI | `iq analyze` ✅, `iq run` ✅, `iq report` ✅ |
+| Web | R-portfolio designer (Fase 4 roadmap) |
+| Utenti | Tutti i livelli |
+
+### Filiera K-portfolio (trading system)
+
+| Aspetto | Dettaglio |
+|---|---|
+| JN dev | `k_strategy_inspector.ipynb` (singola strategia:ticker) + `k_strategy_panel.ipynb` (massivo + classificazione) — solo Luca |
+| CLI | `iq k-analyze` ← da costruire |
+| Web | Nessuna — dominio esclusivo architetto |
+| Utenti | Solo Luca |
+
+I due JN sono **separati per design**:
+- `k_strategy_inspector` → analisi approfondita singola strategia:ticker
+- `k_strategy_panel` → analisi massiva multi-strategia/ticker + classificazione risultati già testati
+
+### Filiera Lazy portfolio
+
+| Aspetto | Dettaglio |
+|---|---|
+| JN dev | `lazy_portfolio_analyst.ipynb` — solo Luca |
+| CLI | `iq lazy` ← da costruire |
+| Web | Già pubblicato in v1 portale, da reintegrare in investia-platform |
+| Output attuale | Risultati interattivi JN + grafici statici web |
+| Gap | Relazione tecnica AI-generated (come R-portfolio) — da aggiungere |
+| Utenti | Tutti i livelli inclusi gestori bancari |
+
+### Filiera R-strategies (esplorativa)
+
+| Aspetto | Dettaglio |
+|---|---|
+| JN dev | `R_Strategies.ipynb` — solo Luca, fase esplorativa |
+| CLI/Web | Nessuna per ora |
+| Utenti | Solo Luca |
+| Note | Approccio rotazionale su strategie/metodi/pesi anziché titoli. Contiene `select_top_performing_stocks_NEW` con API vectorbt 1.0.0 da aggiornare (`from_returns` → `from_holding`). Ruolo operativo da chiarire dopo comprensione profonda. |
+
+---
+
 ## Lavori in piedi, in ordine di priorità
 
 ### Priorità alta
 
-**1. Rilancio 3 PTF rimanenti**
+**1. Audit + ottimizzazione + documentazione JN K-portfolio** · filiera K
 
-Baseline aggiornata con narrativa corretta (post-fix 24/05). Da fare in
-`r_portfolio_analyst.ipynb` — lavoro interattivo di Luca.
+Analisi funzioni definite inline nei due JN (non ancora in `libs_py/`),
+identificare duplicati e gap, documentare, migrare in `k_functions.py`.
+Branch: `feature/k-jn-audit`
 
-| PTF | Universo | B1 cluster (22/05) | OFC cluster |
-|---|---|---|---|
-| Italy Big Cap | 19 | 0.349 borderline | PROMOTED |
-| Alpha Sect Megatrend | 9 | 0.015 PASS | PROMOTED |
-| Alpha Euro | 36 | 0.218 borderline | PROMOTED |
+**2. CLI `iq k-analyze`** · filiera K
 
-Dopo questa baseline sarà possibile valutare il Potenziamento Block B
-(sorgenti di skill alternative al momentum).
+Dopo audit JN K. Analogo a `iq analyze` per R-portfolio.
+- `iq k-analyze --strategy <nome> --ticker <ticker>` → inspector (singola)
+- `iq k-analyze --batch <file.csv>` o `--all` → panel (massivo)
+
+**3. Potenziamento Block B** · filiera R
+
+Sorgenti di skill alternative al momentum. Motivazione: molti PTF non hanno
+skill momentum ma battono il benchmark per altri driver (clustering Ward +
+risk-off). Block B attuale misura solo momentum — le sorgenti alternative
+catturano quegli altri driver.
+
+Sorgenti candidate:
+- Risk-adjusted (Sharpe/Sortino rotazionale)
+- Idiosyncratic return (residuo rispetto benchmark)
+- Low-volatility (skill nell'evitare drawdown)
+- Quality factor
+- Multi-factor composito
+
+Da fare: design session (definizione formale sorgenti + integrazione in
+`run_all_mc_methods_rotational()`) prima di toccare codice.
 
 ### Priorità media
 
-**2. Unificazione k_strategy_inspector + k_strategy_panel**
+**4. Relazione tecnica AI per Lazy portfolio** · filiera Lazy
 
-I due JN hanno overlap significativo. Analisi funzioni definite nei JN (non in libs),
-identificare differenze, migrare in `k_functions.py`, unificare in un unico JN.
-Branch: `feature/wfo-panel-unification`
+Gap rispetto a R-portfolio: aggiungere `generate_relazione_tecnica()` AI-based.
+Dipende da: struttura output lazy JN da verificare.
 
-**3. Potenziamento Block B**
+**5. CLI `iq lazy`** · filiera Lazy
 
-Sorgenti di skill alternative al momentum: Risk-adjusted, Idiosyncratic, Low-vol,
-Quality, Multi-factor. Da fare dopo baseline PTF aggiornata (punto 1).
+JN già refactored e funzionante — il lifting CLI dovrebbe essere basso.
+
+**6. Web Lazy portfolio** · filiera Lazy
+
+Reintegrazione in investia-platform. Era già pubblicato in v1 portale.
+Dipende da: avanzamento investia-platform (Fase 4 roadmap ecosistema).
 
 ### Priorità bassa
 
-**4. Agente relazioni tecniche**
+**7. Agente relazioni tecniche** · filiera R
 
 Batch su tutti i PTF: chiama `run_r_portfolio_analysis()` in loop.
 Dipende da: `iq analyze` ora stabile ✓. Da pianificare.
 
-**5. R_Strategies**
+**8. Comprensione R_Strategies + fix API vectorbt** · filiera R-strategies
 
-JN esplorativo — rotazionale su strategie/metodi/pesi anziché titoli.
-Ruolo operativo da chiarire. Contiene `select_top_performing_stocks_NEW`
-con API vectorbt 1.0.0 da aggiornare (`from_returns` → `from_holding`).
-
-**6. lazy_portfolio_analyst (MyCurvo)**
-
-Destinato a modulo Lazy Portfolios su `investia-platform` (Fase 4).
-Refactor dedicato quando la piattaforma sarà pronta.
+JN esplorativo. Fix `from_returns` → `from_holding` (vectorbt 1.0.0).
+Ruolo operativo da chiarire prima di pianificare evoluzioni.
 
 ---
 
@@ -317,3 +375,14 @@ Funzioni notebook (`load_or_create_notebook`, `save_notebook`) conservate ma non
 
 Definizione architettura `iq analyze` e distinzione comandi CLI approvate.
 Convenzione `EFFORT` nei prompt Code introdotta.
+
+### Sessione 12/06/2026 — Architettura 4 filiere + piano operativo
+
+Decisioni architetturali approvate:
+- Architettura definitiva a 4 filiere: R-portfolio, K-portfolio, Lazy portfolio, R-strategies.
+- K-portfolio: JN separati per design (inspector vs panel) — no unificazione.
+- Lazy portfolio: già refactored e funzionante; gap = relazione tecnica AI + CLI + web.
+- R-strategies: fase esplorativa, solo JN architetto, nessuna pipeline per ora.
+- Potenziamento Block B: indipendente dai risultati PTF; motivazione = driver non-momentum
+  (clustering Ward + risk-off) non catturati dal Block B attuale.
+- Piano operativo riscritto con struttura a filiere.
