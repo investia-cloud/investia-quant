@@ -45,6 +45,7 @@ from datetime import datetime, timezone
 import fnmatch
 from sklearn.linear_model import LinearRegression
 from typing import Optional, Iterable, Dict, Tuple, List, Union, Callable, Any
+from scipy.stats import norm, skew, kurtosis
 
 
 # --- Parallel helpers (optional) ---
@@ -7870,3 +7871,653 @@ def build_massive_joblists(
 
 
 
+
+# ════════════════════════════════════════
+# Exposure & Timing Analysis
+# ════════════════════════════════════════
+
+def analyze_exposure_regime(
+    pf,
+    title: str = "Exposure Regime Analysis",
+    show_report: bool = True,
+    exposure_threshold: float = 0.95,
+    flat_threshold: float = 0.05,
+    annualization: int = 252,
+):
+    """
+    Analizza 'time-in-market' e comportamento per regime (investito vs flat)
+    usando SOLO il Portfolio vectorbt (pf).
+
+    Requisiti minimi su pf:
+    - pf.value() (serie equity)
+    - pf.gross_exposure() (serie 0..~1)  [in vectorbt esiste; altrimenti fallisce]
+      In alternativa, se hai versioni diverse, puoi sostituire con pf.stats('gross_exposure') etc.
+
+    Output:
+    - df_summary: tabella con metriche globali + per-regime
+    - df_yearly: tabella per anno (% giorni investiti, return investito/flat)
+    - (opzionale) stampa con my_display se show_report=True
+
+    Regimi:
+    - Invested: gross_exposure >= exposure_threshold
+    - Flat: gross_exposure <= flat_threshold
+    - Partial: il resto (utile per multi-asset o cash drag)
+    """
+    if pf is None:
+        raise ValueError("pf is None")
+
+    # --- series base ---
+    equity = pf.value()
+    if isinstance(equity, pd.DataFrame):
+        # group -> prendi la prima colonna se serve
+        equity = equity.iloc[:, 0]
+
+    # returns giornalieri portafoglio (equity-based)
+    rets = equity.pct_change().replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+    # gross exposure
+    if not hasattr(pf, "gross_exposure"):
+        raise AttributeError("pf.gross_exposure() non disponibile nella tua versione vectorbt")
+    ge = pf.gross_exposure()
+    if isinstance(ge, pd.DataFrame):
+        ge = ge.iloc[:, 0]
+    ge = ge.reindex(rets.index).fillna(method="ffill").fillna(0.0)
+
+    # --- regime masks ---
+    invested = ge >= float(exposure_threshold)
+    flat = ge <= float(flat_threshold)
+    partial = ~(invested | flat)
+
+    def _ann_factor(mask: pd.Series) -> float:
+        # annualization effective based on share of time
+        p = mask.mean()
+        return annualization * p if p > 0 else np.nan
+
+    def _cagr_from_rets(r: pd.Series) -> float:
+        if r.empty:
+            return np.nan
+        cum = (1.0 + r).prod()
+        n = len(r)
+        if n <= 1:
+            return np.nan
+        years = n / annualization
+        return cum ** (1 / years) - 1 if years > 0 else np.nan
+
+    def _sharpe(r: pd.Series) -> float:
+        if r.empty:
+            return np.nan
+        mu = r.mean()
+        sd = r.std(ddof=0)
+        if sd == 0:
+            return np.nan
+        return (mu / sd) * np.sqrt(annualization)
+
+    def _max_dd_from_equity(eq: pd.Series) -> float:
+        if eq.empty:
+            return np.nan
+        peak = eq.cummax()
+        dd = eq / peak - 1.0
+        return dd.min()
+
+    # --- global ---
+    total_time = len(rets)
+    summary = {}
+
+    # time in regimes
+    summary["Days"] = total_time
+    summary["Pct Invested (>=thr)"] = invested.mean()
+    summary["Pct Flat (<=thr)"] = flat.mean()
+    summary["Pct Partial"] = partial.mean()
+
+    # global perf
+    summary["Total Return"] = (equity.iloc[-1] / equity.iloc[0]) - 1 if len(equity) > 1 else np.nan
+    summary["CAGR"] = _cagr_from_rets(rets)
+    summary["Sharpe"] = _sharpe(rets)
+    summary["Max Drawdown"] = _max_dd_from_equity(equity)
+
+    # --- per-regime perf ---
+    def _regime_block(mask: pd.Series, name: str):
+        r = rets[mask]
+        eq = equity.copy()
+        # equity restricted to mask dates (not "continuous" DD, but regime-only path)
+        eq = eq.loc[r.index]
+        summary[f"{name} Days"] = int(mask.sum())
+        summary[f"{name} Pct Days"] = mask.mean()
+        summary[f"{name} Avg Daily Return"] = r.mean()
+        summary[f"{name} Total Return (comp)"] = (1.0 + r).prod() - 1.0
+        summary[f"{name} CAGR (naive)"] = _cagr_from_rets(r)
+        summary[f"{name} Sharpe"] = _sharpe(r)
+        summary[f"{name} Max DD (within regime)"] = _max_dd_from_equity(eq)
+
+    _regime_block(invested, "Invested")
+    _regime_block(flat, "Flat")
+    _regime_block(partial, "Partial")
+
+    df_summary = pd.DataFrame.from_dict(summary, orient="index", columns=["Value"])
+
+    # make it readable
+    pct_rows = [i for i in df_summary.index if "Pct" in i or "Return" in i or "CAGR" in i or "Max Drawdown" in i]
+    # Don't over-format numerically here; you already have my_display styling in your framework.
+
+    # --- yearly view ---
+    years = rets.index.year
+    df = pd.DataFrame({
+        "ret": rets,
+        "ge": ge,
+        "invested": invested,
+        "flat": flat,
+        "partial": partial,
+    })
+    grp = df.groupby(years)
+
+    def _year_stats(g: pd.DataFrame) -> pd.Series:
+        r = g["ret"]
+        inv = g["invested"]
+        fl = g["flat"]
+        part = g["partial"]
+        out = {
+            "Pct Invested": inv.mean(),
+            "Pct Flat": fl.mean(),
+            "Pct Partial": part.mean(),
+            "Return Total": (1.0 + r).prod() - 1.0,
+            "Return Invested": (1.0 + r[inv]).prod() - 1.0 if inv.any() else 0.0,
+            "Return Flat": (1.0 + r[fl]).prod() - 1.0 if fl.any() else 0.0,
+            "Return Partial": (1.0 + r[part]).prod() - 1.0 if part.any() else 0.0,
+        }
+        return pd.Series(out)
+
+    df_yearly = grp.apply(_year_stats)
+    df_yearly.index.name = "Year"
+
+    if show_report:
+        my_display(df_summary, title=title)
+        my_display(df_yearly, title=f"{title} — Yearly Breakdown")
+
+    return df_summary, df_yearly
+
+
+def analyze_timing_efficiency(
+    pf,
+    portfolio_type: str = "auto",   # "auto", "trading", "rotational", "lazy"
+    exposure_threshold: float = 0.95,
+    flat_threshold: float = 0.05,
+    annualization: int = 252,
+    show_report: bool = True,
+    vbt_plot_width: int | None = 1000,
+    fig_height: int = 700
+):
+    """
+    Timing Efficiency Analysis + Grafici (Plotly) per vectorbt.Portfolio `pf`.
+    Ritorna un dict con DataFrame e Figure:
+      {
+        "df_summary": ...,
+        "df_yearly": ...,
+        "df_bh_vs_pf": ...,
+        "df_timing": ...,
+        "aux": {...},
+        "portfolio_type": ...,
+        "figs": [fig_equity, fig_exposure, fig_yearly]
+      }
+    """
+
+    # ----- helper inner functions (rifatte in modo compatto) -----
+    def _get_series_equity(pf):
+        eq = pf.value()
+        if isinstance(eq, pd.DataFrame):
+            return eq.iloc[:, 0].copy()
+        return eq.copy()
+
+    def _safe_rets(series):
+        r = series.pct_change().replace([np.inf, -np.inf], np.nan).fillna(0.0)
+        return r
+
+    def _cagr_from_rets(r):
+        if r.empty:
+            return np.nan
+        cum = (1.0 + r).prod()
+        n = len(r)
+        years = n / annualization if annualization > 0 else np.nan
+        return cum ** (1 / years) - 1 if years > 0 else np.nan
+
+    def _sharpe(r):
+        if r.empty:
+            return np.nan
+        mu = r.mean()
+        sd = r.std(ddof=0)
+        if sd == 0 or np.isnan(sd):
+            return np.nan
+        return (mu / sd) * np.sqrt(annualization)
+
+    def _max_dd_from_equity(eq):
+        if eq.empty:
+            return np.nan
+        peak = eq.cummax()
+        dd = eq / peak - 1.0
+        return dd.min()
+
+    def _get_ge(pf, eq_index):
+        if hasattr(pf, "gross_exposure"):
+            ge = pf.gross_exposure()
+            if isinstance(ge, pd.DataFrame):
+                ge = ge.iloc[:, 0]
+            ge = ge.reindex(eq_index).ffill().fillna(0.0)
+            return ge
+        # fallback: infer from assets * prices
+        assets = pf.assets()
+        close = getattr(pf, "close", None)
+        if isinstance(assets, pd.DataFrame) and close is not None:
+            try:
+                values = assets * close
+                tv = values.sum(axis=1)
+                ge_approx = values.abs().sum(axis=1) / tv
+                return ge_approx.reindex(eq_index).ffill().fillna(0.0)
+            except Exception:
+                pass
+        if isinstance(assets, pd.Series):
+            mask = (assets.abs() > 0).astype(float)
+            return mask.reindex(eq_index).ffill().fillna(0.0)
+        # last fallback: zeros
+        return pd.Series(0.0, index=eq_index)
+
+    def _compute_bh_from_initial_assets(pf, eq_index):
+        assets = pf.assets()
+        close = getattr(pf, "close", None)
+        if close is None:
+            return None
+        try:
+            # Normalize close as DataFrame
+            if isinstance(close, pd.Series):
+                close = close.to_frame(close.name if close.name is not None else "X")
+            if isinstance(assets, pd.Series):
+                # try match column
+                col = assets.name if assets.name in close.columns else close.columns[0]
+                qty0 = float(assets.iloc[0])
+                bh = close[col] * qty0
+                bh = bh.reindex(eq_index).ffill().fillna(method="ffill")
+                return bh
+            elif isinstance(assets, pd.DataFrame):
+                qty0 = assets.iloc[0].fillna(0.0)
+                common = [c for c in qty0.index if c in close.columns]
+                if not common:
+                    common = close.columns.tolist()[:len(qty0)]
+                bh = (qty0[common] * close[common]).sum(axis=1)
+                return bh.reindex(eq_index).ffill().fillna(method="ffill")
+        except Exception:
+            return None
+        return None
+
+    def _contiguous_segments(mask: pd.Series):
+        """Ritorna lista di (start, end) per i tratti True continui su mask (index sono datetimes)."""
+        segments = []
+        if mask.empty:
+            return segments
+        is_on = False
+        start = None
+        for dt, val in mask.items():
+            if val and not is_on:
+                is_on = True
+                start = dt
+            elif not val and is_on:
+                is_on = False
+                segments.append((start, prev_dt))
+            prev_dt = dt
+        if is_on:
+            segments.append((start, prev_dt))
+        return segments
+
+    # ----- MAIN -----
+    if pf is None:
+        raise ValueError("pf is None")
+
+    eq = _get_series_equity(pf).dropna()
+    if eq.empty:
+        raise ValueError("pf.value() produced empty equity series.")
+    rets = _safe_rets(eq)
+    ge = _get_ge(pf, eq.index)
+
+    invested_mask = ge >= float(exposure_threshold)
+    flat_mask = ge <= float(flat_threshold)
+    partial_mask = ~(invested_mask | flat_mask)
+
+    # infer portfolio_type if auto (heuristica semplice)
+    if portfolio_type == "auto":
+        close = getattr(pf, "close", None)
+        assets = pf.assets()
+        n_tickers = None
+        if close is not None:
+            n_tickers = close.shape[1] if isinstance(close, pd.DataFrame) else 1
+        else:
+            n_tickers = assets.shape[1] if isinstance(assets, pd.DataFrame) else 1
+        if n_tickers == 1:
+            portfolio_type = "trading"
+        else:
+            # detect lazy -> holdings constant
+            try:
+                if isinstance(assets, pd.DataFrame):
+                    const_holdings = (assets.diff().abs().sum().sum() == 0)
+                    portfolio_type = "lazy" if const_holdings else "rotational"
+                else:
+                    portfolio_type = "rotational"
+            except Exception:
+                portfolio_type = "rotational"
+
+    # summary metrics (as before)
+    summary = {}
+    summary["Days"] = len(rets)
+    summary["Pct Invested (>=thr)"] = invested_mask.mean()
+    summary["Pct Flat (<=thr)"] = flat_mask.mean()
+    summary["Pct Partial"] = partial_mask.mean()
+    summary["Total Return"] = (eq.iloc[-1] / eq.iloc[0]) - 1.0
+    summary["CAGR"] = _cagr_from_rets(rets)
+    summary["Sharpe"] = _sharpe(rets)
+    summary["Max Drawdown"] = _max_dd_from_equity(eq)
+
+    def _regime_stats(mask, label):
+        r = rets[mask]
+        out = {}
+        out[f"{label} Days"] = int(mask.sum())
+        out[f"{label} Pct Days"] = mask.mean()
+        out[f"{label} Total Return (comp)"] = (1.0 + r).prod() - 1.0 if len(r) > 0 else np.nan
+        out[f"{label} CAGR"] = _cagr_from_rets(r) if len(r) > 0 else np.nan
+        out[f"{label} Sharpe"] = _sharpe(r)
+        try:
+            eq_slice = eq.loc[r.index]
+            out[f"{label} Max DD (within regime)"] = _max_dd_from_equity(eq_slice)
+        except Exception:
+            out[f"{label} Max DD (within regime)"] = np.nan
+        return out
+
+    summary.update(_regime_stats(invested_mask, "Invested"))
+    summary.update(_regime_stats(flat_mask, "Flat"))
+    summary.update(_regime_stats(partial_mask, "Partial"))
+
+    df_summary = pd.DataFrame.from_dict(summary, orient="index", columns=["Value"])
+
+    # yearly breakdown
+    yrs = rets.index.year
+    df_work = pd.DataFrame({
+        "ret": rets,
+        "ge": ge,
+        "invested": invested_mask,
+        "flat": flat_mask,
+        "partial": partial_mask
+    })
+    def _year_stats(group):
+        r = group["ret"]
+        inv = group["invested"]
+        fl = group["flat"]
+        part = group["partial"]
+        res = {
+            "Pct Invested": inv.mean(),
+            "Pct Flat": fl.mean(),
+            "Pct Partial": part.mean(),
+            "Return Total": (1.0 + r).prod() - 1.0 if len(r) > 0 else np.nan,
+            "Return Invested": (1.0 + r[inv]).prod() - 1.0 if inv.any() else 0.0,
+            "Return Flat": (1.0 + r[fl]).prod() - 1.0 if fl.any() else 0.0,
+            "Return Partial": (1.0 + r[part]).prod() - 1.0 if part.any() else 0.0,
+        }
+        return pd.Series(res)
+
+    df_yearly = df_work.groupby(yrs).apply(_year_stats)
+    df_yearly.index.name = "Year"
+
+    # BH comparator
+    bh_series = _compute_bh_from_initial_assets(pf, eq.index)
+    bh_cmp = {}
+    if bh_series is not None:
+        bh_series = bh_series.reindex(eq.index).ffill().fillna(method="ffill")
+        bh_rets = _safe_rets(bh_series)
+        bh_cmp["BH Total Return"] = (bh_series.iloc[-1] / bh_series.iloc[0]) - 1.0
+        bh_cmp["BH CAGR"] = _cagr_from_rets(bh_rets)
+        bh_cmp["BH Max Drawdown"] = _max_dd_from_equity(bh_series)
+        bh_cmp["Excess CAGR (PF - BH)"] = df_summary.loc["CAGR", "Value"] - bh_cmp["BH CAGR"]
+        bh_cmp["Drawdown Avoided (BH DD - PF DD)"] = bh_cmp["BH Max Drawdown"] - df_summary.loc["Max Drawdown", "Value"]
+        # BH/PF during invested days
+        inv_idx = invested_mask[invested_mask].index
+        try:
+            bh_r_inv = (1.0 + bh_rets.loc[inv_idx]).prod() - 1.0 if len(inv_idx) > 0 else np.nan
+        except Exception:
+            bh_r_inv = np.nan
+        pf_r_inv = (1.0 + rets.loc[inv_idx]).prod() - 1.0 if len(inv_idx) > 0 else np.nan
+        bh_cmp["BH Return During Invested Days"] = bh_r_inv
+        bh_cmp["PF Return During Invested Days"] = pf_r_inv
+    else:
+        bh_cmp = {k: np.nan for k in [
+            "BH Total Return","BH CAGR","BH Max Drawdown","Excess CAGR (PF - BH)",
+            "Drawdown Avoided (BH DD - PF DD)","BH Return During Invested Days","PF Return During Invested Days"
+        ]}
+
+    df_bh_vs_pf = pd.DataFrame.from_dict(bh_cmp, orient="index", columns=["Value"])
+
+    # Timing metrics
+    invested_days = int(invested_mask.sum())
+    pct_invested = invested_mask.mean()
+    pf_cagr = df_summary.loc["CAGR", "Value"]
+    timing = {
+        "CAGR": pf_cagr,
+        "Time Invested (days)": invested_days,
+        "Pct Time Invested": pct_invested,
+        "CAGR per Invested Year": (pf_cagr / pct_invested) if (pct_invested and not np.isnan(pf_cagr)) else np.nan
+    }
+    df_timing = pd.DataFrame.from_dict(timing, orient="index", columns=["Value"])
+
+    # ----- GRAFICI Plotly -----
+    figs = []
+
+    # 1) Equity vs BH with invested shading
+    fig_eq = go.Figure()
+    fig_eq.add_trace(go.Scatter(x=eq.index, y=eq.values, mode="lines", name="PF Equity", line=dict(color="#1f77b4")))
+    if bh_series is not None:
+        fig_eq.add_trace(go.Scatter(x=bh_series.index, y=bh_series.values, mode="lines", name="Buy & Hold", line=dict(color="#ff7f0e", dash="dot")))
+    # add invested shaded rectangles
+    for (s,e) in _contiguous_segments(invested_mask):
+        fig_eq.add_vrect(x0=s, x1=e, fillcolor="green", opacity=0.08, layer="below", line_width=0)
+    fig_eq.update_layout(title=f"{pf.name if hasattr(pf,'name') else 'Portfolio'} — Equity vs BH (shaded = Invested)", hovermode="x unified")
+    fig_eq.update_xaxes(title_text="Date")
+    fig_eq.update_yaxes(title_text="Value")
+    if vbt_plot_width is not None:
+        fig_eq.update_layout(width=int(vbt_plot_width), height=int(fig_height*0.45))
+    figs.append(fig_eq)
+
+    # 2) Gross Exposure with color by regime (stacked background)
+    fig_ge = go.Figure()
+    fig_ge.add_trace(go.Scatter(x=ge.index, y=ge.values, mode="lines", name="Gross Exposure", line=dict(color="#d62728")))
+    # background colored bands for regimes (Invested green, Flat grey, Partial orange)
+    # build contiguous segments for each mask
+    for (s,e) in _contiguous_segments(invested_mask):
+        fig_ge.add_vrect(x0=s, x1=e, fillcolor="green", opacity=0.08, layer="below", line_width=0)
+    for (s,e) in _contiguous_segments(flat_mask):
+        fig_ge.add_vrect(x0=s, x1=e, fillcolor="lightgrey", opacity=0.06, layer="below", line_width=0)
+    for (s,e) in _contiguous_segments(partial_mask):
+        fig_ge.add_vrect(x0=s, x1=e, fillcolor="orange", opacity=0.04, layer="below", line_width=0)
+    fig_ge.update_layout(title="Gross Exposure (background: Invested/Flat/Partial)", hovermode="x unified")
+    fig_ge.update_xaxes(title_text="Date")
+    fig_ge.update_yaxes(title_text="Gross Exposure", range=[-0.05, 1.05])
+    if vbt_plot_width is not None:
+        fig_ge.update_layout(width=int(vbt_plot_width), height=int(fig_height*0.25))
+    figs.append(fig_ge)
+
+    # 3) Yearly returns PF vs BH (if BH available)
+    years = sorted(df_yearly.index.tolist())
+    pf_returns = [df_yearly.loc[y, "Return Total"] if y in df_yearly.index else np.nan for y in years]
+    bh_returns = []
+    if bh_series is not None:
+        bh_rets = (1 + bh_series.pct_change().fillna(0)).cumprod()
+        # compute yearly BH returns per same years
+        bh_returns = []
+        bh_r = (1 + bh_series.pct_change().fillna(0))
+        for y in years:
+            idx_year = bh_series[bh_series.index.year == y].index
+            if len(idx_year) == 0:
+                bh_returns.append(np.nan)
+            else:
+                bh_returns.append((1.0 + bh_r.loc[idx_year]).prod() - 1.0)
+    fig_year = go.Figure()
+    x = [str(y) for y in years]
+    fig_year.add_trace(go.Bar(x=x, y=[100*v for v in pf_returns], name="PF Return (%)", marker_color="#1f77b4"))
+    if bh_returns:
+        fig_year.add_trace(go.Bar(x=x, y=[100*v for v in bh_returns], name="BH Return (%)", marker_color="#ff7f0e"))
+    fig_year.update_layout(barmode="group", title="Yearly Returns: PF vs BH (percent %)", xaxis_title="Year", yaxis_title="Return (%)")
+    if vbt_plot_width is not None:
+        fig_year.update_layout(width=int(vbt_plot_width), height=int(fig_height*0.25))
+    figs.append(fig_year)
+
+    # ----- Stampa report se richiesto -----
+    if show_report:
+        try:
+            my_display(df_summary, title=f"{pf.name if hasattr(pf,'name') else 'Portfolio'} - Timing Summary")
+            my_display(df_yearly, title=f"{pf.name if hasattr(pf,'name') else 'Portfolio'} - Yearly Timing Breakdown")
+            my_display(df_bh_vs_pf, title=f"{pf.name if hasattr(pf,'name') else 'Portfolio'} - Buy&Hold Comparator")
+            my_display(df_timing, title=f"{pf.name if hasattr(pf,'name') else 'Portfolio'} - Timing Efficiency")
+        except Exception:
+            # fallback: print
+            display(df_summary); display(df_yearly); display(df_bh_vs_pf); display(df_timing)
+
+    aux = {
+        "equity": eq,
+        "returns": rets,
+        "gross_exposure": ge,
+        "invested_mask": invested_mask,
+        "flat_mask": flat_mask,
+        "partial_mask": partial_mask,
+        "bh_series": bh_series
+    }
+
+    return {
+        "df_summary": df_summary,
+        "df_yearly": df_yearly,
+        "df_bh_vs_pf": df_bh_vs_pf,
+        "df_timing": df_timing,
+        "aux": aux,
+        "portfolio_type": portfolio_type,
+        "figs": figs
+    }
+
+
+# ════════════════════════════════════════
+# DSR — Deflated Sharpe Ratio
+# ════════════════════════════════════════
+
+def deflated_sharpe_ratio(
+    sharpe_ratio, n_obs, skewness, kurtosis, n_trials, sr_benchmark=0.0
+):
+    sr_std = np.sqrt(
+        (1 - skewness * sharpe_ratio + ((kurtosis - 1) / 4) * sharpe_ratio**2)
+        / (n_obs - 1)
+    )
+    if n_trials <= 1:
+        sr_star = sr_benchmark
+    else:
+        euler_mascheroni = 0.5772156649
+        z = (1 - euler_mascheroni) * norm.ppf(1 - 1 / n_trials) + \
+            euler_mascheroni * norm.ppf(1 - 1 / (n_trials * np.e))
+        sr_star = sr_benchmark + sr_std * z
+
+    dsr = norm.cdf(
+        (sharpe_ratio - sr_star) * np.sqrt(n_obs - 1) /
+        np.sqrt(1 - skewness * sharpe_ratio + ((kurtosis - 1) / 4) * sharpe_ratio**2)
+    )
+    return {
+        "dsr": round(dsr, 6),
+        "sr_star": round(sr_star, 6),
+        "sr_std": round(sr_std, 6),
+        "is_significant": dsr > 0.95,
+    }
+
+
+def compute_dsr_from_returns(
+    returns: Union[pd.Series, np.ndarray, list],
+    n_trials: int = 1,
+    periods_per_year: int = 252,
+    sr_benchmark: float = 0.0,
+) -> dict:
+    from scipy.stats import skew as _skew, kurtosis as _kurt
+    r = np.asarray(returns, dtype=float)
+    r = r[~np.isnan(r)]
+    n_obs  = len(r)
+    mean   = np.mean(r)
+    std    = np.std(r, ddof=1)
+    skew_  = _skew(r)
+    kurt_  = _kurt(r, fisher=True)
+    sr     = (mean / std) * np.sqrt(periods_per_year) if std > 0 else 0.0
+
+    return deflated_sharpe_ratio(
+        sharpe_ratio=sr,
+        n_obs=n_obs,
+        skewness=skew_,
+        kurtosis=kurt_,
+        n_trials=n_trials,
+        sr_benchmark=sr_benchmark,
+    )
+
+def compute_panel_dsr(
+    results_panel: dict,
+    periods_per_year: int = 252,
+    sr_benchmark: float = 0.0,
+) -> pd.DataFrame:
+    """
+    Calcola il DSR per tutte le combinazioni (Ticker, Strategy) in results_panel.
+
+    Parameters
+    ----------
+    results_panel    : dict output di wfo_strategy_panel_NEW
+                       chiavi: (ticker, strategy) | valori: dict con 'portfolio'
+    periods_per_year : 252 giornaliero | 52 settimanale | 12 mensile
+    sr_benchmark     : SR minimo accettabile (default 0)
+
+    Returns
+    -------
+    pd.DataFrame con colonne:
+        Ticker, Strategy, n_obs, sharpe_ratio, dsr, sr_star, sr_std, is_significant
+    """
+    n_trials = len(results_panel)  # ogni (ticker, strategy) è un trial distinto
+    rows = []
+
+    for (ticker, strategy), val in results_panel.items():
+        try:
+            returns = val['portfolio'].returns().dropna().values
+
+            if len(returns) < 10:
+                rows.append({
+                    "Ticker": ticker, "Strategy": strategy,
+                    "n_obs": len(returns), "sharpe_ratio": np.nan,
+                    "dsr": np.nan, "sr_star": np.nan,
+                    "sr_std": np.nan, "is_significant": False,
+                    "error": "insufficient data",
+                })
+                continue
+
+            result = compute_dsr_from_returns(
+                returns=returns,
+                n_trials=n_trials,
+                periods_per_year=periods_per_year,
+                sr_benchmark=sr_benchmark,
+            )
+
+            # Sharpe annualizzato grezzo per riferimento
+            r = returns
+            sr_raw = (np.mean(r) / np.std(r, ddof=1)) * np.sqrt(periods_per_year)
+
+            rows.append({
+                "Ticker":         ticker,
+                "Strategy":       strategy,
+                "n_obs":          len(returns),
+                "sharpe_ratio":   round(sr_raw, 6),
+                "dsr":            result["dsr"],
+                "sr_star":        result["sr_star"],
+                "sr_std":         result["sr_std"],
+                "is_significant": result["is_significant"],
+                "error":          None,
+            })
+
+        except Exception as e:
+            rows.append({
+                "Ticker": ticker, "Strategy": strategy,
+                "n_obs": None, "sharpe_ratio": np.nan,
+                "dsr": np.nan, "sr_star": np.nan,
+                "sr_std": np.nan, "is_significant": False,
+                "error": str(e),
+            })
+
+    df = pd.DataFrame(rows).sort_values("dsr", ascending=False).reset_index(drop=True)
+    return df
