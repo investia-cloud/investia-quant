@@ -1,7 +1,7 @@
 """
 test_strategies.py
 ──────────────────
-Script standalone che testa tutte le K-Strategies presenti in strategies.ipynb
+Script standalone che testa tutte le K-Strategies presenti in k_strategies_agent.py
 sui ticker dei portafogli portfolio_us_trading_2026 e portfolio_euro_trading_2026,
 usando wfo_strategy_panel con override=False per saltare combinazioni già testate.
 
@@ -28,7 +28,7 @@ import time
 # ─────────────────────────────────────────────
 PROJECT_ROOT   = Path(__file__).parent.parent
 LIBS_DIR       = PROJECT_ROOT / "notebooks" / "libs"
-STRATEGIES_NB  = Path(__file__).parent / "strategies.ipynb"
+STRATEGIES_PY  = PROJECT_ROOT / "notebooks" / "libs_py" / "k_strategies_agent.py"
 WFO_RESULTS_DIR    = str(PROJECT_ROOT / "outputs" / "WFO_T_DEV_RESULTS")
 EXCEL_RESULTS_FILE = PROJECT_ROOT / "outputs" / "WFO_T_DEV_RESULTS" / "test_results_history.xlsx"
 
@@ -89,39 +89,45 @@ def _exec_notebook(nb_path: Path, ns: dict) -> None:
             log.debug(f"  [skip] {nb_path.name}: {e}")
 
 
-def build_namespace(strategies_nb: Path = STRATEGIES_NB) -> dict:
+def build_namespace(strategies_py: Path = STRATEGIES_PY) -> dict:
     """
-    Carica nell'ordine del _bootstrap_dev tutti i notebook necessari
-    e restituisce il namespace condiviso con tutte le funzioni disponibili.
+    Importa direttamente i moduli .py da notebooks/libs_py e restituisce
+    il namespace condiviso con tutte le funzioni disponibili.
 
     Parameters
     ----------
-    strategies_nb : Path
-        Notebook delle strategie da caricare (default: STRATEGIES_NB).
+    strategies_py : Path
+        Modulo strategie da caricare (default: STRATEGIES_PY).
     """
-    ns: dict = {"__builtins__": __builtins__}
+    import importlib.util, sys as _sys
 
-    # Stessa sequenza di _bootstrap_dev.ipynb (senza r_functions, mc_functions, ecc.)
-    notebooks = [
-        LIBS_DIR / "k_functions.ipynb",
-        LIBS_DIR / "k_tickers.ipynb",
-        LIBS_DIR / "k_portfolios.ipynb",
-        LIBS_DIR / "u_functions.ipynb",
-    ]
+    ns: dict = {}
 
-    for nb_path in notebooks:
-        if not nb_path.exists():
-            log.warning(f"Notebook non trovato, skip: {nb_path}")
+    libs_py = PROJECT_ROOT / "notebooks" / "libs_py"
+    libs_py_str = str(libs_py)
+    if libs_py_str not in _sys.path:
+        _sys.path.insert(0, libs_py_str)
+    for mod_name in ["k_functions", "k_tickers", "k_portfolios", "u_functions"]:
+        mod_path = libs_py / f"{mod_name}.py"
+        if not mod_path.exists():
+            log.warning(f"Modulo non trovato, skip: {mod_path}")
             continue
-        log.info(f"Carico: {nb_path.name}")
-        _exec_notebook(nb_path, ns)
+        spec = importlib.util.spec_from_file_location(mod_name, mod_path)
+        mod = importlib.util.module_from_spec(spec)
+        _sys.modules[mod_name] = mod
+        spec.loader.exec_module(mod)
+        ns.update({k: v for k, v in vars(mod).items() if not k.startswith("__")})
+        log.info(f"Caricato: {mod_name}.py")
 
-    # Carica anche le strategie generate dall'agente
-    if strategies_nb.exists():
-        log.info(f"Carico: {strategies_nb.name}")
-        _exec_notebook(strategies_nb, ns)
+    # Carica strategie agente
+    if strategies_py.exists():
+        spec = importlib.util.spec_from_file_location("k_strategies_agent", strategies_py)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        ns.update({k: v for k, v in vars(mod).items() if not k.startswith("__")})
+        log.info(f"Caricato: {strategies_py.name}")
     else:
-        log.warning(f"Notebook strategie non trovato: {strategies_nb}")
+        log.warning(f"File strategie non trovato: {strategies_py}")
 
     return ns
 
@@ -247,25 +253,24 @@ def check_param_grid_size(strategy_name: str, source: str) -> list[str]:
     return []
 
 
-def check_all_strategies_performance(strategies_nb_path: Path) -> dict[str, list[str]]:
+def check_all_strategies_performance(strategies_py_path: Path) -> dict[str, list[str]]:
     """
-    Esegue check_strategy_performance su ogni cella del notebook strategies.ipynb
+    Esegue check_strategy_performance su ogni blocco di k_strategies_agent.py
     che contiene una strategia (riconosciuta da 'def strategy_').
     Restituisce {strategy_name: [warning, ...]}. Solo strategie con warning.
     """
-    import json
     issues: dict[str, list[str]] = {}
-    if not strategies_nb_path.exists():
+    if not strategies_py_path.exists():
         return issues
-    with open(strategies_nb_path) as f:
-        nb = json.load(f)
-    for cell in nb.get("cells", []):
-        src = "".join(cell.get("source", []))
-        m = re.search(r"def strategy_([a-z0-9_]+)\s*\(", src)
+    source = strategies_py_path.read_text(encoding="utf-8")
+    # Spezza il file in blocchi per funzione strategy_
+    blocks = re.split(r"(?=^def strategy_)", source, flags=re.MULTILINE)
+    for block in blocks:
+        m = re.match(r"def strategy_([a-z0-9_]+)\s*\(", block)
         if not m:
             continue
         name = m.group(1)
-        found = check_strategy_performance(name, src) + check_param_grid_size(name, src)
+        found = check_strategy_performance(name, block) + check_param_grid_size(name, block)
         if found:
             issues[name] = found
     return issues
@@ -281,24 +286,24 @@ def run_strategy_tests(
     only_strategies : list[str] | None = None,
     override        : bool            = False,
     scenario        : str             = "B",
-    strategies_nb   : Path            = STRATEGIES_NB,
+    strategies_py   : Path            = STRATEGIES_PY,
     _ns             : dict | None     = None,
 ) -> "pd.DataFrame | None":
     log.info("═══ Avvio test strategie ═══")
     log.info(f"  WFO results dir : {WFO_RESULTS_DIR}")
     log.info(f"  Dry-run         : {dry_run}")
-    log.info(f"  Strategie NB    : {strategies_nb}")
+    log.info(f"  Strategie PY    : {strategies_py}")
 
     # 1. Costruisci namespace (riutilizza se passato dalla pipeline)
     if _ns is not None:
         ns = _ns
     else:
         log.info("Caricamento namespace...")
-        ns = build_namespace(strategies_nb=strategies_nb)
+        ns = build_namespace(strategies_py=strategies_py)
 
     # 1b. Check statici di performance (solo al primo caricamento, non nelle run interne della pipeline)
     if _ns is None:
-        perf_issues = check_all_strategies_performance(strategies_nb)
+        perf_issues = check_all_strategies_performance(strategies_py)
     else:
         perf_issues = {}
     if perf_issues:
@@ -477,7 +482,7 @@ def run_pipeline(
     only_tickers    : list[str] | None = None,
     only_strategies : list[str] | None = None,
     override        : bool            = False,
-    strategies_nb   : Path            = STRATEGIES_NB,
+    strategies_py   : Path            = STRATEGIES_PY,
 ) -> None:
     """
     Pipeline di selezione in due stadi:
@@ -498,9 +503,9 @@ def run_pipeline(
     # ── Stage 1: Scenario B ──────────────────────────────────────
     log.info("── Stage 1: Scenario B — filtro base ──────────────────")
     log.info("Caricamento namespace...")
-    ns = build_namespace(strategies_nb=strategies_nb)
+    ns = build_namespace(strategies_py=strategies_py)
 
-    perf_issues = check_all_strategies_performance(strategies_nb)
+    perf_issues = check_all_strategies_performance(strategies_py)
     if perf_issues:
         log.warning("⚠️  Check performance: %d strategia/e con pattern lenti:", len(perf_issues))
         for strat, msgs in perf_issues.items():
@@ -515,7 +520,7 @@ def run_pipeline(
         only_strategies = only_strategies,
         override        = override,
         scenario        = "B",
-        strategies_nb   = strategies_nb,
+        strategies_py   = strategies_py,
         _ns             = ns,
     )
 
@@ -542,7 +547,7 @@ def run_pipeline(
         only_strategies = surv_strategies,
         override        = True,   # sempre override: ricalcola con gates più stringenti
         scenario        = "E",
-        strategies_nb   = strategies_nb,
+        strategies_py   = strategies_py,
         _ns             = ns,
     )
 
@@ -581,7 +586,7 @@ def run_pipeline(
 _HELP_DESCRIPTION = """\
 test_strategies.py — Testa le K-Strategies su Walk-Forward Optimization (WFO)
 
-Carica strategies.ipynb e le librerie del progetto, esegue un precheck di
+Carica k_strategies_agent.py e le librerie del progetto, esegue un precheck di
 robustezza parametrica e poi la WFO completa per ogni combinazione
 ticker × strategia. I risultati vengono salvati in:
   outputs/WFO_T_DEV_RESULTS/<strategia>/
@@ -638,7 +643,7 @@ PIPELINE DI SELEZIONE (--pipeline)
 
 CHECK STATICI DI PERFORMANCE
 ──────────────────────────────
-  All'avvio viene eseguita un'analisi statica su strategies.ipynb che segnala
+  All'avvio viene eseguita un'analisi statica su k_strategies_agent.py che segnala
   pattern noti per essere lenti nel WFO (rolling.apply raw=False, loop con .iloc,
   pd.concat per il True Range, divisioni per zero, ecc.).
 
@@ -728,18 +733,18 @@ def main():
         ),
     )
     parser.add_argument(
-        "--strategies-nb",
+        "--strategies-py",
         metavar="PATH",
         default=None,
         help=(
-            f"Notebook delle strategie da caricare\n"
-            f"(default: {STRATEGIES_NB})\n"
-            f"Es.: --strategies-nb ../K-Strategy-Agent/strategies_v2.ipynb"
+            f"Modulo strategie da caricare\n"
+            f"(default: {STRATEGIES_PY})\n"
+            f"Es.: --strategies-py ../notebooks/libs_py/k_strategies_agent_v2.py"
         ),
     )
     args = parser.parse_args()
 
-    strategies_nb = Path(args.strategies_nb) if args.strategies_nb else STRATEGIES_NB
+    strategies_py = Path(args.strategies_py) if args.strategies_py else STRATEGIES_PY
 
     if args.pipeline:
         run_pipeline(
@@ -747,7 +752,7 @@ def main():
             only_tickers    = args.tickers,
             only_strategies = args.strategies,
             override        = args.override,
-            strategies_nb   = strategies_nb,
+            strategies_py   = strategies_py,
         )
     else:
         # Esegui singolo scenario
@@ -757,7 +762,7 @@ def main():
             only_strategies    = args.strategies,
             override           = args.override,
             scenario           = args.scenario,
-            strategies_nb      = strategies_nb,
+            strategies_py      = strategies_py,
         )
 
     # Opzionale: schedula (solo in modalità singolo scenario)

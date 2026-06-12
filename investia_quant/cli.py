@@ -6,6 +6,7 @@ Entry point: iq run / iq report / iq analyze
 import sys
 import os
 import datetime
+from pathlib import Path
 import click
 
 # ---------------------------------------------------------------------------
@@ -515,6 +516,98 @@ def analyze(ptf, universe, output_dir, profile, year, start_date, verbose):
         click.echo(f"  Skill Cluster: {result['skill_profile_cluster']}")
     except Exception as exc:
         raise click.ClickException(f"Pipeline fallita: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# iq k-analyze
+# ---------------------------------------------------------------------------
+
+@app.command("k-analyze")
+@click.option("-s", "--strategies", multiple=True, required=True,
+    help="Una o più strategie (es. -s dbma_matrix bollinger)")
+@click.option("-t", "--tickers", multiple=True, required=True,
+    help="Uno o più ticker (es. -t NVDA AAPL)")
+@click.option("--output-dir", default=None,
+    help="Directory output (default: outputs/k_analysis/<data>/)")
+@click.option("--start-date", default="2015-01-01")
+@click.option("--end-date", default=None)
+@click.option("--verbose", "-v", is_flag=True, default=False)
+def k_analyze(strategies, tickers, output_dir, start_date, end_date, verbose):
+    """Analisi K-strategy: inspector (1×1) o panel (N×M) in base agli argomenti."""
+    from datetime import datetime
+
+    def _parse_list(vals):
+        if not vals:
+            return None
+        result = []
+        for v in vals:
+            result.extend(v.split())
+        return result or None
+
+    s = _parse_list(strategies)
+    t = _parse_list(tickers)
+
+    if len(s) == 1 and len(t) == 1:
+        mode = "inspector"
+        print(f"Inspector: {s[0]}@{t[0]}")
+    else:
+        mode = "panel"
+        print(f"Panel: {len(s)} strategie × {len(t)} ticker")
+
+    out_dir = output_dir or str(
+        Path.home() / "investia-quant" / "outputs" / "k_analysis" /
+        datetime.now().strftime("%Y%m%d_%H%M%S")
+    )
+    print(f"Output dir: {out_dir}")
+    print(f"Periodo: {start_date} → {end_date or 'oggi'}")
+
+    # TODO: collegare run_k_strategy_analysis() quando disponibile
+    print(f"TODO: implementare chiamata core ({mode})")
+
+
+# ---------------------------------------------------------------------------
+# iq k-test
+# ---------------------------------------------------------------------------
+
+@app.command("k-test")
+@click.option("-s", "--strategies", multiple=True, default=None,
+    help="Strategie da testare (default: tutte in k_strategies_agent.py)")
+@click.option("-t", "--tickers", multiple=True, default=None,
+    help="Ticker da testare (default: da PTF registry)")
+@click.option("--scenario", default="B",
+    type=click.Choice(["A","B","C","D","E"]),
+    help="Scenario precheck: A=esplorazione B=base C=media D=notebook E=produzione")
+@click.option("--pipeline", is_flag=True, default=False,
+    help="Pipeline B→E: stage1 filtro base, stage2 solo promossi")
+@click.option("--override", is_flag=True, default=False,
+    help="Ricalcola risultati WFO già salvati")
+@click.option("--dry-run", is_flag=True, default=False,
+    help="Mostra cosa verrebbe eseguito senza lanciare WFO")
+@click.option("--verbose", "-v", is_flag=True, default=False)
+def k_test(strategies, tickers, scenario, pipeline, override, dry_run, verbose):
+    """Test massivo strategie K: WFO su tutte le coppie strategia×ticker."""
+    def _parse_list(vals):
+        if not vals:
+            return None
+        result = []
+        for v in vals:
+            result.extend(v.split())
+        return result or None
+
+    agent_dir = str(Path(__file__).parent.parent / "K-Strategy-Agent")
+    if agent_dir not in sys.path:
+        sys.path.insert(0, agent_dir)
+    from test_strategies import run_strategy_tests, run_pipeline
+
+    s = _parse_list(strategies)
+    t = _parse_list(tickers)
+
+    if pipeline:
+        run_pipeline(dry_run=dry_run, only_strategies=s, only_tickers=t,
+                     override=override)
+    else:
+        run_strategy_tests(dry_run=dry_run, only_strategies=s, only_tickers=t,
+                           override=override, scenario=scenario)
 
 
 # ---------------------------------------------------------------------------
