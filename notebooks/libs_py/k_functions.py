@@ -8789,14 +8789,14 @@ def run_k_strategy_analysis(
         dsr_val = float(dsr_row["dsr"].iloc[0]) if not dsr_row.empty else np.nan
         sharpe  = float(dsr_row["sharpe_ratio"].iloc[0]) if not dsr_row.empty else np.nan
 
-        is_promoted = ofc_pass and mc_pass
-        if is_promoted:
-            promoted.append((ticker, strategy))
-
         try:
             cagr    = round(float(portfolio.annualized_return()) * 100, 2)
         except Exception:
             cagr    = np.nan
+        try:
+            tot_ret = round(float(portfolio.total_return()) * 100, 2)
+        except Exception:
+            tot_ret = np.nan
         try:
             maxdd   = round(abs(float(portfolio.max_drawdown())) * 100, 2)
         except Exception:
@@ -8812,18 +8812,27 @@ def run_k_strategy_analysis(
         except Exception:
             bh_dd   = np.nan
 
+        beats_bh_return = (not np.isnan(bh_ret)) and (tot_ret > bh_ret)
+        beats_bh_dd = (not np.isnan(bh_dd)) and (maxdd < bh_dd)
+        is_promoted = ofc_pass and mc_pass and beats_bh_return and beats_bh_dd
+        if is_promoted:
+            promoted.append((ticker, strategy))
+
         rows.append({
-            "Ticker":   ticker,
-            "Strategy": strategy,
-            "Sharpe":   round(sharpe, 3),
-            "CAGR%":    cagr,
-            "MaxDD%":   maxdd,
-            "BH_Ret%":  bh_ret,
-            "BH_DD%":   bh_dd,
-            "DSR":      round(dsr_val, 3),
-            "OFC":      "PASS" if ofc_pass else "FAIL",
-            "MC":       "PASS" if mc_pass  else "FAIL",
-            "Promoted": "PASS" if is_promoted else "FAIL",
+            "Ticker":      ticker,
+            "Strategy":    strategy,
+            "Sharpe":      round(sharpe, 3),
+            "CAGR%":       cagr,
+            "TotRet%":     tot_ret,
+            "MaxDD%":      maxdd,
+            "BH_TotRet%":  bh_ret,
+            "BH_DD%":      bh_dd,
+            "DSR":         round(dsr_val, 3),
+            "OFC":         "PASS" if ofc_pass        else "FAIL",
+            "MC":          "PASS" if mc_pass          else "FAIL",
+            "BH_Beat_Ret": "PASS" if beats_bh_return else "FAIL",
+            "BH_Beat_DD":  "PASS" if beats_bh_dd     else "FAIL",
+            "Promoted":    "PASS" if is_promoted      else "FAIL",
         })
 
     if rows:
@@ -8831,7 +8840,7 @@ def run_k_strategy_analysis(
             "DSR", ascending=False).reset_index(drop=True)
     else:
         df_classification = pd.DataFrame(
-            columns=["Ticker", "Strategy", "Sharpe", "CAGR%", "MaxDD%", "BH_Ret%", "BH_DD%", "DSR", "OFC", "MC", "Promoted"])
+            columns=["Ticker", "Strategy", "Sharpe", "CAGR%", "TotRet%", "MaxDD%", "BH_TotRet%", "BH_DD%", "DSR", "OFC", "MC", "BH_Beat_Ret", "BH_Beat_DD", "Promoted"])
 
     if not df_classification.empty and wfo_results_dir:
         from datetime import datetime as _dt
@@ -8880,3 +8889,168 @@ def run_k_strategy_analysis(
         "promoted":          promoted,
         "plots_dir":         plots_dir,
     }
+
+
+# ════════════════════════════════════════
+# K-Panel Viewer — funzioni per k_strategy_panel.ipynb
+# ════════════════════════════════════════
+
+def load_k_classifications(
+    wfo_dir,
+    pattern: str = "classification_*.csv",
+    filter_promoted: str = "ALL",
+    sort_by: str = "Sharpe",
+    sort_asc: bool = False,
+):
+    """
+    Carica e consolida tutti i CSV classification_*.csv da wfo_dir.
+    filter_promoted: 'ALL' | 'PROMOTED' | 'FAILED'
+    Aggiunge colonne DeltaTotRet% e DeltaDD%.
+    """
+    from pathlib import Path as _Path
+    import pandas as _pd
+
+    wfo_dir = _Path(wfo_dir)
+    csv_files = sorted(wfo_dir.glob(pattern))
+    if not csv_files:
+        raise FileNotFoundError(
+            f"Nessun CSV in {wfo_dir} con pattern {pattern}.\n"
+            f"Esegui prima: iq k-analyze --ptf <nome>"
+        )
+    dfs = []
+    for f in csv_files:
+        df = _pd.read_csv(f)
+        df["_run"] = f.stem.replace("classification_", "")
+        dfs.append(df)
+    df_all = _pd.concat(dfs, ignore_index=True)
+
+    # Deduplicazione: tieni run più recente per ogni ticker+strategy
+    df_all = df_all.sort_values("_run", ascending=False)
+    df_all = df_all.drop_duplicates(subset=["Ticker", "Strategy"], keep="first")
+
+    # Delta vs B&H
+    if "TotRet%" in df_all.columns and "BH_TotRet%" in df_all.columns:
+        df_all["DeltaTotRet%"] = (df_all["TotRet%"] - df_all["BH_TotRet%"]).round(2)
+    if "BH_DD%" in df_all.columns and "MaxDD%" in df_all.columns:
+        df_all["DeltaDD%"] = (df_all["BH_DD%"] - df_all["MaxDD%"]).round(2)
+
+    # Filtro
+    if filter_promoted == "PROMOTED":
+        df_all = df_all[df_all["Promoted"] == "PASS"]
+    elif filter_promoted == "FAILED":
+        df_all = df_all[df_all["Promoted"] == "FAIL"]
+
+    return df_all.sort_values(sort_by, ascending=sort_asc).reset_index(drop=True)
+
+
+def style_k_classification(df):
+    """
+    Applica colori e formato 3 decimali alla tabella classifica K-panel.
+    Ritorna un pandas Styler.
+    """
+    import pandas as _pd
+
+    def _color_pass_fail(val):
+        if val == "PASS": return "background-color:#d4edda;color:#155724"
+        if val == "FAIL": return "background-color:#f8d7da;color:#721c24"
+        return ""
+
+    def _color_delta(val):
+        if _pd.isna(val): return ""
+        return "color:#155724;font-weight:bold" if val > 0 else "color:#721c24;font-weight:bold"
+
+    def _color_sharpe(val):
+        if _pd.isna(val): return ""
+        if val >= 1.0: return "color:#155724"
+        if val >= 0.5: return "color:#856404"
+        return "color:#721c24"
+
+    cols_order = [
+        "Ticker", "Strategy", "Sharpe",
+        "CAGR%", "TotRet%", "BH_TotRet%", "DeltaTotRet%",
+        "MaxDD%", "BH_DD%", "DeltaDD%",
+        "DSR", "OFC", "MC", "BH_Beat_Ret", "BH_Beat_DD", "Promoted"
+    ]
+    cols_show = [c for c in cols_order if c in df.columns]
+    df_s = df[cols_show].copy()
+
+    # Formato esplicito per colonne numeriche
+    fmt = {}
+    for col in df_s.select_dtypes(include="number").columns:
+        if col in ["Sharpe", "DSR"]:
+            fmt[col] = "{:.3f}"
+        else:
+            fmt[col] = "{:.1f}"
+
+    pass_fail_cols = ["OFC", "MC", "BH_Beat_Ret", "BH_Beat_DD", "Promoted"]
+    delta_cols     = ["DeltaTotRet%", "DeltaDD%"]
+
+    styled = df_s.style.format(fmt, na_rep="-")
+    for col in [c for c in pass_fail_cols if c in df_s.columns]:
+        styled = styled.map(_color_pass_fail, subset=[col])
+    for col in [c for c in delta_cols if c in df_s.columns]:
+        styled = styled.map(_color_delta, subset=[col])
+    if "Sharpe" in df_s.columns:
+        styled = styled.map(_color_sharpe, subset=["Sharpe"])
+    return styled
+
+
+def plot_k_equity(ticker: str, strategy: str, pf, bh, row) -> "go.Figure":
+    """
+    Plot equity curve normalizzata a 100 con B&H.
+    pf e bh sono oggetti vectorbt Portfolio.
+    """
+    import plotly.graph_objects as _go
+
+    fig = _go.Figure()
+    eq = pf.value()
+    eq_norm = eq / eq.iloc[0] * 100
+    fig.add_trace(_go.Scatter(
+        x=eq_norm.index, y=eq_norm.values,
+        name=strategy, line=dict(color="#007bff", width=2),
+    ))
+    if bh is not None:
+        bh_v = bh.value()
+        bh_norm = bh_v / bh_v.iloc[0] * 100
+        fig.add_trace(_go.Scatter(
+            x=bh_norm.index, y=bh_norm.values,
+            name="B&H", line=dict(color="#6c757d", width=1.5, dash="dash"),
+        ))
+
+    delta_ret = row.get("DeltaTotRet%", float("nan"))
+    delta_dd  = row.get("DeltaDD%",     float("nan"))
+    subtitle = (
+        f'Sharpe: {row["Sharpe"]:.3f} | '
+        f'CAGR: {row["CAGR%"]:.1f}% | '
+        f'TotRet: {row["TotRet%"]:.1f}% vs BH {row["BH_TotRet%"]:.1f}% '
+        f'(Delta: {delta_ret:+.1f}%) | '
+        f'MaxDD: {row["MaxDD%"]:.1f}% vs BH {row["BH_DD%"]:.1f}% '
+        f'(Delta: {delta_dd:+.1f}%)'
+    )
+    fig.update_layout(
+        title=f"{ticker} @ {strategy}<br><sup>{subtitle}</sup>",
+        xaxis_title="Data", yaxis_title="Valore (base 100)",
+        template="plotly_white", height=440,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+    )
+    return fig
+
+
+def load_k_equity(wfo_dir, ticker: str, strategy: str, ratio: str = "4:1"):
+    """
+    Carica portfolio e B&H da disco via vbt.Portfolio.load().
+    Ritorna (pf, bh) — uno o entrambi possono essere None.
+    """
+    import vectorbt as _vbt
+    from pathlib import Path as _Path
+
+    base = str(_Path(wfo_dir) / strategy / f"portfolio_{strategy}_{ticker}_{ratio}")
+    try:
+        pf = _vbt.Portfolio.load(base + "_results.pkl")
+    except Exception:
+        pf = None
+    try:
+        bh = _vbt.Portfolio.load(base + "_bh_results.pkl")
+    except Exception:
+        bh = None
+    return pf, bh
