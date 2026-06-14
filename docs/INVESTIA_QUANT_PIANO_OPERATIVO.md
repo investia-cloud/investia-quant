@@ -1,6 +1,6 @@
 # investia-quant — Piano Operativo
 
-**Ultimo aggiornamento**: 12 giugno 2026
+**Ultimo aggiornamento**: 14 giugno 2026
 **Root progetto**: `~/investia-quant`
 
 ---
@@ -9,16 +9,15 @@
 
 **Branch `main`** aggiornato e pulito. Ultimi commit:
 ```
+feat(panel): viewer CSV completo, funzioni helper in k_functions.py, elimina inspector
+fix(k): aggiungi criteri BH_Beat_Ret e BH_Beat_DD al verdetto di promozione
+feat(cli): iq k-agent + playwright + pypdf in pyproject.toml
 feat(k): cache MC su disco, classification.csv, metriche complete, load WFO da disco
-refactor(cli): unifica k-analyze e k-test, elimina test_strategies.py, implementa run_k_strategy_analysis()
-feat(k): run_k_strategy_analysis() pipeline completa WFO+DSR+OFC+MC, fix headless plots
-feat(cli): aggiungi k-analyze (inspector/panel) e k-test + fix build_namespace libs_py
-refactor(k): migra funzioni inline in k_functions.py, pulisci JN dev
+refactor(cli): unifica k-analyze e k-test, elimina test_strategies.py
 docs: pipeline valutazione K-strategy e R-portfolio
-docs: piano operativo — architettura 4 filiere + priorità aggiornate (12/06)
 ```
 
-**Working tree**: clean (rimuovere `None/` se presente: `rm -rf None/`).
+**Working tree**: clean.
 **Branch parcheggiati**: nessuno.
 
 ### Notebooks dev attivi
@@ -26,8 +25,7 @@ docs: piano operativo — architettura 4 filiere + priorità aggiornate (12/06)
 | File | Ruolo |
 |---|---|
 | `notebooks/dev/r_portfolio_analyst.ipynb` | Analisi interattiva R-portfolio — solo Luca |
-| `notebooks/dev/k_strategy_panel.ipynb` | Viewer interattivo classification.csv — da riscrivere |
-| `notebooks/dev/k_strategy_inspector.ipynb` | Da eliminare — assorbito da `iq k-analyze` |
+| `notebooks/dev/k_strategy_panel.ipynb` | Viewer interattivo classification.csv — classifiche e equity promossi |
 | `notebooks/dev/lazy_portfolio_analyst.ipynb` | Lazy portfolios — Luca (JN), tutti via web |
 | `notebooks/dev/R_Strategies.ipynb` | Rotazionale su strategie/metodi — esplorativo, solo Luca |
 | `notebooks/dev/_bootstrap_dev.ipynb` | Bootstrap import libs_py con reload automatico |
@@ -41,6 +39,7 @@ docs: piano operativo — architettura 4 filiere + priorità aggiornate (12/06)
 | `iq report --ptf/--rotational/--trading/--all` | Statistiche YTD PTF deployati | ✅ Production |
 | `iq analyze --ptf/--universe` | Pipeline R completa — relazione tecnica PDF | ✅ Production |
 | `iq k-analyze -s/-t/--ptf` | Pipeline K completa — WFO+OFC+DSR+MC | ✅ Production |
+| `iq k-agent --max/--llm/--model` | Genera K-strategy da articoli Medium | ✅ Production |
 
 ### VPS produzione
 
@@ -65,26 +64,57 @@ docs: piano operativo — architettura 4 filiere + priorità aggiornate (12/06)
 
 | Aspetto | Dettaglio |
 |---|---|
-| JN dev | `k_strategy_panel.ipynb` — viewer classification.csv (da riscrivere) |
-| CLI | `iq k-analyze` ✅ |
+| JN dev | `k_strategy_panel.ipynb` — viewer classification.csv ✅ |
+| CLI | `iq k-analyze` ✅, `iq k-agent` ✅ |
 | Web | Nessuna — dominio esclusivo architetto |
 | Utenti | Solo Luca |
 
 **Architettura `iq k-analyze`:**
 - `-s <strategie> -t <tickers>` → dispatch automatico inspector (1×1) o panel (N×M)
 - `--ptf <nome>` → estrae tickers dal K-portfolio registry
-- Pipeline: WFO → OFC (da precheck) → DSR → MC → verdetto
+- Pipeline: WFO → OFC (da precheck) → DSR → MC → BH_Beat_Ret → BH_Beat_DD → verdetto
 - Cache su disco: `_results.pkl`, `_precheck.pkl`, `_mc_results.pkl`
 - Output: `classification_<data>.csv` in `outputs/WFO_T_DEV_RESULTS/`
-- Secondo run senza `--override`: carica tutto da disco (~5 secondi)
+- Secondo run senza `--override`: ~5 secondi (tutto da cache)
+
+**CSV classification — colonne:**
+```
+Ticker, Strategy, Sharpe, CAGR%, TotRet%, BH_TotRet%, MaxDD%, BH_DD%,
+DSR, OFC, MC, BH_Beat_Ret, BH_Beat_DD, Promoted
+```
+
+**Criteri di promozione (tutti devono passare):**
+```
+OFC pass_gate = True       (griglia parametri robusta)
+AND DSR >= 0.95            (Sharpe statisticamente significativo)
+AND MC >= 2/3 pass         (performance robusta)
+AND TotRet% > BH_TotRet%  (batte il B&H in return)
+AND MaxDD% < BH_DD%        (drawdown inferiore al B&H)
+```
 
 **Flusso operativo K:**
 ```
-agent.py → genera strategie → k_strategies_agent.py
-iq k-analyze --ptf <nome> → pipeline completa → classification.csv
-k_strategy_panel.ipynb → viewer interattivo classification.csv
-cron → iq k-analyze --ptf <nome> (nuove strategie)
+iq k-agent --max 15 --llm anthropic   → genera strategie → k_strategies_agent.py
+iq k-analyze --ptf <nome>             → pipeline completa → classification.csv
+k_strategy_panel.ipynb                → viewer: classifica, scatter, equity, export
+outputs/k_panel_exports/              → promoted_<ts>.csv + trading_systems_<ts>.py
+cron irina (locale) ore 02:00         → iq k-agent --max 15 --llm anthropic
+cron irina (locale) ore 03:00         → iq k-analyze --ptf <PTF_DA_DEFINIRE>
 ```
+
+**`k_strategy_panel.ipynb` — sezioni:**
+- §1 Configurazione (WFO_DIR, filtri, sort)
+- §2 Classifica (tabella colorata con DeltaTotRet%, DeltaDD%)
+- §3 Scatter Sharpe vs TotRet%
+- §4 Equity curve promossi (con B&H)
+- §5 Confronto run multipli
+- §6 Export CSV + snippet trading_systems per k_portfolios.py
+
+**Funzioni panel in `k_functions.py`:**
+- `load_k_classifications()` — carica e consolida CSV
+- `style_k_classification()` — Styler colorato con formato decimali
+- `load_k_equity()` — carica pkl vectorbt
+- `plot_k_equity()` — equity curve normalizzata Plotly
 
 ### Filiera Lazy portfolio
 
@@ -110,23 +140,16 @@ cron → iq k-analyze --ptf <nome> (nuove strategie)
 
 ### Priorità alta
 
-**1. Riscrivi `k_strategy_panel.ipynb` come viewer** · filiera K
+**1. Definire PTF K per crontab** · filiera K
 
-Il JN non calcola più nulla — legge `classification_*.csv` da
-`outputs/WFO_T_DEV_RESULTS/` e visualizza con Plotly interattivo.
-Funzionalità: carica CSV, filtra per Promoted/OFC/MC/DSR, ordina per
-metrica, confronta run diversi, grafici equity dei promossi.
+Il crontab locale è pronto ma manca il PTF target per `iq k-analyze`.
+Definire in `k_portfolios.py` il/i PTF su cui testare le nuove strategie
+generate da `iq k-agent`. Poi attivare crontab su `irina`.
 
-**2. Elimina `k_strategy_inspector.ipynb`** · filiera K
-
-Assorbito completamente da `iq k-analyze -s <s> -t <t>`.
-Da fare dopo validazione completa CLI.
-
-**3. Potenziamento Block B** · filiera R
+**2. Potenziamento Block B** · filiera R
 
 Sorgenti di skill alternative al momentum. Motivazione: molti PTF non hanno
-skill momentum ma battono il benchmark per altri driver (clustering Ward +
-risk-off). Block B attuale misura solo momentum.
+skill momentum ma battono il benchmark per altri driver (clustering Ward + risk-off).
 
 Sorgenti candidate:
 - Risk-adjusted (Sharpe/Sortino rotazionale)
@@ -139,25 +162,25 @@ Da fare: design session prima di toccare codice.
 
 ### Priorità media
 
-**4. Relazione tecnica AI per Lazy portfolio** · filiera Lazy
+**3. Relazione tecnica AI per Lazy portfolio** · filiera Lazy
 
 Gap rispetto a R-portfolio: aggiungere `generate_relazione_tecnica()`.
 
-**5. CLI `iq lazy`** · filiera Lazy
+**4. CLI `iq lazy`** · filiera Lazy
 
 JN già refactored — lifting CLI dovrebbe essere basso.
 
-**6. Web Lazy portfolio** · filiera Lazy
+**5. Web Lazy portfolio** · filiera Lazy
 
 Reintegrazione in investia-platform (Fase 4 roadmap ecosistema).
 
 ### Priorità bassa
 
-**7. Agente relazioni tecniche** · filiera R
+**6. Agente relazioni tecniche** · filiera R
 
 Batch su tutti i PTF: chiama `run_r_portfolio_analysis()` in loop.
 
-**8. Comprensione R_Strategies + fix API vectorbt** · filiera R-strategies
+**7. Comprensione R_Strategies + fix API vectorbt** · filiera R-strategies
 
 Fix `from_returns` → `from_holding`. Ruolo operativo da chiarire.
 
@@ -165,39 +188,30 @@ Fix `from_returns` → `from_holding`. Ruolo operativo da chiarire.
 
 ## Tech debt
 
-- `None/` directory creata da bug wfo_results_dir=None (ora fixato) — `rm -rf None/`
-- Output MC verboso ancora presente senza `--verbose` — da silenziare
-- `k_strategy_inspector.ipynb` da eliminare dopo validazione CLI
+- `None/` directory da rimuovere se presente: `rm -rf None/`
+- Output MC verboso senza `--verbose` — da silenziare
+- Crontab locale da attivare dopo definizione PTF target
+
+---
+
+## Filiera progettazione nuovi PTF di trading
+
+```
+Fase 1  iq k-agent              → genera strategie da articoli
+Fase 2  k_portfolios.py         → definisce universo tickers PTF
+Fase 3  iq k-analyze --ptf      → pipeline WFO+OFC+DSR+MC → classification.csv
+Fase 4  k_strategy_panel.ipynb  → viewer: seleziona trading system vincenti
+Fase 5  k_portfolios.py         → configura PTF finale con trading system scelti
+Fase 6  release annuale         → deploy VPS
+```
 
 ---
 
 ## Architettura `iq analyze` (R-portfolio)
 
-`iq analyze` è il runner headless della pipeline R-portfolio.
-
-| Aspetto | `r_portfolio_analyst.ipynb` | `iq analyze` |
-|---|---|---|
-| Utente | Solo Luca | Gestori bancari (via webapp) |
-| Grafici | Plotly interattivo | Matplotlib/seaborn statici (PNG) |
-| Output | PDF + PTF card + stampe intermedie | PDF + PNG scaricabili |
-| Esecuzione | Interattiva | Headless |
-| Input universo | Config fissa nel JN | `--ptf` o `--universe CSV` |
-
 ### Funzione core
 
 `run_r_portfolio_analysis()` in `r_functions.py` (~riga 13878).
-
-```python
-def run_r_portfolio_analysis(
-    portfolio_cfg: dict,
-    output_dir: str | Path,
-    year: int | None = None,
-    start_date: str = "2015-01-01",
-    end_date: str | None = None,
-    profile: str = "satellite",
-    verbose: bool = False,
-) -> dict:
-```
 
 ### Pipeline headless R
 
@@ -222,14 +236,12 @@ def run_r_portfolio_analysis(
 
 - **Patch chirurgiche**: modifiche mirate, zero scope creep.
 - **Il rerun lo fa sempre l'architetto**: Code non esegue rerun, non legge PDF/PNG.
-- **Commit solo dopo validazione visiva del PDF rigenerato**.
+- **Commit solo dopo validazione visiva**.
 - **Branch separati per ogni scope**: `fix/`, `feature/`, `chore/`.
 - **Notebook `.ipynb`**: non committare per soli output celle. `git add` esplicito.
-- **Effort esplicito nei prompt Code**: `EFFORT: minimal / standard / verbose`.
 - **AUTONOMIA nei prompt Code**: sempre inclusa per evitare interruzioni.
-- **Decisioni di design vanno esplicitate** e validate prima di procedere.
 - **Verifiche funzionali**: mai delegare a Code — le fa l'architetto.
-- **Code solo per**: modifiche codice complesse, multi-file. Tutto il resto: orchestratore o architetto.
+- **Code solo per**: modifiche codice complesse, multi-file.
 
 ### Template prompt Code
 
@@ -270,28 +282,13 @@ Non risolvere autonomamente. Segnala e attendi istruzioni.
 
 ## Storia bug (issue tracker)
 
-Stato: OPEN / RESOLVED / CLOSED (chiuso senza fix).
-
 ### B-001 — `duplicate labels` su universi ampi · RESOLVED
-`ValueError` in `run_rotational_engine`. Fix: `risk_off_tickers_uniq`.
-
 ### B-002 — `reduce_grid_via_stability` rifiuta universo piccolo · RESOLVED
-Graceful fallback per universi sotto soglia.
-
 ### B-003 — `compare_selection_columns` fallisce con `float not iterable` · RESOLVED
-Stessa causa di B-001.
-
 ### B-004 — Presunto swing p-value B1 MC · CLOSED (non era un bug)
-Confronto tra path Standard e Cluster, non instabilità.
-
 ### B-005 — Narrativa 6.b/6.c sempre sul path Standard · RESOLVED
-Narrativa focalizzata sul path raccomandato. Commit: `fix/mc-narrative-per-path`.
-
 ### B-006 — Nomenclatura invertita in `compute_skill_profile` · RESOLVED
-Nuova mappa basata su (B1, B2). Commit: `fix/mc-narrative-per-path`.
-
 ### B-007 — `boxplot()` keyword `labels` deprecata · RESOLVED
-Fix: `labels` → `tick_labels` righe 6672 e 6697 in `k_functions.py`.
 
 ---
 
@@ -310,19 +307,26 @@ Branch `refactor/libs-py`.
 Branch `refactor/libs-py` → main.
 
 ### Sessione 11/06/2026 — Rename JN + iq analyze + cleanup + k-agent
-Branch `chore/rename-notebooks` + `feature/iq-analyze` + `feature/k-agent-output-to-py` → main.
+Branch vari → main.
 
 ### Sessione 12/06/2026 — Architettura K-portfolio + CLI k-analyze
+- Architettura 4 filiere approvata
+- `iq k-analyze` unico comando inspector+panel
+- `test_strategies.py` eliminato
+- `k_strategy_inspector.ipynb` eliminato
+- Pipeline K: WFO → OFC → DSR → MC → verdetto
+- Cache su disco: `_results.pkl`, `_precheck.pkl`, `_mc_results.pkl`
+- `iq k-agent` aggiunto alla CLI
 
-Decisioni architetturali approvate:
-- Architettura definitiva a 4 filiere: R-portfolio, K-portfolio, Lazy, R-strategies.
-- K-portfolio: `iq k-analyze` unico comando (inspector + panel + batch PTF).
-- `test_strategies.py` eliminato — sostituito da `iq k-analyze`.
-- `k_strategy_inspector.ipynb` da eliminare — assorbito dalla CLI.
-- `k_strategy_panel.ipynb` → viewer interattivo classification.csv.
-- Pipeline K: WFO → OFC (precheck) → DSR → MC → verdetto.
-- Cache su disco: `_results.pkl`, `_precheck.pkl`, `_mc_results.pkl`.
-- Output: `classification_<data>.csv` in `outputs/WFO_T_DEV_RESULTS/`.
-- Secondo run senza `--override`: ~5 secondi (tutto da cache).
-- Documenti pipeline: `docs/K_STRATEGY_PIPELINE.md`, `docs/R_PORTFOLIO_PIPELINE.md`.
-- Analisi librerie: tutte pulite (0 funzioni orfane su 8 file libs_py).
+### Sessione 14/06/2026 — Panel viewer + criteri promozione B&H
+
+- `k_strategy_panel.ipynb` riscritto come viewer CSV puro
+- Funzioni panel migrate in `k_functions.py`:
+  `load_k_classifications`, `style_k_classification`, `load_k_equity`, `plot_k_equity`
+- Criteri promozione completati: aggiunto `BH_Beat_Ret` e `BH_Beat_DD`
+  (TotRet% > BH_TotRet% AND MaxDD% < BH_DD%)
+- CSV arricchito: `TotRet%`, `BH_TotRet%`, `DeltaTotRet%`, `DeltaDD%`
+- `k_strategy_inspector.ipynb` eliminato — assorbito da `iq k-analyze`
+- `iq k-agent` testato end-to-end: genera `strategy_amd_momentum_rsi` ✓
+- Crontab locale progettato (PTF target da definire)
+- Documenti: `docs/K_STRATEGY_PIPELINE.md`, `docs/R_PORTFOLIO_PIPELINE.md`
