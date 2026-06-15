@@ -1729,3 +1729,130 @@ def strategy_amd_momentum_rsi(data: pd.DataFrame, params: dict, year: int | None
     shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
     shifted_exits = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
     return shifted_entries, shifted_exits
+
+
+# ─────────────────────────────────────
+# Fonte: Multiple Indicator Trading Strategy in Python — A Full Guide. _ by Sofien Kaabar, CFA _ Investor’s Handbook _ Medium
+# URL:   file:///home/luca/Downloads/Multiple Indicator Trading Strategy in Python — A Full Guide. _ by Sofien Kaabar, CFA _ Investor’s Handbook _ Medium.pdf
+# Data:  2026-06-15 11:55
+# ─────────────────────────────────────
+
+############################
+# Strategy multiple_indicator
+############################
+
+def ind_multiple_indicator_stochastic_smoothing(df: pd.DataFrame, lookback: int = 14) -> pd.Series:
+    high = df['High'].values
+    low = df['Low'].values
+    close = df['Close'].values
+    
+    ema_high = np.empty(len(df))
+    ema_low = np.empty(len(df))
+    ema_close = np.empty(len(df))
+    
+    alpha = 2.0 / (2 + 1.0)
+    
+    ema_high[0] = high[0]
+    ema_low[0] = low[0]
+    ema_close[0] = close[0]
+    
+    for i in range(1, len(df)):
+        ema_high[i] = alpha * high[i] + (1 - alpha) * ema_high[i-1]
+        ema_low[i] = alpha * low[i] + (1 - alpha) * ema_low[i-1]
+        ema_close[i] = alpha * close[i] + (1 - alpha) * ema_close[i-1]
+    
+    sso = np.empty(len(df))
+    sso[:] = np.nan
+    
+    for i in range(lookback-1, len(df)):
+        min_low = np.min(ema_low[max(0, i-lookback+1):i+1])
+        max_high = np.max(ema_high[max(0, i-lookback+1):i+1])
+        
+        if max_high != min_low:
+            sso[i] = 100 * (ema_close[i] - min_low) / (max_high - min_low)
+        else:
+            sso[i] = 50
+    
+    return pd.Series(sso, index=df.index)
+
+def ind_multiple_indicator_bollinger(df: pd.DataFrame, period: int = 20, std_mult: float = 2.0):
+    close = df['Close']
+    ma = close.rolling(period, min_periods=1).mean()
+    std = close.rolling(period, min_periods=1).std(ddof=0)
+    
+    upper = ma + std_mult * std
+    lower = ma - std_mult * std
+    
+    return ma, upper, lower
+
+def ind_multiple_indicator_fib_timing(df: pd.DataFrame, fib_period: int = 21) -> pd.Series:
+    close = df['Close']
+    high = df['High']
+    low = df['Low']
+    
+    fib_signal = pd.Series(0, index=df.index)
+    
+    for i in range(fib_period, len(df)):
+        period_high = high.iloc[i-fib_period:i].max()
+        period_low = low.iloc[i-fib_period:i].min()
+        
+        fib_618 = period_low + 0.618 * (period_high - period_low)
+        fib_382 = period_low + 0.382 * (period_high - period_low)
+        
+        current_price = close.iloc[i]
+        
+        if current_price >= fib_618:
+            fib_signal.iloc[i] = 1
+        elif current_price <= fib_382:
+            fib_signal.iloc[i] = -1
+    
+    return fib_signal
+
+strategy_multiple_indicator_param_ranges = {
+    'sso_lookback_range': range(10, 21, 5),
+    'bb_period_range': range(15, 26, 5),
+    'bb_std_range': range(15, 26, 5),
+    'fib_period_range': range(15, 26, 5)
+}
+
+def strategy_multiple_indicator(data: pd.DataFrame, params: dict, year: int | None = None):
+    sso_lookback = params.get('sso_lookback_range')
+    bb_period = params.get('bb_period_range')
+    bb_std = params.get('bb_std_range') / 10.0
+    fib_period = params.get('fib_period_range')
+    
+    df = data.copy()
+    
+    sso = ind_multiple_indicator_stochastic_smoothing(df, lookback=sso_lookback)
+    bb_ma, bb_upper, bb_lower = ind_multiple_indicator_bollinger(df, period=bb_period, std_mult=bb_std)
+    fib_signal = ind_multiple_indicator_fib_timing(df, fib_period=fib_period)
+    
+    df['SSO'] = sso
+    df['BB_MA'] = bb_ma
+    df['BB_Upper'] = bb_upper
+    df['BB_Lower'] = bb_lower
+    df['FIB_Signal'] = fib_signal
+    
+    if year is not None:
+        df = df[df.index.year == int(year)]
+    
+    sso_oversold = df['SSO'] < 20
+    sso_overbought = df['SSO'] > 80
+    
+    price_near_lower = df['Close'] <= df['BB_Lower'] * 1.02
+    price_near_upper = df['Close'] >= df['BB_Upper'] * 0.98
+    
+    fib_bullish = df['FIB_Signal'] == 1
+    fib_bearish = df['FIB_Signal'] == -1
+    
+    entries_long = sso_oversold & price_near_lower & fib_bullish
+    entries_short = sso_overbought & price_near_upper & fib_bearish
+    entries = entries_long | entries_short
+    
+    exits_long = (df['SSO'] > 70) | (df['Close'] >= df['BB_Upper'])
+    exits_short = (df['SSO'] < 30) | (df['Close'] <= df['BB_Lower'])
+    exits = exits_long | exits_short
+    
+    shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    shifted_exits = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    return shifted_entries, shifted_exits
