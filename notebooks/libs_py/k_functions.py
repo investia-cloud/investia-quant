@@ -7921,7 +7921,7 @@ def analyze_exposure_regime(
     ge = pf.gross_exposure()
     if isinstance(ge, pd.DataFrame):
         ge = ge.iloc[:, 0]
-    ge = ge.reindex(rets.index).fillna(method="ffill").fillna(0.0)
+    ge = ge.reindex(rets.index).ffill().fillna(0.0)
 
     # --- regime masks ---
     invested = ge >= float(exposure_threshold)
@@ -8133,7 +8133,7 @@ def analyze_timing_efficiency(
                 col = assets.name if assets.name in close.columns else close.columns[0]
                 qty0 = float(assets.iloc[0])
                 bh = close[col] * qty0
-                bh = bh.reindex(eq_index).ffill().fillna(method="ffill")
+                bh = bh.reindex(eq_index).ffill().ffill()
                 return bh
             elif isinstance(assets, pd.DataFrame):
                 qty0 = assets.iloc[0].fillna(0.0)
@@ -8265,9 +8265,10 @@ def analyze_timing_efficiency(
     bh_series = _compute_bh_from_initial_assets(pf, eq.index)
     bh_cmp = {}
     if bh_series is not None:
-        bh_series = bh_series.reindex(eq.index).ffill().fillna(method="ffill")
+        bh_series = bh_series.reindex(eq.index).ffill().ffill()
         bh_rets = _safe_rets(bh_series)
-        bh_cmp["BH Total Return"] = (bh_series.iloc[-1] / bh_series.iloc[0]) - 1.0
+        _bh_denom = bh_series.iloc[0]
+        bh_cmp["BH Total Return"] = (bh_series.iloc[-1] / _bh_denom) - 1.0 if (_bh_denom != 0 and not np.isnan(_bh_denom)) else np.nan
         bh_cmp["BH CAGR"] = _cagr_from_rets(bh_rets)
         bh_cmp["BH Max Drawdown"] = _max_dd_from_equity(bh_series)
         bh_cmp["Excess CAGR (PF - BH)"] = df_summary.loc["CAGR", "Value"] - bh_cmp["BH CAGR"]
@@ -9014,7 +9015,8 @@ def plot_k_equity(ticker: str, strategy: str, pf, bh, row) -> "go.Figure":
         bh_norm = bh_v / bh_v.iloc[0] * 100
         fig.add_trace(_go.Scatter(
             x=bh_norm.index, y=bh_norm.values,
-            name="B&H", line=dict(color="#6c757d", width=1.5, dash="dash"),
+            # name="B&H", line=dict(color="#6c757d", width=1.5, dash="dash"),
+            name="B&H", line=dict(color="#6c757d", width=1.5),
         ))
 
     delta_ret = row.get("DeltaTotRet%", float("nan"))
@@ -9054,3 +9056,152 @@ def load_k_equity(wfo_dir, ticker: str, strategy: str, ratio: str = "4:1"):
     except Exception:
         bh = None
     return pf, bh
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# analyze_promoted_ts
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _cagr_from_portfolio(p, ann: int = 252) -> float:
+    """CAGR annualizzato da un vectorbt Portfolio o da una equity Series."""
+    eq = p.value() if hasattr(p, "value") else p
+    if isinstance(eq, pd.DataFrame):
+        eq = eq.iloc[:, 0]
+    eq = eq.dropna()
+    if len(eq) < 2:
+        return np.nan
+    years = len(eq) / ann
+    return (eq.iloc[-1] / eq.iloc[0]) ** (1.0 / years) - 1.0 if years > 0 else np.nan
+
+
+def analyze_promoted_ts(
+    classification_df: pd.DataFrame,
+    wfo_dir: str,
+    ratio: str = "4:1",
+    annualization: int = 252,
+) -> dict:
+    """
+    Per ogni ticker con trading system promossi in classification_df,
+    carica il portafoglio da disco ed estrae metriche comparative.
+
+    Parametri
+    ---------
+    classification_df : DataFrame con colonne Ticker, Strategy, Promoted ("PASS"/"FAIL")
+    wfo_dir           : directory WFO risultati (stessa usata da iq k-analyze)
+    ratio             : train:test ratio WFO (default "4:1")
+    annualization     : giorni per annualizzazione (default 252)
+
+    Ritorna
+    -------
+    dict {ticker: pd.DataFrame} con colonne:
+        Strategy, CAGR, Sharpe, MaxDD, PctInvested,
+        CAGR_per_InvestedYear, InvestedCAGR, FlatCAGR, BH_CAGR, ExcessCAGR
+    Ogni DataFrame è ordinato per ExcessCAGR descending.
+    """
+    import warnings as _warnings
+
+    promoted = classification_df[classification_df["Promoted"] == "PASS"].copy()
+    if promoted.empty:
+        print("[analyze_promoted_ts] Nessun trading system promosso trovato.")
+        return {}
+
+    results = {}
+
+    _LEGENDA = """
+Metriche — Analisi Trading System Promossi
+───────────────────────────────────────────────────────────────────
+CAGR               Rendimento annuo composto (intero periodo WFO)
+Sharpe             Sharpe ratio (rendimento/rischio)
+MaxDD              Massimo drawdown (perdita picco-valle)
+PctInvested        % tempo in posizione (0=sempre flat, 1=sempre investito)
+CAGR_per_InvYear   CAGR calcolato solo sugli anni investiti
+                   (più alto di CAGR = buona selezione dei momenti)
+InvestedCAGR       Rendimento annualizzato solo nei giorni IN posizione
+FlatCAGR           Rendimento annualizzato solo nei giorni FUORI posizione
+                   (negativo = il mercato sale quando la strategia è flat)
+BH_CAGR            Rendimento annuo del Buy & Hold sullo stesso periodo
+ExcessCAGR         CAGR - BH_CAGR (valore aggiunto rispetto al B&H)
+───────────────────────────────────────────────────────────────────
+"""
+    print(_LEGENDA)
+
+    for ticker, grp in promoted.groupby("Ticker"):
+        rows = []
+        for _, row in grp.iterrows():
+            strategy = row["Strategy"]
+            pf, bh = load_k_equity(wfo_dir, ticker, strategy, ratio)
+            if pf is None:
+                _warnings.warn(
+                    f"[analyze_promoted_ts] {ticker}@{strategy}: portfolio non trovato, skip."
+                )
+                continue
+
+            # metriche dirette da pf
+            cagr = _cagr_from_portfolio(pf, annualization)
+            try:
+                sharpe = float(pf.sharpe_ratio())
+            except Exception:
+                sharpe = np.nan
+            try:
+                max_dd = abs(float(pf.max_drawdown()))
+            except Exception:
+                max_dd = np.nan
+            try:
+                pct_invested = float(pf.gross_exposure().mean())
+            except Exception:
+                pct_invested = np.nan
+            cagr_per_inv = (
+                cagr / pct_invested
+                if (pct_invested and pct_invested > 0 and not np.isnan(pct_invested))
+                else np.nan
+            )
+
+            # metriche da analyze_exposure_regime
+            try:
+                df_exp, _ = analyze_exposure_regime(pf, show_report=False)
+                invested_cagr = float(df_exp.loc["Invested CAGR (naive)", "Value"])
+                flat_cagr     = float(df_exp.loc["Flat CAGR (naive)",     "Value"])
+            except Exception:
+                invested_cagr = np.nan
+                flat_cagr     = np.nan
+
+            # metriche da bh
+            bh_cagr = _cagr_from_portfolio(bh, annualization) if bh is not None else np.nan
+            excess_cagr = (cagr - bh_cagr) if not np.isnan(bh_cagr) else np.nan
+
+            rows.append({
+                "Strategy":              strategy,
+                "CAGR":                  cagr,
+                "Sharpe":                sharpe,
+                "MaxDD":                 max_dd,
+                "PctInvested":           pct_invested,
+                "CAGR_per_InvestedYear": cagr_per_inv,
+                "InvestedCAGR":          invested_cagr,
+                "FlatCAGR":              flat_cagr,
+                "BH_CAGR":               bh_cagr,
+                "ExcessCAGR":            excess_cagr,
+            })
+
+        if not rows:
+            continue
+
+        df_ticker = (
+            pd.DataFrame(rows)
+            .sort_values("ExcessCAGR", ascending=False)
+            .reset_index(drop=True)
+        )
+        results[ticker] = df_ticker
+
+        print(f"\n{'=' * 60}")
+        print(f"  {ticker}  —  {len(df_ticker)} trading system promossi")
+        print(f"{'=' * 60}")
+        try:
+            my_display(df_ticker, title=f"{ticker} — Promoted TS Analysis")
+        except Exception:
+            try:
+                from IPython.display import display as _disp
+                _disp(df_ticker)
+            except Exception:
+                print(df_ticker.to_string())
+
+    return results
