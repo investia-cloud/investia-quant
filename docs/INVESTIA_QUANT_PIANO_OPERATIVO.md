@@ -25,7 +25,7 @@ docs: pipeline valutazione K-strategy e R-portfolio
 | File | Ruolo |
 |---|---|
 | `notebooks/dev/r_portfolio_analyst.ipynb` | Analisi interattiva R-portfolio — solo Luca |
-| `notebooks/dev/k_strategy_panel.ipynb` | Viewer interattivo classification.csv — classifiche e equity promossi |
+| `notebooks/dev/k_strategy_panel.ipynb` | Viewer CSV classification + §7 Trading System Analysis (load, exposure, timing, comparativa promoted) |
 | `notebooks/dev/lazy_portfolio_analyst.ipynb` | Lazy portfolios — Luca (JN), tutti via web |
 | `notebooks/dev/R_Strategies.ipynb` | Rotazionale su strategie/metodi — esplorativo, solo Luca |
 | `notebooks/dev/_bootstrap_dev.ipynb` | Bootstrap import libs_py con reload automatico |
@@ -338,3 +338,21 @@ Branch vari → main.
 - Deduplicazione PDF allineata a `processed_ids.json` (skip pre-LLM)
 - Guardia su nome strategia in `k_strategies_agent.py` come secondo
   livello di sicurezza
+  
+### Sessione 15/06/2026 — K-Agent PDF + Trading System Analysis
+
+- `iq k-agent`: aggiunta opzione `--pdf PATH` per processare PDF locali
+  (stesso path di generazione RSS); default `--llm` cambiato a `anthropic`
+- `iq k-agent`: deduplicazione PDF allineata a `processed_ids.json`
+  (skip pre-LLM); guardia su nome strategia in `k_strategies_agent.py`
+  come secondo livello di sicurezza
+- `k_functions.py`: fix FutureWarning `fillna(method=)` → `ffill()`
+  in `analyze_exposure_regime` e `analyze_timing_efficiency`;
+  fix RuntimeWarning divide-by-zero in `analyze_timing_efficiency`
+- `k_functions.py`: aggiunta `analyze_promoted_ts()` — analisi comparativa
+  di tutti i trading system promossi, raggruppati per ticker; metriche:
+  CAGR, Sharpe, MaxDD, PctInvested, CAGR_per_InvestedYear, InvestedCAGR,
+  FlatCAGR, BH_CAGR, ExcessCAGR; legenda metriche inclusa
+- `k_strategy_panel.ipynb`: aggiunta sezione §7 Trading System Analysis
+  con load_ts, analyze_exposure_regime, analyze_timing_efficiency,
+  generate_portfolio_performance, analyze_promoted_ts
