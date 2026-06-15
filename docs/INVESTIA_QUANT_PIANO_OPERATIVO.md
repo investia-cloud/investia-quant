@@ -39,7 +39,7 @@ docs: pipeline valutazione K-strategy e R-portfolio
 | `iq report --ptf/--rotational/--trading/--all` | Statistiche YTD PTF deployati | ✅ Production |
 | `iq analyze --ptf/--universe` | Pipeline R completa — relazione tecnica PDF | ✅ Production |
 | `iq k-analyze -s/-t/--ptf` | Pipeline K completa — WFO+OFC+DSR+MC | ✅ Production |
-| `iq k-agent --max/--llm/--model` | Genera K-strategy da articoli Medium | ✅ Production |
+| `iq k-agent --max/--llm/--model/--pdf` | Genera K-strategy da articoli Medium; --pdf per PDF locali | ✅ Production |
 
 ### VPS produzione
 
@@ -330,3 +330,11 @@ Branch vari → main.
 - `iq k-agent` testato end-to-end: genera `strategy_amd_momentum_rsi` ✓
 - Crontab locale progettato (PTF target da definire)
 - Documenti: `docs/K_STRATEGY_PIPELINE.md`, `docs/R_PORTFOLIO_PIPELINE.md`
+
+### Sessione 15/06/2026 — Fix iq k-agent
+- Default `--llm` cambiato da `ollama` ad `anthropic`
+- Aggiunta opzione `--pdf PATH` per processare PDF locali (stesso
+  path di generazione RSS)
+- Deduplicazione PDF allineata a `processed_ids.json` (skip pre-LLM)
+- Guardia su nome strategia in `k_strategies_agent.py` come secondo
+  livello di sicurezza

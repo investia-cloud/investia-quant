@@ -954,7 +954,9 @@ def append_strategy_to_py(
     )
     with open(path, "a", encoding="utf-8") as f:
         f.write(header + code + "\n")
-    log.info(f"Strategia appesa a: {path}")
+    _m = re.search(r"def strategy_([a-z0-9_]+)\s*\(", code)
+    _strat_name = f"strategy_{_m.group(1)}" if _m else "?"
+    log.info(f"Strategia `{_strat_name}` appesa a: {path}")
 
 
 def append_strategy_to_notebook(nb, code, title, url, generated_at):
@@ -975,6 +977,126 @@ def save_notebook(nb, path: Path) -> None:
 # ═══════════════════════════════════════════════════════════════
 # ORCHESTRATORE
 # ═══════════════════════════════════════════════════════════════
+
+def _process_article(article: dict, processed_ids: set, prefetched_text: str | None = None) -> None:
+    """Processa un singolo articolo: fetch testo, generazione LLM, validazione, salvataggio."""
+    log.info(f"→ {article['title'][:60]}")
+
+    if prefetched_text is not None:
+        text = prefetched_text
+    else:
+        text = fetch_article_text(article, COOKIE_FILE)
+
+    if len(text) < 200:
+        log.warning(f"  Testo insufficiente ({len(text)} chars), skip.")
+        processed_ids.add(article["id"])
+        return
+
+    log.info(f"  Chiamata LLM ({LLM_PROVIDER})...")
+    try:
+        code = generate_strategy(text, article["title"])
+    except _TransientAPIError:
+        log.warning("  Errore transitorio API — articolo non marcato come processato, verrà riprovato.")
+        return
+    if code is None:
+        processed_ids.add(article["id"])
+        return
+
+    ok, reason = validate_python(code)
+
+    # Retry una volta se il problema è solo il naming
+    if not ok and "Naming errato" in reason and code is not None:
+        log.warning(f"  Validazione fallita ({reason}) — retry con correzione naming...")
+        strategy_name_match = re.search(r"def strategy_([a-z0-9_]+)\s*\(", code)
+        if strategy_name_match:
+            strat_name = strategy_name_match.group(1)
+            retry_hint = (
+                f"Il codice che hai generato ha indicatori con nomi generici (es. ind_ema, ind_rsi).\n"
+                f"DEVI rinominarli aggiungendo il prefisso della strategia '{strat_name}'.\n"
+                f"Esempio: ind_ema → ind_{strat_name}_ema, ind_rsi → ind_{strat_name}_rsi\n"
+                f"Riscrivi il codice completo con i nomi corretti. SOLO codice Python, nient'altro.\n\n"
+                f"Codice da correggere:\n{code}"
+            )
+            if LLM_PROVIDER == "anthropic":
+                payload_retry = {
+                    "model":      ANTHROPIC_MODEL,
+                    "max_tokens": 4096,
+                    "system":     KSTRAT_SYSTEM_PROMPT,
+                    "messages":   [{"role": "user", "content": retry_hint}],
+                }
+            else:
+                payload_retry = {
+                    "model":  OLLAMA_MODEL,
+                    "system": KSTRAT_SYSTEM_PROMPT,
+                    "prompt": retry_hint,
+                    "stream": False,
+                    "options": {"temperature": 0.05, "num_predict": 2048, "num_ctx": 8192},
+                }
+            try:
+                if LLM_PROVIDER == "anthropic":
+                    payload_retry["messages"] = [{"role": "user", "content": retry_hint}]
+                    payload_retry.pop("prompt", None)
+                    payload_retry.pop("stream", None)
+                    payload_retry.pop("options", None)
+                    payload_retry["model"]      = ANTHROPIC_MODEL
+                    payload_retry["max_tokens"] = 4096
+                    resp2 = requests.post(
+                        "https://api.anthropic.com/v1/messages",
+                        json=payload_retry,
+                        headers={
+                            "Content-Type":      "application/json",
+                            "x-api-key":         ANTHROPIC_API_KEY or os.environ.get("ANTHROPIC_API_KEY", ""),
+                            "anthropic-version": "2023-06-01",
+                        },
+                        timeout=120,
+                    )
+                    resp2.raise_for_status()
+                    code2 = resp2.json()["content"][0]["text"].strip()
+                else:
+                    resp2 = requests.post(OLLAMA_URL, json=payload_retry, timeout=OLLAMA_TIMEOUT)
+                    resp2.raise_for_status()
+                    code2 = resp2.json().get("response", "").strip()
+                code2 = re.sub(r"^```python\s*", "", code2, flags=re.MULTILINE)
+                code2 = re.sub(r"^```\s*",       "", code2, flags=re.MULTILINE)
+                code2 = re.sub(r"\s*```$",       "", code2)
+                ok2, reason2 = validate_python(code2.strip())
+                if ok2:
+                    log.info("  Retry naming: OK")
+                    code = code2.strip()
+                    ok, reason = ok2, reason2
+                else:
+                    log.warning(f"  Retry naming fallito ancora: {reason2}")
+            except Exception as e:
+                log.warning(f"  Errore retry: {e}")
+
+    if not ok:
+        log.warning(f"  Validazione fallita: {reason}")
+        code = f"# VALIDAZIONE FALLITA: {reason}\n\n" + code
+
+    strat_name_m = re.search(r"def strategy_([a-z0-9_]+)\s*\(", code)
+    strat_label  = f"strategy_{strat_name_m.group(1)}" if strat_name_m else "?"
+    status_label = "⚠️  SALVATA CON ERRORI" if not ok else "✅ OK"
+    log.info(f"  {status_label}  →  {strat_label}")
+
+    # Dedup: skip se la strategia è già presente in k_strategies_agent.py
+    if strat_name_m:
+        try:
+            existing = STRATEGIES_PY_FILE.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            existing = ""
+        if f"def {strat_label}" in existing:
+            log.warning(f"⚠️  SKIP  {strat_label} già presente in {STRATEGIES_PY_FILE.name}")
+            processed_ids.add(article["id"])
+            return
+
+    append_strategy_to_py(
+        code, article["title"], article.get("url", ""),
+        datetime.now().strftime("%Y-%m-%d %H:%M"),
+        STRATEGIES_PY_FILE,
+    )
+    processed_ids.add(article["id"])
+    time.sleep(2)
+
 
 def run_agent() -> None:
     log.info("═══ Avvio run agente ═══")
@@ -1000,109 +1122,37 @@ def run_agent() -> None:
         return
 
     for article in new_articles:
-        log.info(f"→ {article['title'][:60]}")
-
-        text = fetch_article_text(article, COOKIE_FILE)
-        if len(text) < 200:
-            log.warning(f"  Testo insufficiente ({len(text)} chars), skip.")
-            processed_ids.add(article["id"])
-            continue
-
-        log.info(f"  Chiamata LLM ({LLM_PROVIDER})...")
-        try:
-            code = generate_strategy(text, article["title"])
-        except _TransientAPIError:
-            log.warning("  Errore transitorio API — articolo non marcato come processato, verrà riprovato.")
-            continue
-        if code is None:
-            processed_ids.add(article["id"])
-            continue
-
-        ok, reason = validate_python(code)
-
-        # Retry una volta se il problema è solo il naming
-        if not ok and "Naming errato" in reason and code is not None:
-            log.warning(f"  Validazione fallita ({reason}) — retry con correzione naming...")
-            strategy_name_match = re.search(r"def strategy_([a-z0-9_]+)\s*\(", code)
-            if strategy_name_match:
-                strat_name = strategy_name_match.group(1)
-                retry_hint = (
-                    f"Il codice che hai generato ha indicatori con nomi generici (es. ind_ema, ind_rsi).\n"
-                    f"DEVI rinominarli aggiungendo il prefisso della strategia '{strat_name}'.\n"
-                    f"Esempio: ind_ema → ind_{strat_name}_ema, ind_rsi → ind_{strat_name}_rsi\n"
-                    f"Riscrivi il codice completo con i nomi corretti. SOLO codice Python, nient'altro.\n\n"
-                    f"Codice da correggere:\n{code}"
-                )
-                if LLM_PROVIDER == "anthropic":
-                    payload_retry = {
-                        "model":      ANTHROPIC_MODEL,
-                        "max_tokens": 4096,
-                        "system":     KSTRAT_SYSTEM_PROMPT,
-                        "messages":   [{"role": "user", "content": retry_hint}],
-                    }
-                else:
-                    payload_retry = {
-                        "model":  OLLAMA_MODEL,
-                        "system": KSTRAT_SYSTEM_PROMPT,
-                        "prompt": retry_hint,
-                        "stream": False,
-                        "options": {"temperature": 0.05, "num_predict": 2048, "num_ctx": 8192},
-                    }
-                try:
-                    if LLM_PROVIDER == "anthropic":
-                        payload_retry["messages"] = [{"role": "user", "content": retry_hint}]
-                        payload_retry.pop("prompt", None)
-                        payload_retry.pop("stream", None)
-                        payload_retry.pop("options", None)
-                        payload_retry["model"]      = ANTHROPIC_MODEL
-                        payload_retry["max_tokens"] = 4096
-                        resp2 = requests.post(
-                            "https://api.anthropic.com/v1/messages",
-                            json=payload_retry,
-                            headers={
-                                "Content-Type":      "application/json",
-                                "x-api-key":         ANTHROPIC_API_KEY or os.environ.get("ANTHROPIC_API_KEY", ""),
-                                "anthropic-version": "2023-06-01",
-                            },
-                            timeout=120,
-                        )
-                        resp2.raise_for_status()
-                        code2 = resp2.json()["content"][0]["text"].strip()
-                    else:
-                        resp2 = requests.post(OLLAMA_URL, json=payload_retry, timeout=OLLAMA_TIMEOUT)
-                        resp2.raise_for_status()
-                        code2 = resp2.json().get("response", "").strip()
-                    code2 = re.sub(r"^```python\s*", "", code2, flags=re.MULTILINE)
-                    code2 = re.sub(r"^```\s*",       "", code2, flags=re.MULTILINE)
-                    code2 = re.sub(r"\s*```$",       "", code2)
-                    ok2, reason2 = validate_python(code2.strip())
-                    if ok2:
-                        log.info("  Retry naming: OK")
-                        code = code2.strip()
-                        ok, reason = ok2, reason2
-                    else:
-                        log.warning(f"  Retry naming fallito ancora: {reason2}")
-                except Exception as e:
-                    log.warning(f"  Errore retry: {e}")
-
-        if not ok:
-            log.warning(f"  Validazione fallita: {reason}")
-            code = f"# VALIDAZIONE FALLITA: {reason}\n\n" + code
-
-        strat_name_m = re.search(r"def strategy_([a-z0-9_]+)\s*\(", code)
-        strat_label  = f"strategy_{strat_name_m.group(1)}" if strat_name_m else "?"
-        status_label = "⚠️  SALVATA CON ERRORI" if not ok else "✅ OK"
-        log.info(f"  {status_label}  →  {strat_label}")
-        append_strategy_to_py(
-            code, article["title"], article["url"],
-            datetime.now().strftime("%Y-%m-%d %H:%M"),
-            STRATEGIES_PY_FILE,
-        )
-        processed_ids.add(article["id"])
-        time.sleep(2)
+        _process_article(article, processed_ids)
 
     save_state(STATE_FILE, processed_ids)
     log.info("═══ Run completata ═══")
+
+
+def run_agent_from_pdf(pdf_path: str) -> None:
+    """Processa un PDF locale attraverso la stessa pipeline degli articoli RSS."""
+    from pypdf import PdfReader
+    log.info(f"═══ Avvio run agente (PDF: {pdf_path}) ═══")
+    path = Path(pdf_path)
+    title = path.stem
+    article = {
+        "id":    f"pdf_{path.stem}",
+        "url":   f"file://{path.resolve()}",
+        "title": title,
+    }
+    try:
+        reader = PdfReader(str(path))
+        text = "\n".join(p.extract_text() or "" for p in reader.pages)
+        text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    except Exception as e:
+        log.error(f"Errore lettura PDF: {e}")
+        return
+    processed_ids = load_state(STATE_FILE)
+    if article["id"] in processed_ids:
+        log.warning("⚠️  SKIP  %s già processato (processed_ids)", article["id"])
+    else:
+        _process_article(article, processed_ids, prefetched_text=text)
+        save_state(STATE_FILE, processed_ids)
+    log.info("═══ Run completata (PDF) ═══")
 
 
 # ═══════════════════════════════════════════════════════════════

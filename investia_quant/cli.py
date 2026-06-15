@@ -651,16 +651,24 @@ def k_analyze(strategies, tickers, ptf, output_dir, start_date, end_date,
 # ---------------------------------------------------------------------------
 
 @app.command("k-agent")
-@click.option("--max", "max_per_run", default=5, show_default=True,
-    help="Numero massimo di articoli da processare per run")
-@click.option("--llm", "llm_provider", default="ollama",
+@click.option("--max", "max_per_run", default=None, type=int,
+    help="Numero massimo di articoli da processare per run (default: 5, mutuamente esclusivo con --pdf)")
+@click.option("--pdf", "pdf_path", type=click.Path(exists=True), default=None,
+    help="Processa un PDF locale invece del feed RSS")
+@click.option("--llm", "llm_provider", default="anthropic",
     type=click.Choice(["ollama", "anthropic"]),
     show_default=True, help="Provider LLM")
 @click.option("--model", default=None,
     help="Modello LLM (default: qwen2.5-coder:7b per ollama, claude-sonnet-4-20250514 per anthropic)")
 @click.option("--verbose", "-v", is_flag=True, default=False)
-def k_agent(max_per_run, llm_provider, model, verbose):
+def k_agent(max_per_run, pdf_path, llm_provider, model, verbose):
     """Genera nuove K-strategy leggendo articoli da feed RSS."""
+    if pdf_path is not None and max_per_run is not None:
+        click.echo("Errore: --pdf e --max sono mutuamente esclusivi.", err=True)
+        raise SystemExit(1)
+    if max_per_run is None:
+        max_per_run = 5
+
     import sys as _sys
     agent_dir = str(Path(__file__).parent.parent / "K-Strategy-Agent")
     if agent_dir not in _sys.path:
@@ -678,8 +686,13 @@ def k_agent(max_per_run, llm_provider, model, verbose):
         print(f"Provider : {llm_provider}")
         print(f"Max      : {max_per_run}")
         print(f"Model    : {model or '(default)'}")
+        if pdf_path:
+            print(f"PDF      : {pdf_path}")
 
-    _agent.run_agent()
+    if pdf_path:
+        _agent.run_agent_from_pdf(pdf_path)
+    else:
+        _agent.run_agent()
 
 
 # ---------------------------------------------------------------------------
