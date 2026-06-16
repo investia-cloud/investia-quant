@@ -140,11 +140,16 @@ cron irina (locale) ore 03:00         → iq k-analyze --ptf <PTF_DA_DEFINIRE>
 
 ### Priorità alta
 
-**1. Definire PTF K per crontab** · filiera K
+**1. PTF K per crontab** · filiera K · ⏳ BLOCCATO
 
-Il crontab locale è pronto ma manca il PTF target per `iq k-analyze`.
-Definire in `k_portfolios.py` il/i PTF su cui testare le nuove strategie
-generate da `iq k-agent`. Poi attivare crontab su `irina`.
+Crontab `iq k-agent` attivo su `irina` (ore 02:00, --max 15, anthropic).
+Crontab `iq k-analyze` in attesa: l'universo ticker per i trading system
+2027 dipende da `select_top_performing_stocks` calcolato su base annuale.
+L'universo 2026 sarà disponibile solo a fine 2026.
+
+Azione: definire PTF K e attivare `iq k-analyze` in crontab a fine 2026,
+in parallelo alla certificazione PTF per la release 2027.
+
 
 **2. Potenziamento Block B** · filiera R
 
@@ -161,7 +166,6 @@ Sorgenti candidate:
 Da fare: design session prima di toccare codice.
 
 ### Priorità media
-
 **3. Relazione tecnica AI per Lazy portfolio** · filiera Lazy
 
 Gap rispetto a R-portfolio: aggiungere `generate_relazione_tecnica()`.
@@ -356,3 +360,28 @@ Branch vari → main.
 - `k_strategy_panel.ipynb`: aggiunta sezione §7 Trading System Analysis
   con load_ts, analyze_exposure_regime, analyze_timing_efficiency,
   generate_portfolio_performance, analyze_promoted_ts
+
+### Sessione 16/06/2026 — Filiera Lazy portfolio + fix k-agent
+
+**k-agent:**
+- Fix model string deprecato: `claude-sonnet-4-20250514` → `claude-sonnet-4-6`
+- Crontab `iq k-agent` attivato su `irina` (ore 02:00, --max 15, anthropic)
+- Crontab `iq k-analyze` in attesa: universo ticker dipende da
+  `select_top_performing_stocks` — bloccato fino a fine 2026
+
+**Filiera Lazy — Fase A completata:**
+- `mc_functions.py`: aggiunta pipeline headless `run_lazy_analysis()`
+  con frequency selection automatica, frontiera efficiente, backtest;
+  helpers `_cagr_from_equity()`, `_safe_metric()`
+- `lazy_portfolio_analyst.ipynb`: riscritto con flusso pulito:
+  §1 Configurazione → §2 Frequency Selection → §3 Frontiera efficiente
+  (con legenda Real vs teorico) → §4 Backtest PTF proposto →
+  §5 Backtest PTF ottimizzato → §6 Placeholder validazione statistica
+- Separazione netta JN interattivo (Plotly) vs CLI headless (`run_lazy_analysis`)
+
+**Prossimo (Fase B — validazione statistica Lazy):**
+- Stability test pesi ottimali su sotto-periodi
+- MC Block A: confidence intervals CAGR/Sharpe/DD
+- MC Block B: skill ribilanciamento vs BH puro
+- DSR: Deflated Sharpe Ratio
+- Decisione finale + relazione tecnica PDF
