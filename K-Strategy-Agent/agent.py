@@ -47,7 +47,7 @@ PDF_FOLDER       = Path(__file__).parent / "pdf_articles"
 PY_FOLDER        = Path(__file__).parent / "py_articles"
 
 # Anthropic API (usata quando LLM_PROVIDER = "anthropic")
-ANTHROPIC_MODEL  = "claude-sonnet-4-20250514"
+ANTHROPIC_MODEL  = "claude-sonnet-4-6"
 
 # Ollama (usata quando LLM_PROVIDER = "ollama")
 # ── LLM Provider ──────────────────────────────────────────────────────────
@@ -72,7 +72,7 @@ def _load_anthropic_key() -> str:
     return key
 
 ANTHROPIC_API_KEY = _load_anthropic_key()
-ANTHROPIC_MODEL   = "claude-sonnet-4-20250514"
+ANTHROPIC_MODEL   = "claude-sonnet-4-6"
 ANTHROPIC_TIMEOUT = 120
 
 class _TransientAPIError(Exception):

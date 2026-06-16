@@ -1856,3 +1856,495 @@ def strategy_multiple_indicator(data: pd.DataFrame, params: dict, year: int | No
     shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
     shifted_exits = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
     return shifted_entries, shifted_exits
+
+
+# ─────────────────────────────────────
+# Fonte: I Let an Algorithm Backtest Energy Transfer for 16 Years. Here’s What Happened.
+# URL:   https://medium.com/@Kryptera/i-let-an-algorithm-backtest-energy-transfer-for-16-years-heres-what-happened-e0320effaedd
+# Data:  2026-06-16 10:30
+# ─────────────────────────────────────
+
+############################
+# Strategy tema_tsi
+############################
+
+import pandas as pd
+import numpy as np
+
+
+def ind_tema_tsi_tema(df: pd.DataFrame, tema_period: int = 20) -> pd.Series:
+    close = df['Close']
+    ema1 = close.ewm(span=tema_period, adjust=False, min_periods=1).mean()
+    ema2 = ema1.ewm(span=tema_period, adjust=False, min_periods=1).mean()
+    ema3 = ema2.ewm(span=tema_period, adjust=False, min_periods=1).mean()
+    tema = 3 * ema1 - 3 * ema2 + ema3
+    return tema
+
+
+def ind_tema_tsi_tsi(df: pd.DataFrame,
+                     tsi_long: int = 25,
+                     tsi_short: int = 13,
+                     tsi_signal: int = 7) -> tuple:
+    close = df['Close']
+    pc = close.diff(1)
+
+    # Double smoothed price change
+    ema1_pc = pc.ewm(span=tsi_long, adjust=False, min_periods=1).mean()
+    ema2_pc = ema1_pc.ewm(span=tsi_short, adjust=False, min_periods=1).mean()
+
+    # Double smoothed absolute price change
+    apc = pc.abs()
+    ema1_apc = apc.ewm(span=tsi_long, adjust=False, min_periods=1).mean()
+    ema2_apc = ema1_apc.ewm(span=tsi_short, adjust=False, min_periods=1).mean()
+
+    den_arr = ema2_apc.values
+    num_arr = ema2_pc.values
+    safe_den = np.where(den_arr != 0, den_arr, 1.0)
+    tsi_arr = np.where(den_arr != 0, 100.0 * num_arr / safe_den, 0.0)
+    tsi = pd.Series(tsi_arr, index=close.index)
+
+    signal = tsi.ewm(span=tsi_signal, adjust=False, min_periods=1).mean()
+    return tsi, signal
+
+
+strategy_tema_tsi_param_ranges = {
+    'tema_period_range': range(16, 25, 4),   # 16, 20, 24
+    'tsi_long_range'   : range(20, 31, 5),   # 20, 25, 30
+    'tsi_short_range'  : range(11, 16, 2),   # 11, 13, 15
+    'tsi_signal_range' : range(5, 10, 2),    # 5, 7, 9
+}
+
+
+def strategy_tema_tsi(data: pd.DataFrame, params: dict, year: int | None = None):
+    tema_period = params.get('tema_period_range')
+    tsi_long    = params.get('tsi_long_range')
+    tsi_short   = params.get('tsi_short_range')
+    tsi_signal  = params.get('tsi_signal_range')
+
+    df = data.copy()
+
+    tema = ind_tema_tsi_tema(df, tema_period=tema_period)
+    tsi, signal = ind_tema_tsi_tsi(df, tsi_long=tsi_long, tsi_short=tsi_short, tsi_signal=tsi_signal)
+
+    df['TEMA']       = tema
+    df['TSI']        = tsi
+    df['TSI_Signal'] = signal
+
+    if year is not None:
+        df = df[df.index.year == int(year)]
+
+    # Entry: price closes above TEMA
+    entries = df['Close'] > df['TEMA']
+
+    # Exit: TSI crosses below signal AND TSI < 0
+    tsi_cross_below = (df['TSI'] < df['TSI_Signal']) & (df['TSI'].shift(1) >= df['TSI_Signal'].shift(1))
+    tsi_below_zero  = df['TSI'] < 0
+    exits = tsi_cross_below & tsi_below_zero
+
+    shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    shifted_exits   = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    return shifted_entries, shifted_exits
+
+
+# ─────────────────────────────────────
+# Fonte: I Stress-Tested Those 2 META Trading Strategies. Here’s the Honest Truth.
+# URL:   https://medium.com/@Kryptera/i-stress-tested-those-2-meta-trading-strategies-heres-the-honest-truth-bf61a26cfe28
+# Data:  2026-06-16 10:31
+# ─────────────────────────────────────
+
+############################
+# Strategy lrsi_tsi
+############################
+
+import pandas as pd
+import numpy as np
+
+
+def ind_lrsi_tsi_laguerre_rsi(df: pd.DataFrame, gamma: float = 0.5) -> pd.Series:
+    close = df['Close'].values
+    n = len(close)
+    L0 = np.zeros(n)
+    L1 = np.zeros(n)
+    L2 = np.zeros(n)
+    L3 = np.zeros(n)
+    lrsi = np.zeros(n)
+
+    for i in range(1, n):
+        L0[i] = (1 - gamma) * close[i] + gamma * L0[i - 1]
+        L1[i] = -gamma * L0[i] + L0[i - 1] + gamma * L1[i - 1]
+        L2[i] = -gamma * L1[i] + L1[i - 1] + gamma * L2[i - 1]
+        L3[i] = -gamma * L2[i] + L2[i - 1] + gamma * L3[i - 1]
+
+        cu = 0.0
+        cd = 0.0
+        if L0[i] >= L1[i]:
+            cu += L0[i] - L1[i]
+        else:
+            cd += L1[i] - L0[i]
+        if L1[i] >= L2[i]:
+            cu += L1[i] - L2[i]
+        else:
+            cd += L2[i] - L1[i]
+        if L2[i] >= L3[i]:
+            cu += L2[i] - L3[i]
+        else:
+            cd += L3[i] - L2[i]
+
+        denom = cu + cd
+        if denom != 0:
+            lrsi[i] = cu / denom
+        else:
+            lrsi[i] = 0.5
+
+    return pd.Series(lrsi, index=df.index)
+
+
+def ind_lrsi_tsi_tsi(df: pd.DataFrame, r: int = 25, s: int = 13) -> pd.Series:
+    close = df['Close']
+    momentum = close.diff(1)
+    abs_momentum = momentum.abs()
+
+    ema1_m = momentum.ewm(span=r, adjust=False, min_periods=1).mean()
+    ema2_m = ema1_m.ewm(span=s, adjust=False, min_periods=1).mean()
+
+    ema1_a = abs_momentum.ewm(span=r, adjust=False, min_periods=1).mean()
+    ema2_a = ema1_a.ewm(span=s, adjust=False, min_periods=1).mean()
+
+    num = 100.0 * ema2_m
+    den = ema2_a
+    den_arr = den.values
+    num_arr = num.values
+    safe_den = np.where(den_arr != 0, den_arr, 1.0)
+    result = np.where(den_arr != 0, num_arr / safe_den, 0.0)
+
+    return pd.Series(result, index=df.index)
+
+
+strategy_lrsi_tsi_param_ranges = {
+    'gamma_range': range(3, 8, 2),
+    'tsi_r_range': range(15, 36, 10),
+    'tsi_s_range': range(8, 19, 5),
+}
+
+
+def strategy_lrsi_tsi(data: pd.DataFrame, params: dict, year: int | None = None):
+    gamma = params.get('gamma_range') / 10.0
+    tsi_r = params.get('tsi_r_range')
+    tsi_s = params.get('tsi_s_range')
+
+    df = data.copy()
+
+    lrsi = ind_lrsi_tsi_laguerre_rsi(df, gamma=gamma)
+    tsi = ind_lrsi_tsi_tsi(df, r=tsi_r, s=tsi_s)
+
+    df['LRSI'] = lrsi
+    df['TSI'] = tsi
+
+    if year is not None:
+        df = df[df.index.year == int(year)]
+
+    entries = df['LRSI'] > df['LRSI'].shift(1)
+    exits = (df['TSI'] > 0) & (df['TSI'].shift(1) <= 0)
+
+    shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    shifted_exits   = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    return shifted_entries, shifted_exits
+
+
+# ─────────────────────────────────────
+# Fonte: I Found a Tension Flow Trend TradingView Indicator — So I Backtested It on 29 Years of Data
+# URL:   https://medium.com/@Kryptera/i-found-a-tension-flow-trend-tradingview-indicator-so-i-backtested-it-on-29-years-of-data-a73874952129
+# Data:  2026-06-16 10:31
+# ─────────────────────────────────────
+
+############################
+# Strategy tension_flow_trend
+############################
+
+import pandas as pd
+import numpy as np
+
+
+def ind_tension_flow_trend_wma(series: pd.Series, period: int) -> pd.Series:
+    weights = np.arange(1, period + 1, dtype=float)
+    arr = series.values
+    n = len(arr)
+    out = np.empty(n)
+    out[:] = np.nan
+    for i in range(period - 1, n):
+        window = arr[i - period + 1: i + 1]
+        out[i] = np.dot(window, weights) / weights.sum()
+    return pd.Series(out, index=series.index)
+
+
+def ind_tension_flow_trend_hma(df: pd.DataFrame, period: int = 50) -> pd.Series:
+    close = df['Close']
+    half_period = max(1, period // 2)
+    sqrt_period = max(1, int(round(period ** 0.5)))
+    wma_half = ind_tension_flow_trend_wma(close, half_period)
+    wma_full = ind_tension_flow_trend_wma(close, period)
+    diff = 2.0 * wma_half - wma_full
+    hma = ind_tension_flow_trend_wma(diff, sqrt_period)
+    return hma
+
+
+strategy_tension_flow_trend_param_ranges = {
+    'hma_period_range': range(30, 71, 20),
+    'signal_gap_range': range(15, 46, 15),
+}
+
+
+def strategy_tension_flow_trend(data: pd.DataFrame, params: dict, year: int | None = None):
+    hma_period = params.get('hma_period_range')
+    signal_gap = params.get('signal_gap_range')
+
+    df = data.copy()
+
+    hma = ind_tension_flow_trend_hma(df, period=hma_period)
+    df['HMA'] = hma
+
+    slope_up = hma > hma.shift(1)
+    slope_down = hma < hma.shift(1)
+
+    close = df['Close']
+    cross_above = (close > hma) & (close.shift(1) <= hma.shift(1))
+    cross_below = (close < hma) & (close.shift(1) >= hma.shift(1))
+
+    raw_long_signal = cross_above & slope_up
+    raw_short_signal = cross_below & slope_down
+
+    raw_long_arr = raw_long_signal.values
+    raw_short_arr = raw_short_signal.values
+    n = len(raw_long_arr)
+
+    entry_arr = np.zeros(n, dtype=bool)
+    exit_arr = np.zeros(n, dtype=bool)
+
+    last_signal_bar = -signal_gap - 1
+    in_trade = False
+    trade_direction = 0  # 1 long, -1 short
+
+    for i in range(n):
+        if not in_trade:
+            if raw_long_arr[i] and (i - last_signal_bar) >= signal_gap:
+                entry_arr[i] = True
+                last_signal_bar = i
+                in_trade = True
+                trade_direction = 1
+            elif raw_short_arr[i] and (i - last_signal_bar) >= signal_gap:
+                entry_arr[i] = True
+                last_signal_bar = i
+                in_trade = True
+                trade_direction = -1
+        else:
+            if trade_direction == 1:
+                if raw_short_arr[i] and (i - last_signal_bar) >= signal_gap:
+                    exit_arr[i] = True
+                    entry_arr[i] = True
+                    last_signal_bar = i
+                    trade_direction = -1
+                elif slope_down.values[i]:
+                    exit_arr[i] = True
+                    in_trade = False
+                    trade_direction = 0
+            elif trade_direction == -1:
+                if raw_long_arr[i] and (i - last_signal_bar) >= signal_gap:
+                    exit_arr[i] = True
+                    entry_arr[i] = True
+                    last_signal_bar = i
+                    trade_direction = 1
+                elif slope_up.values[i]:
+                    exit_arr[i] = True
+                    in_trade = False
+                    trade_direction = 0
+
+    entries = pd.Series(entry_arr, index=df.index)
+    exits = pd.Series(exit_arr, index=df.index)
+
+    if year is not None:
+        mask = df.index.year == int(year)
+        entries = entries[mask]
+        exits = exits[mask]
+
+    shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    shifted_exits = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    return shifted_entries, shifted_exits
+
+
+# ─────────────────────────────────────
+# Fonte: Liquidity Sweeps as a Signal — The Hidden Edge in AMPE Indicator
+# URL:   https://medium.com/@Kryptera/liquidity-sweeps-as-a-signal-the-hidden-edge-in-ampe-indicator-a0ccb0326a53
+# Data:  2026-06-16 10:33
+# ─────────────────────────────────────
+
+############################
+# Strategy ampe_liquidity
+############################
+
+import pandas as pd
+import numpy as np
+
+
+def ind_ampe_liquidity_sweeps(df: pd.DataFrame, sweep_len: int = 20):
+    high  = df['High']
+    low   = df['Low']
+    close = df['Close']
+
+    prior_low  = low.shift(1).rolling(sweep_len, min_periods=1).min()
+    prior_high = high.shift(1).rolling(sweep_len, min_periods=1).max()
+
+    bull_sweep = (low < prior_low) & (close > prior_low)
+    bear_sweep = (high > prior_high) & (close < prior_high)
+
+    return bull_sweep, bear_sweep
+
+
+def ind_ampe_liquidity_pressure(bull_sweep: pd.Series,
+                                bear_sweep: pd.Series,
+                                sweep_len: int = 20) -> pd.Series:
+    sweep_pressure_len = max(2, sweep_len // 2)
+    bull_liq = bull_sweep.rolling(sweep_pressure_len, min_periods=1).sum()
+    bear_liq = bear_sweep.rolling(sweep_pressure_len, min_periods=1).sum()
+    net = bull_liq - bear_liq
+    liquidity_pressure = ((net - (-5)) / (5 - (-5))).clip(0, 1)
+    return liquidity_pressure
+
+
+def ind_ampe_liquidity_trend_pressure(df: pd.DataFrame,
+                                      ema_fast_p: int = 12,
+                                      ema_slow_p: int = 26,
+                                      atr_p: int = 14,
+                                      regime_lookback: int = 50):
+    close = df['Close']
+    high  = df['High']
+    low   = df['Low']
+
+    ema_fast = close.ewm(span=ema_fast_p, adjust=False, min_periods=1).mean()
+    ema_slow = close.ewm(span=ema_slow_p, adjust=False, min_periods=1).mean()
+
+    prev_close = close.shift(1)
+    hl   = high.values - low.values
+    hpc  = np.abs(high.values - prev_close.values)
+    lpc  = np.abs(low.values  - prev_close.values)
+    tr_vals = np.maximum(np.maximum(hl, hpc), lpc)
+    tr = pd.Series(tr_vals, index=close.index)
+
+    tr_arr  = tr.values
+    atr_arr = np.empty(len(tr_arr))
+    atr_arr[0] = tr_arr[0]
+    alpha = 1.0 / atr_p
+    for i in range(1, len(tr_arr)):
+        atr_arr[i] = atr_arr[i-1] * (1 - alpha) + tr_arr[i] * alpha
+    atr_val = pd.Series(atr_arr, index=close.index)
+
+    safe_atr = np.where(atr_val.values != 0, atr_val.values, 1.0)
+    trend_strength_vals = np.abs(ema_fast.values - ema_slow.values) / safe_atr
+    trend_strength = pd.Series(trend_strength_vals, index=close.index)
+
+    ts_median = trend_strength.rolling(regime_lookback, min_periods=1).median()
+    trending_regime = trend_strength > ts_median
+
+    trend_direction = (ema_fast - ema_slow) / pd.Series(safe_atr, index=close.index)
+    td_std = trend_direction.rolling(regime_lookback, min_periods=1).std(ddof=0).replace(0, np.nan)
+    trend_pressure = (trend_direction / td_std).clip(-3, 3)
+    trend_pressure_norm = ((trend_pressure - (-3)) / (3 - (-3))).clip(0, 1)
+
+    return trend_pressure_norm, trending_regime, ema_fast, ema_slow
+
+
+def ind_ampe_liquidity_momentum_pressure(df: pd.DataFrame, mom_p: int = 14, smooth: int = 5) -> pd.Series:
+    close = df['Close']
+    roc = close.pct_change(mom_p)
+    roc_std = roc.rolling(mom_p, min_periods=1).std(ddof=0).replace(0, np.nan)
+    z = roc / roc_std
+    z_smooth = z.ewm(span=smooth, adjust=False, min_periods=1).mean()
+    mom_norm = ((z_smooth - (-3)) / (3 - (-3))).clip(0, 1)
+    return mom_norm
+
+
+def ind_ampe_liquidity_composite(trend_pressure: pd.Series,
+                                 mom_pressure: pd.Series,
+                                 liq_pressure: pd.Series,
+                                 trending_regime: pd.Series) -> pd.Series:
+    t_w = np.where(trending_regime.values, 0.45, 0.20)
+    m_w = np.where(trending_regime.values, 0.30, 0.20)
+    l_w = np.where(trending_regime.values, 0.15, 0.35)
+    c_w = np.where(trending_regime.values, 0.10, 0.25)
+
+    vol_comp = 1.0 - liq_pressure.rolling(10, min_periods=1).std(ddof=0).clip(0, 0.5) / 0.5
+
+    ampe = (t_w * trend_pressure.values +
+            m_w * mom_pressure.values +
+            l_w * liq_pressure.values +
+            c_w * vol_comp.values)
+    return pd.Series(ampe, index=trend_pressure.index)
+
+
+strategy_ampe_liquidity_param_ranges = {
+    'sweep_len_range'   : range(10, 31, 10),
+    'ema_fast_range'    : range(8, 17, 4),
+    'ema_slow_range'    : range(20, 41, 10),
+    'mom_p_range'       : range(10, 21, 5),
+    'regime_lb_range'   : range(30, 61, 15),
+    'threshold_range'   : range(6, 9, 1),
+}
+
+
+def strategy_ampe_liquidity(data: pd.DataFrame, params: dict, year: int | None = None):
+    sweep_len   = params.get('sweep_len_range')
+    ema_fast_p  = params.get('ema_fast_range')
+    ema_slow_p  = params.get('ema_slow_range')
+    mom_p       = params.get('mom_p_range')
+    regime_lb   = params.get('regime_lb_range')
+    threshold   = params.get('threshold_range') / 10.0
+
+    df = data.copy()
+
+    bull_sweep, bear_sweep = ind_ampe_liquidity_sweeps(df, sweep_len=sweep_len)
+    liq_pressure = ind_ampe_liquidity_pressure(bull_sweep, bear_sweep, sweep_len=sweep_len)
+    trend_pressure, trending_regime, ema_fast, ema_slow = ind_ampe_liquidity_trend_pressure(
+        df,
+        ema_fast_p=ema_fast_p,
+        ema_slow_p=ema_slow_p,
+        atr_p=14,
+        regime_lookback=regime_lb
+    )
+    mom_pressure = ind_ampe_liquidity_momentum_pressure(df, mom_p=mom_p, smooth=5)
+    ampe = ind_ampe_liquidity_composite(trend_pressure, mom_pressure, liq_pressure, trending_regime)
+
+    df['bull_sweep']      = bull_sweep
+    df['bear_sweep']      = bear_sweep
+    df['liq_pressure']    = liq_pressure
+    df['trend_pressure']  = trend_pressure
+    df['mom_pressure']    = mom_pressure
+    df['trending_regime'] = trending_regime
+    df['ema_fast']        = ema_fast
+    df['ema_slow']        = ema_slow
+    df['ampe']            = ampe
+
+    if year is not None:
+        df = df[df.index.year == int(year)]
+
+    ampe_s     = df['ampe']
+    liq_s      = df['liq_pressure']
+    bull_sw    = df['bull_sweep']
+    bear_sw    = df['bear_sweep']
+    ema_f      = df['ema_fast']
+    ema_sl     = df['ema_slow']
+    prev_ampe  = ampe_s.shift(1)
+
+    entries_long  = (ampe_s >= threshold) & (prev_ampe < threshold) & bull_sw & (ema_f > ema_sl)
+    entries_short = (ampe_s <= (1.0 - threshold)) & (prev_ampe > (1.0 - threshold)) & bear_sw & (ema_f < ema_sl)
+    entries = entries_long | entries_short
+
+    exits_long  = (ampe_s < 0.5) & (prev_ampe >= 0.5)
+    exits_long  = exits_long | (bear_sw & (liq_s < 0.4) & (ema_f > ema_sl))
+
+    exits_short = (ampe_s > 0.5) & (prev_ampe <= 0.5)
+    exits_short = exits_short | (bull_sw & (liq_s > 0.6) & (ema_f < ema_sl))
+
+    exits = exits_long | exits_short
+
+    shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    shifted_exits   = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    return shifted_entries, shifted_exits
