@@ -967,3 +967,195 @@ def build_and_plot_portfolio_contributions_pandas(
     return fig
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# run_lazy_analysis
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _cagr_from_equity(pf, ann: int = 252) -> float:
+    eq = pf.value()
+    if isinstance(eq, pd.DataFrame):
+        eq = eq.iloc[:, 0]
+    eq = eq.dropna()
+    if len(eq) < 2:
+        return np.nan
+    years_n = len(eq) / ann
+    return (eq.iloc[-1] / eq.iloc[0]) ** (1 / years_n) - 1 if years_n > 0 else np.nan
+
+
+def _safe_metric(pf, metric: str) -> float:
+    try:
+        if metric == 'sharpe':
+            return float(pf.sharpe_ratio())
+        elif metric == 'total_return':
+            return float(pf.total_return())
+        elif metric == 'max_drawdown':
+            return float(pf.max_drawdown())
+    except Exception:
+        return np.nan
+    return np.nan
+
+
+def run_lazy_analysis(
+    portfolio_cfg: dict,
+    output_dir,
+    title: str = '',
+    start_date=None,
+    end_date=None,
+    benchmark: str = 'SPY',
+    init_cash: float = 100_000,
+    fees: float = 0.001,
+    years: int = 10,
+    plot: bool = False,
+    save_png: bool = True,
+    auto_freq: bool = True,
+    freq_selection_metric: str = 'sharpe',
+    weight_bounds: tuple = (0, 1),
+    verbose: bool = False,
+) -> dict:
+    """
+    Pipeline completa Lazy portfolio in modalità headless.
+    Usata da iq lazy e dalla webapp.
+
+    Returns dict con chiavi:
+        'best_freq':       str | None — frequenza ottimale selezionata
+        'freq_df':         DataFrame comparativo frequenze (None se auto_freq=False)
+        'portfolio_pf':    vbt.Portfolio con best_freq
+        'optimal_weights': dict ticker→peso (max Sharpe su frontiera)
+        'frontier_result': dict con 'fig' e 'df_special' da efficient_frontier_pypfopt
+        'plots_dir':       Path directory PNG
+    """
+    from pathlib import Path
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    output_dir = Path(output_dir)
+    plots_dir = output_dir / 'plots'
+    plots_dir.mkdir(parents=True, exist_ok=True)
+
+    # Normalizza years e start_date per coerenza tra backtest e frontiera
+    from datetime import datetime as _dt
+    _years = int(years) if (years is not None and years > 0) else 10
+    if start_date is None:
+        _start_date = _dt(_dt.today().year - _years, 1, 1).strftime('%Y-%m-%d')
+    else:
+        _start_date = start_date
+
+    # Normalizza chiavi uppercase e ricava tickers/pesi
+    portfolio_cfg = {k.upper(): v for k, v in portfolio_cfg.items()}
+    tickers    = list(portfolio_cfg.keys())
+    my_weights = list(portfolio_cfg.values())
+
+    # ── 1. FREQUENCY SELECTION ───────────────────────────────────────────────
+    if auto_freq:
+        freqs = ['W', 'M', 'Q', 'Y', None]
+        rows = []
+        for freq in freqs:
+            pf_f = run_bh_backtest(portfolio_cfg, _start_date, end_date,
+                                   init_cash, fees, freq)
+            rows.append({
+                'Freq':        freq if freq is not None else 'BH',
+                'Sharpe':      _safe_metric(pf_f, 'sharpe'),
+                'CAGR':        _cagr_from_equity(pf_f),
+                'TotalReturn': _safe_metric(pf_f, 'total_return'),
+                'MaxDD':       abs(_safe_metric(pf_f, 'max_drawdown')),
+            })
+        freq_df = pd.DataFrame(rows)
+
+        metric_map = {
+            'sharpe':       ('Sharpe',      'max'),
+            'cagr':         ('CAGR',        'max'),
+            'total_return': ('TotalReturn', 'max'),
+            'max_dd':       ('MaxDD',       'min'),
+        }
+        col, goal = metric_map.get(freq_selection_metric, ('Sharpe', 'max'))
+        if goal == 'max':
+            best_label = freq_df.loc[freq_df[col].idxmax(), 'Freq']
+        else:
+            best_label = freq_df.loc[freq_df[col].idxmin(), 'Freq']
+        best_freq = None if best_label == 'BH' else best_label
+
+        if verbose:
+            print(f"Frequenza ottimale ({freq_selection_metric}): {best_label}")
+            try:
+                from IPython.display import display as _disp
+                _disp(freq_df)
+            except Exception:
+                print(freq_df.to_string())
+
+        if save_png:
+            try:
+                metrics = ['Sharpe', 'CAGR', 'TotalReturn', 'MaxDD']
+                fig_f, axes = plt.subplots(2, 2, figsize=(10, 7))
+                fig_f.suptitle('Confronto Frequenze Ribilanciamento', fontsize=13)
+                for ax, m in zip(axes.flat, metrics):
+                    ax.bar(freq_df['Freq'].astype(str), freq_df[m])
+                    ax.set_title(m)
+                    ax.set_xlabel('Frequenza')
+                plt.tight_layout()
+                plt.savefig(str(plots_dir / 'freq_comparison.png'), dpi=120)
+                plt.close(fig_f)
+            except Exception as _e:
+                if verbose:
+                    print(f"[run_lazy_analysis] freq_comparison.png non salvato: {_e}")
+    else:
+        best_freq = None
+        freq_df   = None
+
+    # ── 2. BACKTEST CON FREQUENZA OTTIMALE ───────────────────────────────────
+    portfolio_pf = run_bh_backtest(portfolio_cfg, _start_date, end_date,
+                                   init_cash, fees, best_freq)
+
+    # ── 3. FRONTIERA EFFICIENTE ───────────────────────────────────────────────
+    frontier_fig, df_special = efficient_frontier_pypfopt(
+        tickers=tickers,
+        years=_years,
+        show_plot=plot,
+        interactive=plot,
+        print_weights=verbose,
+        my_weights=my_weights,
+        weight_bounds=weight_bounds,
+    )
+
+    # Estrai pesi max-Sharpe da df_special (DataFrame con index "Max Sharpe", ...)
+    _metric_cols = {'Return', 'Volatility', 'Sharpe',
+                    'Real Return', 'Real Volatility', 'Real Sharpe'}
+    if 'Max Sharpe' in df_special.index:
+        _row = df_special.loc['Max Sharpe']
+        optimal_weights = {k: float(v) for k, v in _row.items()
+                           if k not in _metric_cols}
+    else:
+        optimal_weights = {}
+
+    frontier_result = {'fig': frontier_fig, 'df_special': df_special}
+
+    if save_png:
+        try:
+            frontier_fig.write_image(str(plots_dir / 'frontier.png'))
+        except Exception as _e:
+            if verbose:
+                print(f"[run_lazy_analysis] frontier.png non salvato: {_e}")
+
+    # ── 4. REPORT ─────────────────────────────────────────────────────────────
+    run_portfolio_analysis(
+        portfolio=portfolio_cfg,
+        start_date=_start_date,
+        end_date=end_date,
+        title=title,
+        benchmark=benchmark,
+        init_cash=init_cash,
+        fees=fees,
+        rebalance_freq=best_freq,
+        efficient_frontier=False,
+        run_as_app=not plot,
+    )
+
+    return {
+        'best_freq':       best_freq,
+        'freq_df':         freq_df,
+        'portfolio_pf':    portfolio_pf,
+        'optimal_weights': optimal_weights,
+        'frontier_result': frontier_result,
+        'plots_dir':       plots_dir,
+    }
+
