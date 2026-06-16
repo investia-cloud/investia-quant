@@ -995,6 +995,245 @@ def _safe_metric(pf, metric: str) -> float:
     return np.nan
 
 
+def _lazy_stability_weights(
+    tickers: list,
+    years: int = 10,
+    weight_bounds: tuple = (0, 1),
+    n_splits: int = 5,
+    verbose: bool = False,
+) -> dict:
+    """
+    Stability test sui pesi ottimali (Max Sharpe) su sotto-periodi.
+    Divide il periodo storico (years) in n_splits finestre disgiunte
+    e ricalcola i pesi ottimali per ogni finestra.
+
+    Returns dict:
+        'df_weights':   DataFrame (n_splits righe x n_tickers colonne)
+                        pesi Max Sharpe per ogni finestra
+        'df_stats':     DataFrame (asset x [mean, std, cv])
+        'stable':       bool — True se cv medio < cv_threshold
+        'cv_mean':      float
+        'cv_threshold': float (default 0.5)
+    """
+    _metric_cols = {'Return', 'Volatility', 'Sharpe',
+                    'Real Return', 'Real Volatility', 'Real Sharpe'}
+
+    window_years = max(1, years // n_splits)
+    if window_years < 1:
+        print(f"[_lazy_stability_weights] window_years forzato a 1 (era {years // n_splits})")
+        window_years = 1
+
+    _empty = {
+        'df_weights': pd.DataFrame(),
+        'df_stats': None,
+        'stable': False,
+        'cv_mean': np.nan,
+        'cv_threshold': 0.5,
+    }
+
+    rows = []
+    labels = []
+    for i in range(n_splits):
+        label = f'W{i+1} ({window_years}y)'
+        try:
+            _, df_special = efficient_frontier_pypfopt(
+                tickers=tickers,
+                years=window_years,
+                weight_bounds=weight_bounds,
+                show_plot=False,
+                interactive=False,
+                print_weights=False,
+            )
+            _weight_cols = [c for c in df_special.columns if c not in _metric_cols]
+            if 'Max Sharpe' in df_special.index:
+                weights_i = df_special.loc['Max Sharpe', _weight_cols].to_dict()
+            else:
+                weights_i = df_special.iloc[0][_weight_cols].to_dict()
+                print(f"[_lazy_stability_weights] {label}: 'Max Sharpe' non trovato, uso prima riga")
+            rows.append(weights_i)
+            labels.append(label)
+        except Exception as e:
+            print(f"[_lazy_stability_weights] {label}: errore — {e}")
+
+    if not rows:
+        print("[_lazy_stability_weights] Tutte le finestre hanno fallito — restituisco empty.")
+        return _empty
+
+    df_weights = pd.DataFrame(rows, index=labels)
+
+    stats = []
+    for asset in tickers:
+        if asset not in df_weights.columns:
+            stats.append({'asset': asset, 'mean': np.nan, 'std': np.nan, 'cv': np.nan})
+            continue
+        mean = df_weights[asset].mean()
+        std  = df_weights[asset].std()
+        cv   = std / mean if mean > 0.01 else np.nan
+        stats.append({'asset': asset, 'mean': mean, 'std': std, 'cv': cv})
+    df_stats = pd.DataFrame(stats).set_index('asset')
+
+    cv_mean = float(df_stats['cv'].dropna().mean())
+    cv_threshold = 0.5
+    stable = bool(cv_mean < cv_threshold)
+
+    if verbose:
+        print(f"Stability test pesi — window={window_years}y, splits={n_splits}")
+        try:
+            from IPython.display import display as _disp
+            _disp(df_weights)
+            _disp(df_stats)
+        except Exception:
+            print(df_weights.to_string())
+            print(df_stats.to_string())
+        print(f"CV medio: {cv_mean:.3f} — {'STABILE ✅' if stable else 'INSTABILE ⚠️'}")
+
+    return {
+        'df_weights':   df_weights,
+        'df_stats':     df_stats,
+        'stable':       stable,
+        'cv_mean':      cv_mean,
+        'cv_threshold': cv_threshold,
+    }
+
+
+def _lazy_mc_block_b_rebalancing(
+    portfolio: dict,
+    start_date,
+    end_date,
+    best_freq,
+    n_simulations: int = 1000,
+    jitter_days: int = 30,
+    init_cash: float = 100_000,
+    fees: float = 0.001,
+    random_seed: int = 42,
+    verbose: bool = False,
+) -> dict:
+    """
+    MC Block B — Skill test sul ribilanciamento.
+    Testa se la scelta della frequenza di ribilanciamento aggiunge
+    valore vs date di ribilanciamento randomizzate (jitter ±jitter_days).
+
+    Se best_freq is None (BH puro): confronta vs ribilanciamento annuale
+    randomizzato (verifica che BH non sia inferiore a qualsiasi rebalancing).
+
+    Returns dict:
+        'actual_sharpe':  float — Sharpe del PTF con best_freq
+        'actual_cagr':    float — CAGR del PTF con best_freq
+        'sim_sharpes':    np.ndarray — distribuzione Sharpe simulazioni
+        'sim_cagrs':      np.ndarray — distribuzione CAGR simulazioni
+        'p_value_sharpe': float — prob(sim_sharpe >= actual_sharpe)
+        'p_value_cagr':   float — prob(sim_cagr >= actual_cagr)
+        'skill':          bool — True se p_value_sharpe < 0.05
+        'n_simulations':  int
+    """
+    # NOTA: download_data non definita in mc_functions.py — fallback su yf.download
+    portfolio = {k.upper(): v for k, v in portfolio.items()}
+    tickers = list(portfolio.keys())
+    weights = pd.Series(portfolio, dtype=float)
+
+    # 1. Metriche PTF reale
+    pf_actual = run_bh_backtest(portfolio, start_date, end_date,
+                                init_cash, fees, best_freq)
+    actual_sharpe = float(pf_actual.sharpe_ratio())
+    actual_cagr   = _cagr_from_equity(pf_actual)
+
+    # 2. Scarica prezzi una sola volta
+    price = yf.download(tickers, start=start_date, end=end_date,
+                        progress=False, multi_level_index=False)
+    if 'Close' in price.columns.get_level_values(0) if isinstance(price.columns, pd.MultiIndex) else []:
+        price = price['Close']
+    elif 'Close' in price.columns:
+        price = price[['Close'] if len(tickers) == 1 else tickers]
+    # Normalizza: se single-ticker yf restituisce Series, converti a DataFrame
+    if isinstance(price, pd.Series):
+        price = price.to_frame(name=tickers[0])
+    price.columns = [c.upper() for c in price.columns]
+    price = price.dropna(how='any')
+
+    if price.empty:
+        raise ValueError("[_lazy_mc_block_b_rebalancing] Nessun dato scaricato.")
+
+    # 3. Date di ribilanciamento reali
+    freq_for_sim = best_freq if best_freq is not None else 'Y'
+    if best_freq is None:
+        reb_dates_real = pd.DatetimeIndex([price.index[0]])
+    else:
+        rf = str(best_freq).upper()
+        if rf in ['Y', 'A', 'YE']:
+            reb_dates_real = price.groupby(price.index.year).apply(lambda x: x.index[-1])
+            reb_dates_real = pd.DatetimeIndex(reb_dates_real.values)
+        else:
+            periods = price.index.to_period(best_freq)
+            reb_dates_real = price.index[~periods.duplicated()]
+        if price.index[0] not in reb_dates_real:
+            reb_dates_real = reb_dates_real.insert(0, price.index[0])
+        reb_dates_real = reb_dates_real.intersection(price.index)
+
+    # 4. Loop simulazioni
+    rng = np.random.default_rng(random_seed)
+    sim_sharpes: list = []
+    sim_cagrs:   list = []
+
+    for _ in range(n_simulations):
+        jitter = rng.integers(-jitter_days, jitter_days + 1,
+                              size=len(reb_dates_real))
+        reb_dates_sim = pd.DatetimeIndex([
+            d + pd.Timedelta(days=int(j))
+            for d, j in zip(reb_dates_real, jitter)
+        ])
+        reb_dates_sim = reb_dates_sim.intersection(price.index)
+        if len(reb_dates_sim) == 0:
+            continue
+
+        size = pd.DataFrame(np.nan, index=price.index, columns=price.columns)
+        for d in reb_dates_sim:
+            size.loc[d] = weights
+
+        try:
+            pf_sim = vbt.Portfolio.from_orders(
+                close=price,
+                size=size,
+                size_type='targetpercent',
+                init_cash=init_cash,
+                fees=fees,
+                cash_sharing=True,
+                freq='D',
+            )
+            sim_sharpes.append(float(pf_sim.sharpe_ratio()))
+            sim_cagrs.append(_cagr_from_equity(pf_sim))
+        except Exception:
+            continue
+
+    # 5. P-values
+    sim_sharpes_arr = np.array(sim_sharpes)
+    sim_cagrs_arr   = np.array(sim_cagrs)
+    p_value_sharpe  = float((sim_sharpes_arr >= actual_sharpe).mean()) if len(sim_sharpes_arr) else np.nan
+    p_value_cagr    = float((sim_cagrs_arr   >= actual_cagr).mean())   if len(sim_cagrs_arr)   else np.nan
+    skill           = bool(p_value_sharpe < 0.05) if not np.isnan(p_value_sharpe) else False
+
+    # 6. Verbose
+    if verbose:
+        print("MC Block B — Rebalancing Skill Test")
+        print(f"  PTF reale  : Sharpe={actual_sharpe:.3f}  CAGR={actual_cagr:.2%}")
+        if len(sim_sharpes_arr):
+            print(f"  Sim median : Sharpe={np.median(sim_sharpes_arr):.3f}"
+                  f"  CAGR={np.median(sim_cagrs_arr):.2%}")
+        print(f"  p-value Sharpe={p_value_sharpe:.3f}"
+              f"  p-value CAGR={p_value_cagr:.3f}")
+        print(f"  Skill: {'✅ SI (p<0.05)' if skill else '⚠️ NO (p>=0.05)'}")
+
+    return {
+        'actual_sharpe':  actual_sharpe,
+        'actual_cagr':    actual_cagr,
+        'sim_sharpes':    sim_sharpes_arr,
+        'sim_cagrs':      sim_cagrs_arr,
+        'p_value_sharpe': p_value_sharpe,
+        'p_value_cagr':   p_value_cagr,
+        'skill':          skill,
+        'n_simulations':  len(sim_sharpes_arr),
+    }
+
+
 def run_lazy_analysis(
     portfolio_cfg: dict,
     output_dir,
