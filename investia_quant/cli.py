@@ -73,16 +73,20 @@ def _load_all_libs():
 
 def _resolve_portfolio(ptf_name: str, ns: dict):
     """
-    Risolve --ptf <nome> cercando in R_PORTFOLIO_REGISTRY e K_PORTFOLIO_REGISTRY.
-    Ritorna (portfolio_obj, kind) dove kind è 'R' o 'K'.
+    Risolve --ptf <nome> cercando in R_PORTFOLIO_REGISTRY, K_PORTFOLIO_REGISTRY
+    e L_PORTFOLIO_REGISTRY.
+    Ritorna (portfolio_obj, kind) dove kind è 'R', 'K' o 'L'.
     """
     r_registry = ns.get("R_PORTFOLIO_REGISTRY", {})
     k_registry = ns.get("K_PORTFOLIO_REGISTRY", {})
+    l_registry = ns.get("L_PORTFOLIO_REGISTRY", {})
 
     if ptf_name in r_registry:
         return r_registry[ptf_name], "R"
     if ptf_name in k_registry:
         return k_registry[ptf_name], "K"
+    if ptf_name in l_registry:
+        return l_registry[ptf_name], "L"
 
     # Fallback: cerca direttamente per nome variabile nel namespace
     obj = ns.get(ptf_name)
@@ -91,13 +95,17 @@ def _resolve_portfolio(ptf_name: str, ns: dict):
             return obj, "K"
         if "tickers" in obj:
             return obj, "R"
+        # dict semplice {ticker: peso} -> Lazy portfolio
+        return obj, "L"
 
     available_r = list(r_registry.keys())
     available_k = list(k_registry.keys())
+    available_l = list(l_registry.keys())
     raise click.ClickException(
         f"Portafoglio '{ptf_name}' non trovato.\n"
         f"  R-portfolio disponibili: {available_r}\n"
-        f"  K-portfolio disponibili: {available_k}"
+        f"  K-portfolio disponibili: {available_k}\n"
+        f"  L-portfolio disponibili: {available_l}"
     )
 
 
@@ -372,6 +380,32 @@ def report(ptf, all_portfolios, rotational, trading, recipient, start_date, end_
             if run_rotational_portfolio_performance is None:
                 raise click.ClickException("run_rotational_portfolio_performance non trovata in r_functions.")
             wfo_dir = wfo_results_dir or ns.get("_TSLAB_RUNTIME_R_WFO_RESULTS_DIR", "../../inputs/WFO_R_RUN_RESULTS")
+            _tickers = portfolio_obj.get("tickers")
+            if isinstance(_tickers, str):
+                from datetime import datetime as _dt
+                _year = _dt.now().year
+                _by_year_map = {
+                    "sp100": "alpha_sp100_tickers_by_year",
+                    "nasdaq100": "alpha_nasdaq100_tickers_by_year",
+                }
+                _map_name = _by_year_map.get(_tickers)
+                if _map_name is None:
+                    raise click.ClickException(
+                        f"Portfolio '{ptf_name}': tickers='{_tickers}' non riconosciuto "
+                        f"(attesi: {list(_by_year_map.keys())})."
+                    )
+                _by_year = ns.get(_map_name, {})
+                _resolved = _by_year.get(_year) or (_by_year.get(max(_by_year.keys())) if _by_year else None)
+                if not _resolved:
+                    raise click.ClickException(
+                        f"Portfolio '{ptf_name}': nessun mapping ticker trovato per "
+                        f"anno {_year} in {_map_name}."
+                    )
+                portfolio_obj = dict(portfolio_obj)
+                portfolio_obj["tickers"] = _resolved
+                if verbose:
+                    click.echo(f"[iq report] '{ptf_name}': tickers risolti da '{_tickers}' "
+                               f"({_map_name}[{_year}]) -> {len(_resolved)} ticker.")
             if send:
                 for rcpt in rcpts:
                     click.echo(f"[iq report] run_rotational_portfolio_performance → {rcpt} (start={effective_start})")
@@ -644,6 +678,102 @@ def k_analyze(strategies, tickers, ptf, output_dir, start_date, end_date,
         print("Coppie promosse:")
         for ticker, strategy in result['promoted']:
             print(f"  {ticker} @ {strategy}")
+
+
+# ---------------------------------------------------------------------------
+# iq lazy-analyze
+# ---------------------------------------------------------------------------
+
+@app.command("lazy-analyze")
+@click.option("--ptf", default=None,
+    help="Nome Lazy portfolio, oppure 'all' per tutti i PTF nel registry")
+@click.option("--output-dir", default=None,
+    help="Directory output (default: outputs/lazy_analysis/<data>/)")
+@click.option("--start-date", default="2016-01-01", show_default=True)
+@click.option("--end-date", default=None)
+@click.option("--benchmark", default="SPY", show_default=True)
+@click.option("--init-cash", default=100_000.0, show_default=True)
+@click.option("--fees", default=0.001, show_default=True)
+@click.option("--years", default=10, show_default=True,
+    help="Anni per frontiera efficiente e stability test")
+@click.option("--n-simulations-mc-a", default=1000, show_default=True)
+@click.option("--n-simulations-mc-b", default=500, show_default=True)
+@click.option("--verbose", "-v", is_flag=True, default=False)
+def lazy_analyze(ptf, output_dir, start_date, end_date, benchmark,
+                  init_cash, fees, years, n_simulations_mc_a,
+                  n_simulations_mc_b, verbose):
+    """Analisi Lazy portfolio: stability + MC A/B + DSR, batch o singolo."""
+    import warnings
+    warnings.filterwarnings("ignore", category=RuntimeWarning)
+    warnings.filterwarnings("ignore", category=FutureWarning)
+
+    # Silenzia il logger di yfinance (failed download via logger.error)
+    import logging
+    logging.getLogger("yfinance").setLevel(logging.CRITICAL)
+
+    if not ptf:
+        raise click.ClickException("Specifica --ptf <nome> oppure --ptf all.")
+
+    ns = _load_all_libs()
+    l_registry = ns.get("L_PORTFOLIO_REGISTRY", {})
+
+    if ptf.lower() == "all":
+        ptf_names = list(l_registry.keys())
+        if not ptf_names:
+            raise click.ClickException("L_PORTFOLIO_REGISTRY è vuoto.")
+    else:
+        portfolio_obj, kind = _resolve_portfolio(ptf, ns)
+        if kind != "L":
+            raise click.ClickException(f"'{ptf}' non è un Lazy portfolio (kind={kind}).")
+        ptf_names = [ptf]
+
+    if verbose:
+        print(f"Lazy-analyze: {len(ptf_names)} PTF -> {ptf_names}")
+
+    from datetime import datetime as _dt
+    out_dir = output_dir or str(
+        Path(__file__).parent.parent / "outputs" / "lazy_analysis" /
+        _dt.now().strftime("%Y%m%d_%H%M%S")
+    )
+
+    run_lazy_batch_analysis_fn = ns.get("run_lazy_batch_analysis")
+    if run_lazy_batch_analysis_fn is None:
+        raise click.ClickException(
+            "run_lazy_batch_analysis non trovata in mc_functions.py "
+            "(verifica che sia stata aggiunta e che _load_all_libs() "
+            "abbia importato mc_functions correttamente)."
+        )
+
+    # La barra di progresso yfinance usa print diretto su stderr (non logging),
+    # quindi reindirizzo stdout+stderr a devnull durante la chiamata quando non
+    # verbose. Il riepilogo finale è stampato dopo, fuori dal blocco redirect.
+    import os
+    import contextlib
+    with contextlib.ExitStack() as _silence:
+        if not verbose:
+            _devnull = _silence.enter_context(open(os.devnull, "w"))
+            _silence.enter_context(contextlib.redirect_stdout(_devnull))
+            _silence.enter_context(contextlib.redirect_stderr(_devnull))
+        df = run_lazy_batch_analysis_fn(
+            registry=l_registry,
+            ptf_names=ptf_names,
+            output_dir=out_dir,
+            start_date=start_date,
+            end_date=end_date,
+            benchmark=benchmark,
+            init_cash=init_cash,
+            fees=fees,
+            years=years,
+            n_simulations_mc_a=n_simulations_mc_a,
+            n_simulations_mc_b=n_simulations_mc_b,
+            verbose=verbose,
+        )
+
+    print(f"\n[iq lazy-analyze] Completato. {len(df)} PTF analizzati.")
+    print(f"Output dir: {out_dir}")
+    print(df.to_string(index=False))
+    n_promoted = (df["Verdetto"] == "PROMOSSO").sum() if "Verdetto" in df.columns else 0
+    print(f"\nPromossi: {n_promoted}/{len(df)}")
 
 
 # ---------------------------------------------------------------------------
