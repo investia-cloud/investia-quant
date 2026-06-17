@@ -385,3 +385,31 @@ Branch vari → main.
 - MC Block B: skill ribilanciamento vs BH puro
 - DSR: Deflated Sharpe Ratio
 - Decisione finale + relazione tecnica PDF
+
+## Deploy VPS — procedura standard
+
+**Script disponibili in `scripts/`:**
+- `make_release.sh [VERSION]` — crea release versionata da `notebooks/libs_py/` + `investia_quant/`. Senza argomento auto-incrementa (2026.1 → 2026.2).
+- `deploy.sh VERSION VPS_HOST INSTALL_DIR` — rsync della release locale (`releases/VERSION/`) sulla VPS, reinstalla venv, aggiorna symlink `current`. Legge SOLO da `releases/VERSION/` in locale — NON fa fetch/pull da git, NON legge dalla root del repo.
+
+**Conseguenza critica**: un fix in `investia_quant/cli.py` (root del repo) NON è automaticamente nella release. Va prima copiato/rigenerato dentro `releases/<versione>/` prima di deployare.
+
+### Procedura hotfix su release esistente (senza bump versione)
+```bash
+cd ~/investia-quant
+# 1. Copia il file corretto nella release attiva
+cp investia_quant/cli.py releases/2026.1/investia_quant/cli.py
+# (ripetere per ogni file modificato)
+
+# 2. Deploy
+./scripts/deploy.sh 2026.1 tslab.investia.cloud /home/luca
+```
+
+### Procedura release completa nuova (bump versione)
+```bash
+cd ~/investia-quant
+./scripts/make_release.sh          # crea 2026.2 da root del repo
+./scripts/deploy.sh 2026.2 tslab.investia.cloud /home/luca
+```
+
+**VPS**: `INSTALL_DIR=/home/luca`, `VPS_HOST=tslab.investia.cloud`. Rollback: `ssh tslab.investia.cloud "ln -sfn <versione_precedente> /home/luca/investia-quant/releases/current"`.
