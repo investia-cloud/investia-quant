@@ -89,3 +89,41 @@ greta_alt_C = {
     "MTD.PA": 0.08,
     "SHY": 0.20,
 }
+
+
+greta_alt_emdiv = {
+    "VUAA.MI": 0.60,
+    "EIMI.MI": 0.15,
+    "SGLD.MI": 0.15,
+    "EM710.MI": 0.05,
+    "EM1015.MI": 0.05,
+}
+
+greta_alt_emdiv_test = {
+    "SPY": 0.60,
+    "EEM": 0.15,
+    "GLD": 0.15,
+    "IEF": 0.05,
+    "TLH": 0.05,
+}
+
+
+# L_PORTFOLIO_REGISTRY: costruito automaticamente da tutte le
+# variabili dict {ticker: peso} definite sopra (somma pesi ~1.0).
+# Qualsiasi nuovo PTF aggiunto a questo file è immediatamente
+# disponibile via 'iq lazy-analyze --ptf <nome_variabile>'.
+# Questo registry serve esclusivamente al workflow CLI/JN
+# dell'architetto - i PTF dei gestori bancari (webapp futura)
+# useranno un meccanismo runtime separato, non questo file.
+
+L_PORTFOLIO_REGISTRY = {}
+for _name, _obj in list(globals().items()):
+    if _name.startswith('_') or _name == 'L_PORTFOLIO_REGISTRY':
+        continue
+    if isinstance(_obj, dict) and len(_obj) > 0:
+        _vals = list(_obj.values())
+        if all(isinstance(v, (int, float)) for v in _vals):
+            _total = sum(_vals)
+            if 0.95 <= _total <= 1.05:
+                L_PORTFOLIO_REGISTRY[_name] = _obj
+del _name, _obj

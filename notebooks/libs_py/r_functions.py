@@ -9346,7 +9346,7 @@ def _mc_check_distribution_shape(
 # BLOCCO A — Metodi CI
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _mc_run_iid_bootstrap(pf_rot, n_simulations: int, rng: np.random.Generator) -> dict:
+def mc_run_iid_bootstrap(pf_rot, n_simulations: int, rng: np.random.Generator) -> dict:
     """
     A1: IID Returns Bootstrap — baseline diagnostica.
 
@@ -9382,7 +9382,7 @@ def _mc_run_iid_bootstrap(pf_rot, n_simulations: int, rng: np.random.Generator) 
     return result
 
 
-def _mc_run_block_bootstrap(
+def mc_run_block_bootstrap(
     pf_rot,
     block_size: int,
     n_simulations: int,
@@ -9830,11 +9830,11 @@ def run_mc_confidence_intervals_rotational(
 
     # ── A1 ────────────────────────────────────────────────────────────────────
     print("\n▶ A1 · IID Bootstrap ...")
-    res_iid = _mc_run_iid_bootstrap(pf_rot, n_simulations, rng)
+    res_iid = mc_run_iid_bootstrap(pf_rot, n_simulations, rng)
 
     # ── A2 ────────────────────────────────────────────────────────────────────
     print("\n▶ A2 · Block Bootstrap ...")
-    res_blk = _mc_run_block_bootstrap(pf_rot, block_size, n_simulations, rng)
+    res_blk = mc_run_block_bootstrap(pf_rot, block_size, n_simulations, rng)
 
     # ── A3 ────────────────────────────────────────────────────────────────────
     if regime is None:
@@ -11437,7 +11437,7 @@ def _ofc_compute_metric(equity: pd.Series, metric: str, trading_days: int = 252)
 
 # ── S4 DSR formula ────────────────────────────────────────────────────────────
 
-def _ofc_compute_dsr(sr_hat: float, n_trials: int, T: int) -> float:
+def ofc_compute_dsr(sr_hat: float, n_trials: int, T: int) -> float:
     """
     Simplified Deflated Sharpe Ratio (Bailey & Lopez de Prado 2014).
 
@@ -11700,7 +11700,7 @@ def _ofc_s4_dsr(
     if np.isnan(sr) or n_trials <= 0 or T <= 0:
         return np.nan, False, "S4: insufficient data"
 
-    dsr    = _ofc_compute_dsr(sr, n_trials, T)
+    dsr    = ofc_compute_dsr(sr, n_trials, T)
     passed = not np.isnan(dsr) and dsr > threshold
     note   = (f"S4 (DSR on Sharpe): SR={sr:.4f}, n={n_trials}, T={T}, "
               f"DSR={dsr:.4f} >threshold={threshold:.2f}")

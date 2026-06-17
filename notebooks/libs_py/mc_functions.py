@@ -12,6 +12,15 @@ from typing import Optional, Dict, List, Union, Any
 import plotly.graph_objects as go
 from u_functions import (build_and_plot_portfolio_contributions, download_data, generate_lazy_portfolio_performance, plot_cumulative_and_rolling_returns, plot_monthly_returns, plot_multiple_portfolios)
 
+# Fallback sicuro per display(): usa quello di IPython in Jupyter,
+# altrimenti ripiega su print() quando il modulo è importato da script Python puro.
+try:
+    from IPython.display import display
+except ImportError:
+    def display(*args, **kwargs):
+        for a in args:
+            print(a)
+
 def optimize_portfolio(tickers, start_date, end_date, target_metric, goal='max', num_trials=1000, init_cash=10000):
     """
     Trova i pesi ottimali per un portafoglio Buy & Hold che massimizzano/minimizzano
@@ -247,11 +256,19 @@ def efficient_frontier_pypfopt(
     fig_width: int = 1200,
     fig_height: int = 600,
     compute_real_annual_return: bool = True,
+    start_date=None,
+    end_date=None,
 ) -> dict:
 
     # Calcola date di inizio e fine
-    end_date = datetime.today()
-    start_date = datetime(end_date.year - years, 1, 1)
+    if end_date is None:
+        end_date = datetime.today()
+    else:
+        end_date = pd.to_datetime(end_date).to_pydatetime()
+    if start_date is None:
+        start_date = datetime(end_date.year - years, 1, 1)
+    else:
+        start_date = pd.to_datetime(start_date).to_pydatetime()
 
     price = yf.download(tickers, start=start_date, end=end_date)["Close"].dropna(how='any')
     mu = expected_returns.mean_historical_return(price)
@@ -709,7 +726,7 @@ def run_portfolio_analysis(
         #     display(special_weights)
         #     fig_frontier.show()
 
-    return (pf, figs, special_weights, t_msg) if run_as_app else pf
+    return (pf, figs, special_weights) if run_as_app else pf
 
 def run_portfolio_analysis_RECOVERY(
     weights_dict: dict,
@@ -995,7 +1012,7 @@ def _safe_metric(pf, metric: str) -> float:
     return np.nan
 
 
-def _lazy_stability_weights(
+def lazy_stability_weights(
     tickers: list,
     years: int = 10,
     weight_bounds: tuple = (0, 1),
@@ -1020,7 +1037,7 @@ def _lazy_stability_weights(
 
     window_years = max(1, years // n_splits)
     if window_years < 1:
-        print(f"[_lazy_stability_weights] window_years forzato a 1 (era {years // n_splits})")
+        print(f"[lazy_stability_weights] window_years forzato a 1 (era {years // n_splits})")
         window_years = 1
 
     _empty = {
@@ -1031,14 +1048,23 @@ def _lazy_stability_weights(
         'cv_threshold': 0.5,
     }
 
+    # Finestre storiche DISGIUNTE: divido [oggi-years, oggi] in n_splits blocchi
+    end_year_global = datetime.today().year
+    start_year_global = end_year_global - years
+
     rows = []
     labels = []
     for i in range(n_splits):
-        label = f'W{i+1} ({window_years}y)'
+        window_start_year = start_year_global + i * window_years
+        window_end_year   = window_start_year + window_years
+        win_start = f"{window_start_year}-01-01"
+        win_end   = f"{window_end_year}-01-01"
+        label = f'W{i+1} ({window_start_year}-{window_end_year})'
         try:
             _, df_special = efficient_frontier_pypfopt(
                 tickers=tickers,
-                years=window_years,
+                start_date=win_start,
+                end_date=win_end,
                 weight_bounds=weight_bounds,
                 show_plot=False,
                 interactive=False,
@@ -1049,14 +1075,14 @@ def _lazy_stability_weights(
                 weights_i = df_special.loc['Max Sharpe', _weight_cols].to_dict()
             else:
                 weights_i = df_special.iloc[0][_weight_cols].to_dict()
-                print(f"[_lazy_stability_weights] {label}: 'Max Sharpe' non trovato, uso prima riga")
+                print(f"[lazy_stability_weights] {label}: 'Max Sharpe' non trovato, uso prima riga")
             rows.append(weights_i)
             labels.append(label)
         except Exception as e:
-            print(f"[_lazy_stability_weights] {label}: errore — {e}")
+            print(f"[lazy_stability_weights] {label}: errore — {e}")
 
     if not rows:
-        print("[_lazy_stability_weights] Tutte le finestre hanno fallito — restituisco empty.")
+        print("[lazy_stability_weights] Tutte le finestre hanno fallito — restituisco empty.")
         return _empty
 
     df_weights = pd.DataFrame(rows, index=labels)
@@ -1096,7 +1122,7 @@ def _lazy_stability_weights(
     }
 
 
-def _lazy_mc_block_b_rebalancing(
+def lazy_mc_block_b_rebalancing(
     portfolio: dict,
     start_date,
     end_date,
@@ -1151,7 +1177,7 @@ def _lazy_mc_block_b_rebalancing(
     price = price.dropna(how='any')
 
     if price.empty:
-        raise ValueError("[_lazy_mc_block_b_rebalancing] Nessun dato scaricato.")
+        raise ValueError("[lazy_mc_block_b_rebalancing] Nessun dato scaricato.")
 
     # 3. Date di ribilanciamento reali
     freq_for_sim = best_freq if best_freq is not None else 'Y'
@@ -1397,4 +1423,265 @@ def run_lazy_analysis(
         'frontier_result': frontier_result,
         'plots_dir':       plots_dir,
     }
+
+
+def run_lazy_batch_analysis(
+    registry: dict,
+    ptf_names: list,
+    output_dir,
+    start_date='2016-01-01',
+    end_date=None,
+    benchmark='SPY',
+    init_cash=100_000.0,
+    fees=0.001,
+    years=10,
+    n_simulations_mc_a=1000,
+    n_simulations_mc_b=500,
+    verbose=False,
+) -> "pd.DataFrame":
+    """
+    Esegue la pipeline Lazy completa (run_lazy_analysis + stability +
+    MC A1/A2 + MC B + DSR + verdetto) su una lista di PTF dal registry.
+    Salva un CSV 'classification_<timestamp>.csv' in output_dir.
+    Ritorna il DataFrame classification.
+    """
+    from pathlib import Path
+    from datetime import datetime as _dt
+    # mc_run_iid_bootstrap / mc_run_block_bootstrap / ofc_compute_dsr sono
+    # definite in r_functions.py e NON sono importate a livello di modulo qui:
+    # import locale per evitare di toccare le import globali di mc_functions.py.
+    from r_functions import (
+        mc_run_iid_bootstrap,
+        mc_run_block_bootstrap,
+        ofc_compute_dsr,
+    )
+
+    rows = []
+
+    for ptf_name in ptf_names:
+        # 1. risoluzione dal registry
+        portfolio_cfg = registry.get(ptf_name)
+        if portfolio_cfg is None:
+            print(f"[WARN] PTF '{ptf_name}' non trovato nel registry: skip.")
+            continue
+
+        try:
+            # 2. analisi lazy headless + backtest B&H con best_freq
+            sub_output_dir = Path(output_dir) / ptf_name
+            risultati = run_lazy_analysis(
+                portfolio_cfg=portfolio_cfg,
+                output_dir=sub_output_dir,
+                title=ptf_name,
+                start_date=start_date,
+                end_date=end_date,
+                benchmark=benchmark,
+                init_cash=init_cash,
+                fees=fees,
+                years=years,
+                plot=False,
+                save_png=True,
+                auto_freq=True,
+                freq_selection_metric='sharpe',
+                verbose=verbose,
+            )
+            pf_proposed = run_bh_backtest(portfolio_cfg, start_date, end_date,
+                                          init_cash, fees, risultati['best_freq'])
+
+            # 3. stabilità dei pesi
+            tickers = list(portfolio_cfg.keys())
+            stability = lazy_stability_weights(
+                tickers=tickers, years=years, weight_bounds=(0, 1),
+                n_splits=5, verbose=False,
+            )
+
+            # 4. MC A1 (iid bootstrap) e A2 (block bootstrap)
+            rng_a1 = np.random.default_rng(42)
+            mc_a1 = mc_run_iid_bootstrap(pf_proposed, n_simulations_mc_a, rng_a1)
+            rng_a2 = np.random.default_rng(42)
+            mc_a2 = mc_run_block_bootstrap(pf_proposed, 20, n_simulations_mc_a, rng_a2)
+
+            # 5. MC B (rebalancing con jitter)
+            mc_b = lazy_mc_block_b_rebalancing(
+                portfolio=portfolio_cfg, start_date=start_date, end_date=end_date,
+                best_freq=risultati['best_freq'], n_simulations=n_simulations_mc_b,
+                jitter_days=30, init_cash=init_cash, fees=fees, verbose=False,
+            )
+
+            # 6. DSR
+            sr = float(pf_proposed.sharpe_ratio())
+            T = int(pf_proposed.value().dropna().__len__())
+            dsr = ofc_compute_dsr(sr_hat=sr, n_trials=1, T=T)
+
+            # 7. metriche e verdetto
+            cagr = _cagr_from_equity(pf_proposed)
+            maxdd = abs(float(pf_proposed.max_drawdown()))
+
+            checks = {
+                'mc_a2_sharpe_p50_positive': mc_a2['percentiles']['p50']['Sharpe'] > 0,
+                'mc_b_skill': mc_b['skill'],
+                'dsr_positive': dsr > 0,
+            }
+            n_passed = sum(checks.values())
+            verdetto = 'PROMOSSO' if n_passed >= 2 else 'RIGETTATO'
+
+            # 8. riga di classificazione
+            rows.append({
+                'Nome': ptf_name,
+                'BestFreq': risultati['best_freq'] or 'BH',
+                'CAGR%': round(cagr * 100, 2),
+                'Sharpe': round(sr, 3),
+                'MaxDD%': round(maxdd * 100, 2),
+                'StabilityCV': round(stability['cv_mean'], 3) if stability['cv_mean'] is not None else np.nan,
+                'StabilityOK': stability['stable'],
+                'MC_A2_Sharpe_p50': round(mc_a2['percentiles']['p50']['Sharpe'], 3),
+                'MC_B_pvalue': round(mc_b['p_value_sharpe'], 3),
+                'MC_B_skill': mc_b['skill'],
+                'DSR': round(dsr, 3),
+                'CriteriPassati': f"{n_passed}/3",
+                'Verdetto': verdetto,
+            })
+        except Exception as e:
+            print(f"[WARN] PTF '{ptf_name}' fallito: {type(e).__name__}: {e} — continuo col prossimo.")
+            continue
+
+    # 9. costruzione e salvataggio CSV
+    df_classification = pd.DataFrame(rows)
+    if df_classification.empty:
+        if verbose:
+            print(f"[run_lazy_batch_analysis] Nessun PTF analizzato con successo - CSV non salvato.")
+        return df_classification
+    ts = _dt.now().strftime('%Y%m%d_%H%M%S')
+    csv_path = Path(output_dir) / f'classification_{ts}.csv'
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    df_classification.to_csv(csv_path, index=False)
+    if verbose:
+        print(f"Classification salvata: {csv_path}")
+        print(df_classification.to_string(index=False))
+    return df_classification
+
+
+def load_lazy_classifications(lazy_dir, pattern='*/classification_*.csv',
+                               filter_mode='ALL', sort_by='Sharpe',
+                               sort_asc=False, dedup=True):
+    """Carica e consolida tutti i CSV classification Lazy trovati.
+
+    Se dedup=True (default, classifica principale), in presenza dello stesso
+    PTF in run diversi mantiene solo il run piu' recente. Usa dedup=False per
+    il confronto multi-run.
+    """
+    import glob
+    from pathlib import Path
+    files = sorted(glob.glob(str(Path(lazy_dir) / pattern)))
+    if not files:
+        raise FileNotFoundError(f"Nessun CSV trovato in {Path(lazy_dir) / pattern}")
+    dfs = []
+    for f in files:
+        try:
+            d = pd.read_csv(f)
+            if d.empty:
+                continue
+        except Exception as e:
+            print(f"[WARN] Skip {f}: {e}")
+            continue
+        d['_run'] = Path(f).parent.name
+        d['_file'] = f
+        dfs.append(d)
+    if not dfs:
+        raise FileNotFoundError(f"Nessun CSV valido trovato in {Path(lazy_dir) / pattern}")
+    df = pd.concat(dfs, ignore_index=True)
+    if dedup:
+        df = df.sort_values('_run', ascending=False)
+        df = df.drop_duplicates(subset=['Nome'], keep='first')
+    if filter_mode == 'PROMOTED':
+        df = df[df['Verdetto'] == 'PROMOSSO']
+    elif filter_mode == 'FAILED':
+        df = df[df['Verdetto'] == 'RIGETTATO']
+    if sort_by in df.columns:
+        df = df.sort_values(sort_by, ascending=sort_asc)
+    return df.reset_index(drop=True)
+
+
+def plot_lazy_equity_curves(
+    promoted_df,
+    registry: dict,
+    top: int = 5,
+    sort_by: str = 'Sharpe',
+    start_date: str = '2016-01-01',
+    end_date=None,
+    init_cash: float = 100_000.0,
+    fees: float = 0.001,
+    mode: str = 'overlay',   # 'overlay' | 'separate'
+) -> None:
+    """
+    Plotta le equity curve dei top N PTF promossi (per sort_by).
+    mode='overlay': un solo grafico Plotly con tutte le curve
+    normalizzate a base 100 (confrontabili indipendentemente dai pesi).
+    mode='separate': un grafico per PTF (comportamento precedente).
+    """
+    import plotly.express as px
+    import plotly.graph_objects as go
+
+    top_df = promoted_df.sort_values(sort_by, ascending=False).head(top)
+
+    curves = {}
+    for _, row in top_df.iterrows():
+        nome = row['Nome']
+        portfolio_cfg = registry.get(nome)
+        if portfolio_cfg is None:
+            print(f'  [SKIP] {nome}: non trovato nel registry')
+            continue
+        best_freq = None if row['BestFreq'] == 'BH' else row['BestFreq']
+        try:
+            pf = run_bh_backtest(portfolio_cfg, start_date, end_date,
+                                 init_cash, fees, best_freq)
+        except Exception as e:
+            print(f'  [SKIP] {nome}: errore backtest — {e}')
+            continue
+        eq = pf.value()
+        if isinstance(eq, pd.DataFrame):
+            eq = eq.iloc[:, 0]
+        eq_norm = eq / eq.iloc[0] * 100
+
+        if mode == 'overlay':
+            curves[nome] = eq_norm
+        else:
+            fig = px.line(eq_norm, title=f'{nome} — Equity Curve base 100 (freq={row["BestFreq"]})')
+            fig.update_layout(height=350)
+            fig.show()
+
+    if mode == 'overlay':
+        if not curves:
+            print('Nessuna equity curve da plottare.')
+            return
+        fig = go.Figure()
+        for nome, serie in curves.items():
+            fig.add_trace(go.Scatter(x=serie.index, y=serie.values,
+                                     mode='lines', name=nome))
+        fig.update_layout(
+            title=f'Top {top} PTF promossi — Equity Curve (base 100)',
+            height=500,
+        )
+        fig.show()
+
+
+def style_lazy_classification(df):
+    """
+    Applica gradiente colore a tutte le metriche numeriche della
+    classification Lazy. Verde=migliore, rosso=peggiore per ogni
+    colonna (Sharpe/CAGR/DSR alto=verde, MaxDD/StabilityCV/MC_B_pvalue
+    alto=rosso - direzione invertita dove 'meno è meglio').
+    Ritorna un pandas Styler.
+    """
+    cols_higher_better = ['CAGR%', 'Sharpe', 'MC_A2_Sharpe_p50', 'DSR']
+    cols_lower_better  = ['MaxDD%', 'StabilityCV', 'MC_B_pvalue']
+
+    styler = df.style
+    for col in cols_higher_better:
+        if col in df.columns:
+            styler = styler.background_gradient(subset=[col], cmap='RdYlGn')
+    for col in cols_lower_better:
+        if col in df.columns:
+            styler = styler.background_gradient(subset=[col], cmap='RdYlGn_r')
+    styler = styler.format(precision=3)
+    return styler
 
