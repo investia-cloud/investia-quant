@@ -1437,6 +1437,8 @@ def run_lazy_batch_analysis(
     years=10,
     n_simulations_mc_a=1000,
     n_simulations_mc_b=500,
+    cache_dir=None,           # default stabile: <project_root>/outputs/lazy_cache/
+    override: bool = False,
     verbose=False,
 ) -> "pd.DataFrame":
     """
@@ -1447,6 +1449,7 @@ def run_lazy_batch_analysis(
     """
     from pathlib import Path
     from datetime import datetime as _dt
+    import pickle
     # mc_run_iid_bootstrap / mc_run_block_bootstrap / ofc_compute_dsr sono
     # definite in r_functions.py e NON sono importate a livello di modulo qui:
     # import locale per evitare di toccare le import globali di mc_functions.py.
@@ -1456,6 +1459,15 @@ def run_lazy_batch_analysis(
         ofc_compute_dsr,
     )
 
+    if cache_dir:
+        _cache_dir = Path(cache_dir)
+    else:
+        # Path stabile indipendente da output_dir (che può essere qualsiasi stringa).
+        # mc_functions.py è in <project>/notebooks/libs_py/, quindi:
+        # .parent.parent.parent = <project_root>/
+        _cache_dir = Path(__file__).resolve().parent.parent.parent / 'outputs' / 'lazy_cache'
+    _cache_dir.mkdir(parents=True, exist_ok=True)
+
     rows = []
 
     for ptf_name in ptf_names:
@@ -1464,6 +1476,19 @@ def run_lazy_batch_analysis(
         if portfolio_cfg is None:
             print(f"[WARN] PTF '{ptf_name}' non trovato nel registry: skip.")
             continue
+
+        cache_file = _cache_dir / f'{ptf_name}.pkl'
+        if (not override) and cache_file.exists():
+            try:
+                with open(cache_file, 'rb') as f:
+                    cached_row = pickle.load(f)
+                rows.append(cached_row)
+                if verbose:
+                    print(f"[CACHE] {ptf_name}: caricato da {cache_file}")
+                continue
+            except Exception as e:
+                if verbose:
+                    print(f"[CACHE] {ptf_name}: cache corrotta ({e}), ricalcolo.")
 
         try:
             # 2. analisi lazy headless + backtest B&H con best_freq
@@ -1487,11 +1512,12 @@ def run_lazy_batch_analysis(
             pf_proposed = run_bh_backtest(portfolio_cfg, start_date, end_date,
                                           init_cash, fees, risultati['best_freq'])
 
-            # 3. stabilità dei pesi
-            tickers = list(portfolio_cfg.keys())
-            stability = lazy_stability_weights(
-                tickers=tickers, years=years, weight_bounds=(0, 1),
-                n_splits=5, verbose=False,
+            # 3. stabilità rolling del PTF reale
+            stability = lazy_rolling_stability(
+                pf=pf_proposed,
+                target_horizon=5,
+                loss_prob_threshold=0.02,
+                verbose=False,
             )
 
             # 4. MC A1 (iid bootstrap) e A2 (block bootstrap)
@@ -1525,21 +1551,36 @@ def run_lazy_batch_analysis(
             verdetto = 'PROMOSSO' if n_passed >= 2 else 'RIGETTATO'
 
             # 8. riga di classificazione
-            rows.append({
+            row = {
                 'Nome': ptf_name,
                 'BestFreq': risultati['best_freq'] or 'BH',
                 'CAGR%': round(cagr * 100, 2),
                 'Sharpe': round(sr, 3),
                 'MaxDD%': round(maxdd * 100, 2),
-                'StabilityCV': round(stability['cv_mean'], 3) if stability['cv_mean'] is not None else np.nan,
                 'StabilityOK': stability['stable'],
+                'PLoss5y%': round(stability['p_loss_at_horizon'] * 100, 2) if not np.isnan(stability['p_loss_at_horizon']) else np.nan,
+                'MinSafeHorizon': stability.get('min_safe_horizon'),
                 'MC_A2_Sharpe_p50': round(mc_a2['percentiles']['p50']['Sharpe'], 3),
                 'MC_B_pvalue': round(mc_b['p_value_sharpe'], 3),
                 'MC_B_skill': mc_b['skill'],
                 'DSR': round(dsr, 3),
                 'CriteriPassati': f"{n_passed}/3",
                 'Verdetto': verdetto,
-            })
+            }
+            rows.append(row)
+            try:
+                with open(cache_file, 'wb') as f:
+                    pickle.dump(row, f)
+            except Exception as e:
+                if verbose:
+                    print(f"[CACHE] {ptf_name}: impossibile salvare cache ({e}).")
+            _mc_cache_file = _cache_dir / f'{ptf_name}_mc_a2.pkl'
+            try:
+                with open(_mc_cache_file, 'wb') as f:
+                    pickle.dump(mc_a2, f)
+            except Exception as e:
+                if verbose:
+                    print(f"[CACHE] {ptf_name}: impossibile salvare mc_a2 cache ({e}).")
         except Exception as e:
             print(f"[WARN] PTF '{ptf_name}' fallito: {type(e).__name__}: {e} — continuo col prossimo.")
             continue
@@ -1610,20 +1651,26 @@ def plot_lazy_equity_curves(
     end_date=None,
     init_cash: float = 100_000.0,
     fees: float = 0.001,
-    mode: str = 'overlay',   # 'overlay' | 'separate'
+    mode: str = 'overlay',          # 'overlay' | 'separate'
+    common_period_only: bool = True,
 ) -> None:
     """
     Plotta le equity curve dei top N PTF promossi (per sort_by).
     mode='overlay': un solo grafico Plotly con tutte le curve
     normalizzate a base 100 (confrontabili indipendentemente dai pesi).
-    mode='separate': un grafico per PTF (comportamento precedente).
+    mode='separate': un grafico per PTF.
+    common_period_only=True (default): tutte le curve vengono tagliate
+    al periodo comune prima della normalizzazione, rendendole realmente
+    confrontabili quando i PTF hanno storici di lunghezza diversa.
     """
     import plotly.express as px
     import plotly.graph_objects as go
 
     top_df = promoted_df.sort_values(sort_by, ascending=False).head(top)
 
-    curves = {}
+    # Fase 1: accumula le equity series raw (non normalizzate)
+    raw_curves = {}
+    best_freqs = {}
     for _, row in top_df.iterrows():
         nome = row['Nome']
         portfolio_cfg = registry.get(nome)
@@ -1640,40 +1687,63 @@ def plot_lazy_equity_curves(
         eq = pf.value()
         if isinstance(eq, pd.DataFrame):
             eq = eq.iloc[:, 0]
-        eq_norm = eq / eq.iloc[0] * 100
+        raw_curves[nome] = eq
+        best_freqs[nome] = row['BestFreq']
 
-        if mode == 'overlay':
-            curves[nome] = eq_norm
+    if not raw_curves:
+        print('Nessuna equity curve da plottare.')
+        return
+
+    # Fase 2: calcola il periodo comune (se richiesto)
+    titolo_suffix = ''
+    use_common = common_period_only and len(raw_curves) > 1
+    if use_common:
+        common_start = max(eq.index.min() for eq in raw_curves.values())
+        common_end   = min(eq.index.max() for eq in raw_curves.values())
+        if common_start >= common_end:
+            print('[WARN] Nessuna sovrapposizione tra le equity curves — uso periodi individuali.')
+            use_common = False
         else:
-            fig = px.line(eq_norm, title=f'{nome} — Equity Curve base 100 (freq={row["BestFreq"]})')
-            fig.update_layout(height=350)
-            fig.show()
+            titolo_suffix = f" — periodo comune {common_start.date()} → {common_end.date()}"
 
+    # Fase 3: taglia al periodo comune (se attivo) e normalizza a base 100
+    curves = {}
+    for nome, eq in raw_curves.items():
+        if use_common:
+            eq = eq[(eq.index >= common_start) & (eq.index <= common_end)]
+        curves[nome] = eq / eq.iloc[0] * 100
+
+    # Fase 4: plot
     if mode == 'overlay':
-        if not curves:
-            print('Nessuna equity curve da plottare.')
-            return
         fig = go.Figure()
         for nome, serie in curves.items():
             fig.add_trace(go.Scatter(x=serie.index, y=serie.values,
                                      mode='lines', name=nome))
         fig.update_layout(
-            title=f'Top {top} PTF promossi — Equity Curve (base 100)',
+            title=f'Top {top} PTF promossi — Equity Curve (base 100){titolo_suffix}',
             height=500,
         )
         fig.show()
+    else:
+        for nome, eq_norm in curves.items():
+            fig = px.line(
+                eq_norm,
+                title=f'{nome} — Equity Curve base 100 (freq={best_freqs[nome]}){titolo_suffix}',
+            )
+            fig.update_layout(height=350)
+            fig.show()
 
 
 def style_lazy_classification(df):
     """
     Applica gradiente colore a tutte le metriche numeriche della
     classification Lazy. Verde=migliore, rosso=peggiore per ogni
-    colonna (Sharpe/CAGR/DSR alto=verde, MaxDD/StabilityCV/MC_B_pvalue
+    colonna (Sharpe/CAGR/DSR alto=verde, MaxDD/PLoss5y%/MC_B_pvalue
     alto=rosso - direzione invertita dove 'meno è meglio').
     Ritorna un pandas Styler.
     """
     cols_higher_better = ['CAGR%', 'Sharpe', 'MC_A2_Sharpe_p50', 'DSR']
-    cols_lower_better  = ['MaxDD%', 'StabilityCV', 'MC_B_pvalue']
+    cols_lower_better  = ['MaxDD%', 'PLoss5y%', 'MC_B_pvalue']
 
     styler = df.style
     for col in cols_higher_better:
@@ -1684,4 +1754,218 @@ def style_lazy_classification(df):
             styler = styler.background_gradient(subset=[col], cmap='RdYlGn_r')
     styler = styler.format(precision=3)
     return styler
+
+
+def lazy_rolling_stability(
+    pf,
+    horizons_years: list = None,
+    annual_trading_days: int = 252,
+    target_horizon: int = 5,
+    loss_prob_threshold: float = 0.02,
+    min_obs: int = 30,
+    verbose: bool = False,
+) -> dict:
+    """
+    Stability test basato su rolling return del PTF reale (pesi fissi).
+    Calcola P(rendimento rolling a target_horizon anni < 0%) e la
+    confronta con loss_prob_threshold.
+
+    Returns dict:
+        'prob_df':            DataFrame probabilità per orizzonte
+        'p_loss_at_horizon':   float - P(R<0%) all'orizzonte target
+        'target_horizon':      int
+        'loss_prob_threshold': float
+        'stable':              bool - True se p_loss_at_horizon <= threshold
+        'min_safe_horizon':    int | None - primo orizzonte con P(R<0%) <= threshold
+    """
+    from u_functions import analyze_rolling_horizons
+
+    if horizons_years is None:
+        horizons_years = [1, 2, 3, 4, 5]
+
+    daily_rets = pf.returns()
+    if isinstance(daily_rets, pd.DataFrame):
+        daily_rets = daily_rets.iloc[:, 0]
+    daily_rets = daily_rets.dropna().sort_index()
+
+    _empty = {
+        'prob_df': pd.DataFrame(),
+        'p_loss_at_horizon': np.nan,
+        'target_horizon': target_horizon,
+        'loss_prob_threshold': loss_prob_threshold,
+        'stable': False,
+        'min_safe_horizon': None,
+    }
+    if daily_rets.empty:
+        return _empty
+
+    roll_cum_dict = {}
+    for y in horizons_years:
+        ndays = int(annual_trading_days * y)
+        label = f"{y}y"
+        roll = (1 + daily_rets).rolling(ndays).apply(np.prod, raw=True) - 1
+        roll_cum_dict[label] = roll
+    roll_cum_df = pd.DataFrame(roll_cum_dict, index=daily_rets.index)
+
+    result = analyze_rolling_horizons(
+        roll_cum_df,
+        loss_thresholds=(0.0,),
+        min_obs=min_obs,
+        target_prob=loss_prob_threshold,
+    )
+    prob_df = result['prob_df']
+
+    if target_horizon in prob_df.index:
+        p_loss = float(prob_df.loc[target_horizon, 'p_lt_0.0'])
+    else:
+        p_loss = np.nan
+
+    stable = (not np.isnan(p_loss)) and (p_loss <= loss_prob_threshold)
+    min_safe = result.get('min_safe_horizon')
+
+    if verbose:
+        print(f"Rolling stability — target={target_horizon}y, soglia={loss_prob_threshold:.1%}")
+        print(prob_df)
+        if not np.isnan(p_loss):
+            print(f"P(R<0%) a {target_horizon}y: {p_loss:.2%}")
+        else:
+            print("P(R<0%) a {target_horizon}y: N/A")
+        print(f"Stabile: {'✅' if stable else '⚠️'}  Min safe horizon: {min_safe}")
+
+    return {
+        'prob_df': prob_df,
+        'p_loss_at_horizon': p_loss,
+        'target_horizon': target_horizon,
+        'loss_prob_threshold': loss_prob_threshold,
+        'stable': stable,
+        'min_safe_horizon': min_safe,
+    }
+
+
+def project_lazy_capital(
+    ptf_names: list,
+    cache_dir,
+    initial_capital: float = 10_000.0,
+    horizon_years: int = 10,
+    percentiles: tuple = (10, 50, 90),
+    plot: bool = True,
+) -> dict:
+    """
+    Proietta l'evoluzione futura del capitale per uno o più PTF,
+    usando la distribuzione di CAGR già simulata via MC Block Bootstrap
+    (cache '{ptf_name}_mc_a2.pkl'). Per ogni PTF, estrae i CAGR
+    simulati, calcola i percentili richiesti, e proietta:
+    capitale(t) = initial_capital * (1 + cagr_percentile) ** t
+    per t = 0..horizon_years.
+
+    Returns dict con:
+      {ptf_name: {percentile_label: pd.Series(anno 0..horizon_years)}, ...}
+      '_fig_overview': go.Figure con P50 di tutti i PTF
+      '_figs_detail':  {ptf_name: go.Figure con banda + P50}
+    """
+    import pickle
+    from pathlib import Path
+
+    _DISCLAIMER = (
+        "Proiezione basata su distribuzione storica CAGR "
+        "(Monte Carlo Block Bootstrap) — non garanzia di risultati futuri"
+    )
+
+    results = {}
+
+    for ptf_name in ptf_names:
+        mc_file = Path(cache_dir) / f'{ptf_name}_mc_a2.pkl'
+        if not mc_file.exists():
+            print(
+                f"[WARN] {ptf_name}: cache MC non trovata ({mc_file}), skip. "
+                f"Rilancia 'iq lazy-analyze --ptf {ptf_name} --override' per generarla."
+            )
+            continue
+        try:
+            with open(mc_file, 'rb') as f:
+                mc_a2 = pickle.load(f)
+        except Exception as e:
+            print(f"[WARN] {ptf_name}: cache MC corrotta ({e}), skip.")
+            continue
+
+        cagr_sims = mc_a2['metrics_per_sim']['CAGR'].dropna().values
+        if len(cagr_sims) == 0:
+            print(f"[WARN] {ptf_name}: nessuna simulazione CAGR valida, skip.")
+            continue
+
+        years_arr = np.arange(0, horizon_years + 1)
+        ptf_result = {}
+        for p in percentiles:
+            cagr_p = float(np.nanpercentile(cagr_sims, p))
+            capital_path = initial_capital * (1 + cagr_p) ** years_arr
+            ptf_result[f'p{p}'] = pd.Series(capital_path, index=years_arr, name=f'p{p}')
+        results[ptf_name] = ptf_result
+
+    if plot and results:
+        # GRAFICO 1: overview, solo P50, tutti i PTF insieme
+        fig_overview = go.Figure()
+        for ptf_name in results.keys():
+            p50_series = results[ptf_name].get('p50')
+            if p50_series is None:
+                continue
+            fig_overview.add_trace(go.Scatter(
+                x=p50_series.index, y=p50_series.values,
+                mode='lines', name=ptf_name,
+            ))
+        fig_overview.update_layout(
+            title=dict(
+                text=(
+                    f"Proiezione capitale — confronto P50 — €{initial_capital:,.0f} iniziali, "
+                    f"{horizon_years} anni<br>"
+                    f"<sub style='color:gray'>{_DISCLAIMER}</sub>"
+                ),
+            ),
+            xaxis_title="Anno", yaxis_title="Capitale (€)",
+        )
+        fig_overview.show()
+
+        # GRAFICI 2..N: uno per PTF, con banda di confidenza
+        figs_detail = {}
+        for ptf_name in results.keys():
+            p_keys = sorted(results[ptf_name].keys())
+            p_lo_key, p_hi_key = p_keys[0], p_keys[-1]
+            p50_key = 'p50' if 'p50' in results[ptf_name] else p_keys[len(p_keys) // 2]
+
+            fig_detail = go.Figure()
+            lo = results[ptf_name][p_lo_key]
+            hi = results[ptf_name][p_hi_key]
+            fig_detail.add_trace(go.Scatter(
+                x=hi.index, y=hi.values, mode='lines',
+                line=dict(width=0.5, color='rgba(31,119,180,0.4)'),
+                name=f'{p_hi_key}', showlegend=True,
+                hovertemplate='Anno %{x}: €%{y:,.0f}<extra>' + p_hi_key + '</extra>',
+            ))
+            fig_detail.add_trace(go.Scatter(
+                x=lo.index, y=lo.values, mode='lines',
+                line=dict(width=0.5, color='rgba(31,119,180,0.4)'),
+                fill='tonexty', fillcolor='rgba(31,119,180,0.15)',
+                name=f'{p_lo_key}', showlegend=True,
+                hovertemplate='Anno %{x}: €%{y:,.0f}<extra>' + p_lo_key + '</extra>',
+            ))
+            p50 = results[ptf_name][p50_key]
+            fig_detail.add_trace(go.Scatter(
+                x=p50.index, y=p50.values, mode='lines',
+                name=f'{ptf_name} (P50)', line=dict(width=2),
+            ))
+            fig_detail.update_layout(
+                title=dict(
+                    text=(
+                        f"{ptf_name} — Proiezione capitale (banda {p_lo_key}-{p_hi_key})<br>"
+                        f"<sub style='color:gray'>{_DISCLAIMER}</sub>"
+                    ),
+                ),
+                xaxis_title="Anno", yaxis_title="Capitale (€)",
+            )
+            fig_detail.show()
+            figs_detail[ptf_name] = fig_detail
+
+        results['_fig_overview'] = fig_overview
+        results['_figs_detail'] = figs_detail
+
+    return results
 

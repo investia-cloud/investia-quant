@@ -698,10 +698,12 @@ def k_analyze(strategies, tickers, ptf, output_dir, start_date, end_date,
     help="Anni per frontiera efficiente e stability test")
 @click.option("--n-simulations-mc-a", default=1000, show_default=True)
 @click.option("--n-simulations-mc-b", default=500, show_default=True)
+@click.option("--override", is_flag=True, default=False,
+    help="Ricalcola anche i PTF già in cache (default: skip se cache presente)")
 @click.option("--verbose", "-v", is_flag=True, default=False)
 def lazy_analyze(ptf, output_dir, start_date, end_date, benchmark,
                   init_cash, fees, years, n_simulations_mc_a,
-                  n_simulations_mc_b, verbose):
+                  n_simulations_mc_b, override, verbose):
     """Analisi Lazy portfolio: stability + MC A/B + DSR, batch o singolo."""
     import warnings
     warnings.filterwarnings("ignore", category=RuntimeWarning)
@@ -718,9 +720,17 @@ def lazy_analyze(ptf, output_dir, start_date, end_date, benchmark,
     l_registry = ns.get("L_PORTFOLIO_REGISTRY", {})
 
     if ptf.lower() == "all":
-        ptf_names = list(l_registry.keys())
+        l_lazy_registry = ns.get("L_PORTFOLIO_LAZY", {})
+        if not l_lazy_registry:
+            # Fallback: se L_PORTFOLIO_LAZY non esiste (versione vecchia
+            # di l_portfolios.py), usa il registry generale con warning
+            click.echo("[WARN] L_PORTFOLIO_LAZY non trovato, uso L_PORTFOLIO_REGISTRY completo.", err=True)
+            l_lazy_registry = l_registry
+        ptf_names = list(l_lazy_registry.keys())
         if not ptf_names:
-            raise click.ClickException("L_PORTFOLIO_REGISTRY è vuoto.")
+            raise click.ClickException("L_PORTFOLIO_LAZY è vuoto.")
+        if verbose:
+            click.echo(f"[iq lazy-analyze] --ptf all userà solo categoria 'lazy_': {len(ptf_names)} PTF.")
     else:
         portfolio_obj, kind = _resolve_portfolio(ptf, ns)
         if kind != "L":
@@ -766,6 +776,7 @@ def lazy_analyze(ptf, output_dir, start_date, end_date, benchmark,
             years=years,
             n_simulations_mc_a=n_simulations_mc_a,
             n_simulations_mc_b=n_simulations_mc_b,
+            override=override,
             verbose=verbose,
         )
 
