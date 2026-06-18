@@ -1,6 +1,6 @@
 # investia-quant — Piano Operativo
 
-**Ultimo aggiornamento**: 14 giugno 2026
+**Ultimo aggiornamento**: 18 giugno 2026
 **Root progetto**: `~/investia-quant`
 
 ---
@@ -140,7 +140,25 @@ cron irina (locale) ore 03:00         → iq k-analyze --ptf <PTF_DA_DEFINIRE>
 
 ### Priorità alta
 
-**1. PTF K per crontab** · filiera K · ⏳ BLOCCATO
+**1. Relazione tecnica AI per Lazy portfolio** · filiera Lazy · ancora da fare
+
+**2. Web Lazy portfolio** · filiera Lazy
+
+Reintegrazione in investia-platform (Fase 4 roadmap ecosistema), non ancora iniziata.
+
+### Priorità media
+
+**3. Agente relazioni tecniche** · filiera R
+
+Batch su tutti i PTF: chiama `run_r_portfolio_analysis()` in loop.
+
+**4. Comprensione R_Strategies + fix API vectorbt** · filiera R-strategies
+
+Fix `from_returns` → `from_holding`. Ruolo operativo da chiarire.
+
+### Priorità bassa
+
+**5. PTF K per crontab** · filiera K · ⏳ BLOCCATO
 
 Crontab `iq k-agent` attivo su `irina` (ore 02:00, --max 15, anthropic).
 Crontab `iq k-analyze` in attesa: l'universo ticker per i trading system
@@ -151,7 +169,7 @@ Azione: definire PTF K e attivare `iq k-analyze` in crontab a fine 2026,
 in parallelo alla certificazione PTF per la release 2027.
 
 
-**2. Potenziamento Block B** · filiera R
+**6. Potenziamento Block B** · filiera R
 
 Sorgenti di skill alternative al momentum. Motivazione: molti PTF non hanno
 skill momentum ma battono il benchmark per altri driver (clustering Ward + risk-off).
@@ -165,31 +183,10 @@ Sorgenti candidate:
 
 Da fare: design session prima di toccare codice.
 
-### Priorità media
-**3. Relazione tecnica AI per Lazy portfolio** · ancora da fare
-
-**4. Web Lazy portfolio** · Fase 4 roadmap ecosistema, non ancora iniziata
-
-**5. Web Lazy portfolio** · filiera Lazy
-
-Reintegrazione in investia-platform (Fase 4 roadmap ecosistema).
-
-### Priorità bassa
-
-**6. Agente relazioni tecniche** · filiera R
-
-Batch su tutti i PTF: chiama `run_r_portfolio_analysis()` in loop.
-
-**7. Comprensione R_Strategies + fix API vectorbt** · filiera R-strategies
-
-Fix `from_returns` → `from_holding`. Ruolo operativo da chiarire.
-
 ---
 
 ## Tech debt
 
-- `None/` directory da rimuovere se presente: `rm -rf None/`
-- Output MC verboso senza `--verbose` — da silenziare
 - Crontab locale da attivare dopo definizione PTF target
 
 ---
