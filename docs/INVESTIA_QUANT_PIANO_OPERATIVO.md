@@ -166,13 +166,9 @@ Sorgenti candidate:
 Da fare: design session prima di toccare codice.
 
 ### Priorità media
-**3. Relazione tecnica AI per Lazy portfolio** · filiera Lazy
+**3. Relazione tecnica AI per Lazy portfolio** · ancora da fare
 
-Gap rispetto a R-portfolio: aggiungere `generate_relazione_tecnica()`.
-
-**4. CLI `iq lazy`** · filiera Lazy
-
-JN già refactored — lifting CLI dovrebbe essere basso.
+**4. Web Lazy portfolio** · Fase 4 roadmap ecosistema, non ancora iniziata
 
 **5. Web Lazy portfolio** · filiera Lazy
 
@@ -385,6 +381,51 @@ Branch vari → main.
 - MC Block B: skill ribilanciamento vs BH puro
 - DSR: Deflated Sharpe Ratio
 - Decisione finale + relazione tecnica PDF
+### Sessione 18/06/2026 — Filiera Lazy Fase B completa + fix produzione
+
+**Fix urgente produzione:**
+- `iq report --ptf portfolio_alpha_sp100/nasdaq100` crashava: tickers
+  simbolici ("sp100") non risolti. Fix in cli.py (risoluzione via
+  alpha_sp100_tickers_by_year[anno]). Deployato su tslab.investia.cloud
+  (release 2026.1, via deploy.sh).
+- Documentata procedura deploy VPS (make_release.sh + deploy.sh) nel
+  piano operativo — script esistenti non erano documentati.
+
+**Filiera Lazy — Fase B completata + infrastruttura CLI/panel:**
+- Naming coerente in l_portfolios.py: prefissi lazy_/equity_/sandbox_
+  per distinguere PTF core multi-asset da portafogli azionari
+  concentrati e sandbox/test. Sotto-registry L_PORTFOLIO_LAZY/EQUITY/
+  SANDBOX oltre al generale L_PORTFOLIO_REGISTRY (auto-discovery).
+- Criterio di stabilità ridisegnato: lazy_stability_weights (pesi
+  Max Sharpe della frontiera su sotto-periodi) giudicato inadatto —
+  misura overfit di un'allocazione teorica mai eseguita. Sostituito
+  nel verdetto da lazy_rolling_stability: P(rendimento rolling a 5
+  anni < 0%) sul PTF reale, riusando analyze_rolling_horizons già
+  presente in u_functions.py per il triangolo dei rendimenti.
+- iq lazy-analyze: comando CLI completo, --ptf <nome|all>, --override,
+  cache pkl stabile in outputs/lazy_cache/ (per PTF + risultati MC).
+- lazy_panel.ipynb: viewer completo, §1-§7 (config, classifica colorata,
+  scatter, equity curve top-N su periodo comune, confronto, export,
+  proiezione capitale futuro via percentili MC Block Bootstrap).
+- project_lazy_capital: proietta capitale futuro (overview P50 +
+  dettaglio per-PTF con banda P10-P90), riusa simulazioni MC già
+  calcolate, nessun nuovo modello.
+- Aggiunte 4 varianti strutturali (conservative 40/30/30, balanced
+  60/20/20 esistente, aggressive 80/10/10, full_equity 95/5) per
+  esplorare il vero spazio di scelta (quota equity), distinto dalle
+  10 micro-varianti satellite esistenti che si sono rivelate
+  sostanzialmente equivalenti (stessa shape equity curve).
+
+**Osservazioni aperte, da affrontare in futuro:**
+- MC_B_skill (skill ribilanciamento) risulta sempre False su tutti
+  i PTF testati — o è un fatto vero (lazy non ha skill di timing,
+  coerente con letteratura) o il test manca di potere statistico
+  (jitter ±30gg, 500 sim). Non ancora investigato a fondo.
+- Le proiezioni di capitale a 30 anni mostrano bande di incertezza
+  enormi — corretto matematicamente (capitalizzazione composta) ma
+  da comunicare con cautela: usano la distribuzione di un solo
+  storico decennale (2016-2026, favorevole sia a equity che a oro).
+
 
 ## Deploy VPS — procedura standard
 
