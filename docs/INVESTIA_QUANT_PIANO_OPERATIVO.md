@@ -37,7 +37,8 @@ docs: pipeline valutazione K-strategy e R-portfolio
 |---|---|---|
 | `iq run --ptf/--rotational/--trading/--all` | Runtime operativo — segnali ai gestori | ✅ Production |
 | `iq report --ptf/--rotational/--trading/--all` | Statistiche YTD PTF deployati | ✅ Production |
-| `iq analyze --ptf/--universe` | Pipeline R completa — relazione tecnica PDF | ✅ Production |
+| `iq r-analyze --ptf/--universe [--pdf]` | Pipeline R completa — card .md sempre, relazione tecnica PDF con `--pdf` | ✅ Production |
+| `iq l-analyze --ptf [--pdf]` | Pipeline Lazy — frontiera+stability+MC A/B+DSR; relazione tecnica PDF con `--pdf` | ✅ Production |
 | `iq k-analyze -s/-t/--ptf` | Pipeline K completa — WFO+OFC+DSR+MC | ✅ Production |
 | `iq k-agent --max/--llm/--model/--pdf` | Genera K-strategy da articoli Medium; --pdf per PDF locali | ✅ Production |
 
@@ -56,7 +57,7 @@ docs: pipeline valutazione K-strategy e R-portfolio
 | Aspetto | Dettaglio |
 |---|---|
 | JN dev | `r_portfolio_analyst.ipynb` — solo Luca |
-| CLI | `iq analyze` ✅, `iq run` ✅, `iq report` ✅ |
+| CLI | `iq r-analyze` ✅, `iq run` ✅, `iq report` ✅ |
 | Web | R-portfolio designer (Fase 4 roadmap) |
 | Utenti | Tutti i livelli |
 
@@ -204,7 +205,7 @@ Fase 6  release annuale         → deploy VPS
 
 ---
 
-## Architettura `iq analyze` (R-portfolio)
+## Architettura `iq r-analyze` (R-portfolio)
 
 ### Funzione core
 
