@@ -8927,39 +8927,51 @@ def _mc_plot_ci_method(
     act_m   = result['actual_metrics']
     figs    = []
 
+    # kaleido/orjson cannot serialize pd.Timestamp — convert index to ISO strings
+    # for all series used as x-axis in traces so write_image works correctly.
+    def _ix(s: pd.Series) -> list:
+        return s.index.strftime("%Y-%m-%d").tolist()
+
+    p5_x   = _ix(p5)
+    p50_x  = _ix(p50)
+    p95_x  = _ix(p95)
+    act_x  = _ix(actual_equity)
+    bm_x   = _ix(benchmark_equity) if benchmark_equity is not None else None
+
     # ── Fig 0: Fan chart ──────────────────────────────────────────────────────
     fig = go.Figure()
 
     if show_individual_paths:
         sample_cols = ec.columns[:50]
+        ec_x = ec.index.strftime("%Y-%m-%d").tolist()
         for col in sample_cols:
             fig.add_trace(go.Scatter(
-                x=ec.index, y=ec[col], mode="lines",
+                x=ec_x, y=ec[col], mode="lines",
                 line=dict(color=_MC_C_PATH, width=0.5),
                 showlegend=False, hoverinfo="skip",
             ))
 
     # banda p5-p95
     fig.add_trace(go.Scatter(
-        x=list(p95.index) + list(p5.index[::-1]),
+        x=p95_x + p5_x[::-1],
         y=list(p95.values) + list(p5.values[::-1]),
         fill="toself", fillcolor=_MC_C_BAND,
         line=dict(color="rgba(0,0,0,0)"),
         name="p5–p95", hoverinfo="skip",
     ))
     fig.add_trace(go.Scatter(
-        x=p50.index, y=p50.values, mode="lines",
+        x=p50_x, y=p50.values, mode="lines",
         line=dict(color=_MC_C_MEDIAN, width=2),
         name="p50 mediana",
     ))
     fig.add_trace(go.Scatter(
-        x=actual_equity.index, y=actual_equity.values, mode="lines",
+        x=act_x, y=actual_equity.values, mode="lines",
         line=dict(color=_MC_C_ACTUAL, width=2.5),
         name="Actual",
     ))
     if benchmark_equity is not None:
         fig.add_trace(go.Scatter(
-            x=benchmark_equity.index, y=benchmark_equity.values, mode="lines",
+            x=bm_x, y=benchmark_equity.values, mode="lines",
             line=dict(color=_MC_C_BENCHMARK, width=1.5, dash="dash"),
             name="Benchmark",
         ))
