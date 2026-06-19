@@ -13896,10 +13896,11 @@ def run_r_portfolio_analysis(
     end_date=None,
     profile: str = "satellite",
     verbose: bool = False,
+    generate_pdf: bool = True,
 ) -> dict:
     """
     Esegue la pipeline completa R-portfolio in modalità headless.
-    Usata da `iq analyze` e dall'agente batch relazioni tecniche.
+    Usata da `iq r-analyze` e dall'agente batch relazioni tecniche.
 
     Args:
         portfolio_cfg:  dict portafoglio da r_portfolios.py
@@ -13909,10 +13910,13 @@ def run_r_portfolio_analysis(
         end_date:       fine storico (default: None = oggi)
         profile:        "satellite" | "core" — soglie OFC
         verbose:        stampe intermedie
+        generate_pdf:   se True (default) genera la relazione tecnica PDF; se
+                        False la pipeline e la card .md vengono comunque
+                        prodotte ma il PDF NON viene generato ("pdf": None).
 
     Returns:
         dict con chiavi:
-            "pdf":       Path PDF relazione tecnica generato
+            "pdf":       Path PDF relazione tecnica generato (None se generate_pdf=False)
             "plots_dir": Path directory PNG
             "ofc_std":   bool — OFC Standard promosso
             "ofc_cluster": bool | None — OFC Cluster promosso
@@ -13941,7 +13945,8 @@ def run_r_portfolio_analysis(
     tickers             = portfolio_cfg["tickers"]
     benchmark_portfolio = portfolio_cfg.get("benchmark_portfolio")
     benchmark_title     = portfolio_cfg.get("benchmark_title")
-    risk_off_tickers    = portfolio_cfg.get("risk_off_tickers", [])
+    from k_tickers import risk_off_tickers as _default_risk_off_tickers
+    risk_off_tickers    = portfolio_cfg.get("risk_off_tickers", _default_risk_off_tickers)
     init_cash           = portfolio_cfg.get("init_cash", 100_000)
 
     tickers = (
@@ -14061,6 +14066,8 @@ def run_r_portfolio_analysis(
     pf_rot_std       = results_std["pf_rot"]
     pf_rot_std_base  = results_std["pf_rot_base"]
     if pf_rot_std is None:
+        print(f"[WARN] pf_rot (Risk ON/OFF) è None per Standard — uso pf_rot_base. "
+              f"risk_off_tickers configurati: {risk_off_tickers}")
         pf_rot_std = pf_rot_std_base
     regime           = results_std["regime"]
     summary_df_std   = results_std["summary_df"]
@@ -14112,6 +14119,8 @@ def run_r_portfolio_analysis(
     pf_rot_cluster       = results_cluster["pf_rot"]
     pf_rot_cluster_base  = results_cluster["pf_rot_base"]
     if pf_rot_cluster is None:
+        print(f"[WARN] pf_rot (Risk ON/OFF) è None per Cluster — uso pf_rot_base. "
+              f"risk_off_tickers configurati: {risk_off_tickers}")
         pf_rot_cluster = pf_rot_cluster_base
     regime_cluster       = results_cluster["regime"]
     summary_df_cluster   = results_cluster["summary_df"]
@@ -14246,27 +14255,32 @@ def run_r_portfolio_analysis(
         output_path        = str(_card_path),
     )
 
-    generate_relazione_tecnica(
-        portfolio_title       = portfolio_title,
-        year                  = year,
-        profile               = profile,
-        benchmark             = benchmark_title,
-        period                = (str(pipeline_start_date), _today_iso),
-        universe_size         = len(tickers),
-        wfo_config            = _wfo_config,
-        cluster_result        = _cluster_result,
-        metrics_comparison    = _metrics_comparison,
-        ofc_report_std        = ofc_report_std,
-        ofc_report_cluster    = ofc_report_cluster,
-        mc_skill              = skill_results,
-        mc_ci                 = ci_summary_df,
-        skill_profile         = skill_profile_std,
-        skill_profile_cluster = skill_profile_cluster,
-        plots_dir             = str(plots_dir),
-        output_path           = str(_pdf_path),
-        mc_skill_cluster      = skill_results_cluster,
-        mc_ci_cluster         = ci_summary_df_cluster,
-    )
+    # La relazione tecnica PDF è opzionale: la card .md è sempre generata
+    # (sopra), mentre il PDF dipende da generate_pdf (flag --pdf di iq r-analyze).
+    if generate_pdf:
+        generate_relazione_tecnica(
+            portfolio_title       = portfolio_title,
+            year                  = year,
+            profile               = profile,
+            benchmark             = benchmark_title,
+            period                = (str(pipeline_start_date), _today_iso),
+            universe_size         = len(tickers),
+            wfo_config            = _wfo_config,
+            cluster_result        = _cluster_result,
+            metrics_comparison    = _metrics_comparison,
+            ofc_report_std        = ofc_report_std,
+            ofc_report_cluster    = ofc_report_cluster,
+            mc_skill              = skill_results,
+            mc_ci                 = ci_summary_df,
+            skill_profile         = skill_profile_std,
+            skill_profile_cluster = skill_profile_cluster,
+            plots_dir             = str(plots_dir),
+            output_path           = str(_pdf_path),
+            mc_skill_cluster      = skill_results_cluster,
+            mc_ci_cluster         = ci_summary_df_cluster,
+        )
+    else:
+        _pdf_path = None
 
     return {
         "pdf":                   _pdf_path,
