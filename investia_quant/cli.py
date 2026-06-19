@@ -1,6 +1,6 @@
 """
 investia_quant/cli.py — CLI `iq`
-Entry point: iq run / iq report / iq analyze
+Entry point: iq run / iq report / iq r-analyze / iq l-analyze / iq k-analyze / iq k-agent
 """
 
 import sys
@@ -188,7 +188,12 @@ def app():
 # iq run
 # ---------------------------------------------------------------------------
 
-@app.command()
+@app.command(epilog=(
+    "\b\nEsempi:\n"
+    "  iq run --ptf alpha_world --mail me\n"
+    "  iq run --rotational --mail managers --mail customers\n"
+    "  iq run --all --no-send --verbose\n"
+))
 @click.option("--ptf", "--portfolio", default=None, help="Nome portafoglio (es. alpha_world, us_trading_2026)")
 @click.option("--all", "--ptf-all", "all_portfolios", is_flag=True, default=False, help="Esegui tutti i portafogli da portfolios.conf")
 @click.option("--rotational", "--ptf-all-r", is_flag=True, default=False, help="Esegui solo portafogli tipo R (rotational)")
@@ -200,7 +205,11 @@ def app():
 @click.option("--no-send", is_flag=True, default=False, help="Non inviare email (solo esegui)")
 @click.option("--wfo-results-dir", default=None, help="Override directory risultati WFO")
 def run(ptf, all_portfolios, rotational, trading, recipient, report_date, dry_run, verbose, no_send, wfo_results_dir):
-    """Esecuzione runtime: genera e invia report segnali (R e K portfolio)."""
+    """Esecuzione runtime: genera e invia report segnali (R e K portfolio).
+
+    Seleziona un singolo PTF (--ptf) oppure un gruppo (--all/--rotational/--trading)
+    da portfolios.conf e invia i report ai destinatari risolti.
+    """
     select_all = all_portfolios or rotational or trading
     if select_all and ptf:
         raise click.ClickException("Usa --ptf oppure --all/--rotational/--trading, non entrambi.")
@@ -320,7 +329,12 @@ def run(ptf, all_portfolios, rotational, trading, recipient, report_date, dry_ru
 # iq report
 # ---------------------------------------------------------------------------
 
-@app.command()
+@app.command(epilog=(
+    "\b\nEsempi:\n"
+    "  iq report --ptf alpha_world --mail me\n"
+    "  iq report --rotational --start-date 2018-01-01 --mail managers\n"
+    "  iq report --all --no-send\n"
+))
 @click.option("--ptf", "--portfolio", default=None, help="Nome portafoglio")
 @click.option("--all", "--ptf-all", "all_portfolios", is_flag=True, default=False, help="Esegui tutti i portafogli da portfolios.conf")
 @click.option("--rotational", "--ptf-all-r", is_flag=True, default=False, help="Esegui solo portafogli tipo R (rotational)")
@@ -329,11 +343,15 @@ def run(ptf, all_portfolios, rotational, trading, recipient, report_date, dry_ru
 @click.option("--start-date", default=None,
               help="Data inizio analisi YYYY-MM-DD (default: 2015-01-01 per R, YTD per K)")
 @click.option("--end-date", default=None, help="Data fine analisi YYYY-MM-DD")
-@click.option("--verbose", is_flag=True, default=False)
+@click.option("--verbose", is_flag=True, default=False, help="Output verboso")
 @click.option("--no-send", is_flag=True, default=False, help="Non inviare email")
-@click.option("--wfo-results-dir", default=None)
+@click.option("--wfo-results-dir", default=None, help="Override directory risultati WFO")
 def report(ptf, all_portfolios, rotational, trading, recipient, start_date, end_date, verbose, no_send, wfo_results_dir):
-    """Genera e invia report performance (R e K portfolio)."""
+    """Genera e invia report performance storica (R e K portfolio).
+
+    Seleziona un singolo PTF (--ptf) o un gruppo (--all/--rotational/--trading)
+    e calcola le metriche di performance sul periodo indicato.
+    """
     select_all = all_portfolios or rotational or trading
     if select_all and ptf:
         raise click.ClickException("Usa --ptf oppure --all/--rotational/--trading, non entrambi.")
@@ -454,10 +472,15 @@ def report(ptf, all_portfolios, rotational, trading, recipient, start_date, end_
 
 
 # ---------------------------------------------------------------------------
-# iq analyze
+# iq r-analyze
 # ---------------------------------------------------------------------------
 
-@app.command()
+@app.command("r-analyze", epilog=(
+    "\b\nEsempi:\n"
+    "  iq r-analyze --ptf alpha_fact\n"
+    "  iq r-analyze --ptf alpha_fact --pdf\n"
+    "  iq r-analyze --universe inputs/universe.csv --profile core --pdf\n"
+))
 @click.option("--ptf", default=None,
               help="Nome portafoglio R da registry (es. alpha_fact)")
 @click.option("--universe", default=None,
@@ -471,9 +494,15 @@ def report(ptf, all_portfolios, rotational, trading, recipient, start_date, end_
               help="Anno selezione WFO (default: anno corrente)")
 @click.option("--start-date", default="2015-01-01",
               help="Inizio storico download (default: 2015-01-01)")
-@click.option("--verbose", is_flag=True, default=False)
-def analyze(ptf, universe, output_dir, profile, year, start_date, verbose):
-    """Lancia analisi R-portfolio (WFO + OFC + MC). Solo R-portfolio."""
+@click.option("--pdf", "gen_pdf", is_flag=True, default=False,
+              help="Genera la relazione tecnica PDF (default: solo pipeline, niente PDF)")
+@click.option("--verbose", is_flag=True, default=False, help="Output verboso")
+def r_analyze(ptf, universe, output_dir, profile, year, start_date, gen_pdf, verbose):
+    """Pipeline R-portfolio: WFO + OFC + MC. Solo R-portfolio.
+
+    Esegue sempre la pipeline di calcolo e la card .md; la relazione
+    tecnica PDF viene generata solo con --pdf.
+    """
 
     # Validazione input
     if ptf and universe:
@@ -481,7 +510,7 @@ def analyze(ptf, universe, output_dir, profile, year, start_date, verbose):
     if not ptf and not universe:
         raise click.ClickException("Specifica --ptf <nome> oppure --universe <file.csv>.")
 
-    click.echo("[iq analyze] Caricamento librerie...")
+    click.echo("[iq r-analyze] Caricamento librerie...")
     ns = _load_all_libs()
 
     run_r_portfolio_analysis = ns.get("run_r_portfolio_analysis")
@@ -493,7 +522,7 @@ def analyze(ptf, universe, output_dir, profile, year, start_date, verbose):
         portfolio_obj, kind = _resolve_portfolio(ptf, ns)
         if kind != "R":
             raise click.ClickException(
-                f"iq analyze supporta solo R-portfolio. '{ptf}' è un K-portfolio."
+                f"iq r-analyze supporta solo R-portfolio. '{ptf}' è un K-portfolio."
             )
         ptf_name = ptf
     else:
@@ -526,10 +555,11 @@ def analyze(ptf, universe, output_dir, profile, year, start_date, verbose):
         today = datetime.date.today().isoformat()
         output_dir = os.path.join(root, "outputs", "reports", ptf_name, today)
 
-    click.echo(f"[iq analyze] Portafoglio: {portfolio_obj.get('Title', ptf_name)}")
-    click.echo(f"[iq analyze] Output dir:  {output_dir}")
-    click.echo(f"[iq analyze] Profile:     {profile}")
-    click.echo(f"[iq analyze] Avvio pipeline (WFO + OFC + MC)...")
+    click.echo(f"[iq r-analyze] Portafoglio: {portfolio_obj.get('Title', ptf_name)}")
+    click.echo(f"[iq r-analyze] Output dir:  {output_dir}")
+    click.echo(f"[iq r-analyze] Profile:     {profile}")
+    click.echo(f"[iq r-analyze] PDF:         {'sì' if gen_pdf else 'no (usa --pdf per generarlo)'}")
+    click.echo(f"[iq r-analyze] Avvio pipeline (WFO + OFC + MC)...")
 
     try:
         result = run_r_portfolio_analysis(
@@ -540,9 +570,10 @@ def analyze(ptf, universe, output_dir, profile, year, start_date, verbose):
             end_date      = None,
             profile       = profile,
             verbose       = verbose,
+            generate_pdf  = gen_pdf,
         )
-        click.echo(f"[iq analyze] Completato.")
-        click.echo(f"  PDF:           {result['pdf']}")
+        click.echo(f"[iq r-analyze] Completato.")
+        click.echo(f"  PDF:           {result['pdf'] if result['pdf'] else '(non generato — usa --pdf)'}")
         click.echo(f"  Plots dir:     {result['plots_dir']}")
         click.echo(f"  OFC Standard:  {'PROMOTED' if result['ofc_std'] else 'REJECTED'}")
         click.echo(f"  OFC Cluster:   {'PROMOTED' if result['ofc_cluster'] else 'REJECTED'}")
@@ -556,7 +587,12 @@ def analyze(ptf, universe, output_dir, profile, year, start_date, verbose):
 # iq k-analyze
 # ---------------------------------------------------------------------------
 
-@app.command("k-analyze")
+@app.command("k-analyze", epilog=(
+    "\b\nEsempi:\n"
+    "  iq k-analyze -s dbma_matrix -t NVDA\n"
+    "  iq k-analyze --ptf us_trading_2026\n"
+    "  iq k-analyze -s dbma_matrix bollinger -t NVDA AAPL --override\n"
+))
 @click.option("-s", "--strategies", multiple=True, default=None,
     help="Una o più strategie (es. -s dbma_matrix bollinger)")
 @click.option("-t", "--tickers", multiple=True, default=None,
@@ -565,8 +601,9 @@ def analyze(ptf, universe, output_dir, profile, year, start_date, verbose):
     help="Nome K-portfolio (es. us_trading_2026) — estrae tickers automaticamente")
 @click.option("--output-dir", default=None,
     help="Directory output (default: outputs/k_analysis/<data>/)")
-@click.option("--start-date", default="2015-01-01")
-@click.option("--end-date", default=None)
+@click.option("--start-date", default="2015-01-01", show_default=True,
+    help="Inizio storico download")
+@click.option("--end-date", default=None, help="Fine storico (default: oggi)")
 @click.option("--ratio", default="4:1", show_default=True,
     help="Train:test ratio WFO")
 @click.option("--fees", default=0.001, show_default=True,
@@ -589,7 +626,7 @@ def analyze(ptf, universe, output_dir, profile, year, start_date, verbose):
     help="Numero simulazioni Monte Carlo")
 @click.option("--block-size", default=10, show_default=True,
     help="Block size per Block Bootstrap MC")
-@click.option("--verbose", "-v", is_flag=True, default=False)
+@click.option("--verbose", "-v", is_flag=True, default=False, help="Output verboso")
 def k_analyze(strategies, tickers, ptf, output_dir, start_date, end_date,
               ratio, fees, slippage, price_col, selection_metric, init_cash,
               warmup_years, wfo_results_dir, override, n_simulations, block_size,
@@ -681,30 +718,46 @@ def k_analyze(strategies, tickers, ptf, output_dir, start_date, end_date,
 
 
 # ---------------------------------------------------------------------------
-# iq lazy-analyze
+# iq l-analyze
 # ---------------------------------------------------------------------------
 
-@app.command("lazy-analyze")
+@app.command("l-analyze", epilog=(
+    "\b\nEsempi:\n"
+    "  iq l-analyze --ptf golden_butterfly\n"
+    "  iq l-analyze --ptf golden_butterfly --pdf\n"
+    "  iq l-analyze --ptf all --override\n"
+))
 @click.option("--ptf", default=None,
     help="Nome Lazy portfolio, oppure 'all' per tutti i PTF nel registry")
 @click.option("--output-dir", default=None,
     help="Directory output (default: outputs/lazy_analysis/<data>/)")
-@click.option("--start-date", default="2016-01-01", show_default=True)
-@click.option("--end-date", default=None)
-@click.option("--benchmark", default="SPY", show_default=True)
-@click.option("--init-cash", default=100_000.0, show_default=True)
-@click.option("--fees", default=0.001, show_default=True)
+@click.option("--start-date", default="2016-01-01", show_default=True,
+    help="Inizio storico backtest")
+@click.option("--end-date", default=None, help="Fine storico (default: oggi)")
+@click.option("--benchmark", default="SPY", show_default=True,
+    help="Ticker benchmark per il confronto")
+@click.option("--init-cash", default=100_000.0, show_default=True,
+    help="Capitale iniziale backtest")
+@click.option("--fees", default=0.001, show_default=True, help="Commissioni per trade")
 @click.option("--years", default=10, show_default=True,
     help="Anni per frontiera efficiente e stability test")
-@click.option("--n-simulations-mc-a", default=1000, show_default=True)
-@click.option("--n-simulations-mc-b", default=500, show_default=True)
+@click.option("--n-simulations-mc-a", default=1000, show_default=True,
+    help="Simulazioni Monte Carlo Block A")
+@click.option("--n-simulations-mc-b", default=500, show_default=True,
+    help="Simulazioni Monte Carlo Block B")
 @click.option("--override", is_flag=True, default=False,
     help="Ricalcola anche i PTF già in cache (default: skip se cache presente)")
-@click.option("--verbose", "-v", is_flag=True, default=False)
-def lazy_analyze(ptf, output_dir, start_date, end_date, benchmark,
-                  init_cash, fees, years, n_simulations_mc_a,
-                  n_simulations_mc_b, override, verbose):
-    """Analisi Lazy portfolio: stability + MC A/B + DSR, batch o singolo."""
+@click.option("--pdf", "gen_pdf", is_flag=True, default=False,
+    help="Genera la relazione tecnica PDF per ciascun PTF (default: solo pipeline)")
+@click.option("--verbose", "-v", is_flag=True, default=False, help="Output verboso")
+def l_analyze(ptf, output_dir, start_date, end_date, benchmark,
+              init_cash, fees, years, n_simulations_mc_a,
+              n_simulations_mc_b, override, gen_pdf, verbose):
+    """Pipeline Lazy portfolio: frontiera + backtest + stability + MC A/B + DSR.
+
+    Batch (--ptf all) o singolo. Con --pdf genera la relazione tecnica per
+    ogni PTF in outputs/lazy_reports/<ptf>_relazione_tecnica.pdf.
+    """
     import warnings
     warnings.filterwarnings("ignore", category=RuntimeWarning)
     warnings.filterwarnings("ignore", category=FutureWarning)
@@ -730,7 +783,7 @@ def lazy_analyze(ptf, output_dir, start_date, end_date, benchmark,
         if not ptf_names:
             raise click.ClickException("L_PORTFOLIO_LAZY è vuoto.")
         if verbose:
-            click.echo(f"[iq lazy-analyze] --ptf all userà solo categoria 'lazy_': {len(ptf_names)} PTF.")
+            click.echo(f"[iq l-analyze] --ptf all userà solo categoria 'lazy_': {len(ptf_names)} PTF.")
     else:
         portfolio_obj, kind = _resolve_portfolio(ptf, ns)
         if kind != "L":
@@ -753,6 +806,10 @@ def lazy_analyze(ptf, output_dir, start_date, end_date, benchmark,
             "(verifica che sia stata aggiunta e che _load_all_libs() "
             "abbia importato mc_functions correttamente)."
         )
+
+    # Con --pdf raccogliamo gli oggetti rich per ogni PTF (details_out) così da
+    # poter generare la relazione tecnica a fine pipeline.
+    details = {} if gen_pdf else None
 
     # La barra di progresso yfinance usa print diretto su stderr (non logging),
     # quindi reindirizzo stdout+stderr a devnull durante la chiamata quando non
@@ -778,20 +835,85 @@ def lazy_analyze(ptf, output_dir, start_date, end_date, benchmark,
             n_simulations_mc_b=n_simulations_mc_b,
             override=override,
             verbose=verbose,
+            details_out=details,
         )
 
-    print(f"\n[iq lazy-analyze] Completato. {len(df)} PTF analizzati.")
+    print(f"\n[iq l-analyze] Completato. {len(df)} PTF analizzati.")
     print(f"Output dir: {out_dir}")
     print(df.to_string(index=False))
     n_promoted = (df["Verdetto"] == "PROMOSSO").sum() if "Verdetto" in df.columns else 0
     print(f"\nPromossi: {n_promoted}/{len(df)}")
+
+    # ── Relazione tecnica PDF (--pdf) ────────────────────────────────────────
+    if gen_pdf and details:
+        generate_relazione_tecnica_lazy = ns.get("generate_relazione_tecnica_lazy")
+        project_lazy_capital = ns.get("project_lazy_capital")
+        if generate_relazione_tecnica_lazy is None:
+            raise click.ClickException(
+                "generate_relazione_tecnica_lazy non trovata in mc_functions.py.")
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        reports_dir = os.path.join(root, "outputs", "lazy_reports")
+        os.makedirs(reports_dir, exist_ok=True)
+
+        for ptf_name, rich in details.items():
+            try:
+                portfolio_cfg = l_registry.get(ptf_name, {})
+                asset_allocation = {k.upper(): v for k, v in portfolio_cfg.items()}
+                risultati = rich.get("risultati", {})
+                frontier_df = (risultati.get("frontier_result") or {}).get("df_special")
+
+                # §6 proiezione capitale via cache MC (P10-P50-P90)
+                capital_projection = None
+                if project_lazy_capital is not None and rich.get("cache_dir"):
+                    try:
+                        proj = project_lazy_capital(
+                            ptf_names=[ptf_name],
+                            cache_dir=rich["cache_dir"],
+                            initial_capital=10_000.0,
+                            horizon_years=10,
+                            percentiles=(10, 50, 90),
+                            plot=False,
+                        )
+                        capital_projection = proj.get(ptf_name)
+                    except Exception as _pe:
+                        if verbose:
+                            print(f"[WARN] proiezione capitale {ptf_name} fallita: {_pe}")
+
+                out_pdf = os.path.join(reports_dir, f"{ptf_name}_relazione_tecnica.pdf")
+                generate_relazione_tecnica_lazy(
+                    portfolio_title=ptf_name,
+                    asset_allocation=asset_allocation,
+                    period=(start_date, end_date or _dt.now().date().isoformat()),
+                    pf_proposed=rich.get("pf_proposed"),
+                    pf_benchmark=rich.get("pf_benchmark"),
+                    benchmark=benchmark,
+                    best_freq=risultati.get("best_freq"),
+                    optimal_weights=risultati.get("optimal_weights"),
+                    frontier_df=frontier_df,
+                    stability=rich.get("stability", {}),
+                    dsr=rich.get("dsr"),
+                    mc_a=rich.get("mc_a2", {}),
+                    mc_b=rich.get("mc_b", {}),
+                    capital_projection=capital_projection,
+                    verdetto=rich.get("verdetto", "N/A"),
+                    plots_dir=risultati.get("plots_dir"),
+                    output_path=out_pdf,
+                )
+                print(f"  PDF: {out_pdf}")
+            except Exception as exc:
+                print(f"[WARN] Relazione tecnica '{ptf_name}' fallita: {exc}")
 
 
 # ---------------------------------------------------------------------------
 # iq k-agent
 # ---------------------------------------------------------------------------
 
-@app.command("k-agent")
+@app.command("k-agent", epilog=(
+    "\b\nEsempi:\n"
+    "  iq k-agent --max 3\n"
+    "  iq k-agent --pdf paper.pdf --llm anthropic\n"
+    "  iq k-agent --llm ollama --model qwen2.5-coder:7b -v\n"
+))
 @click.option("--max", "max_per_run", default=None, type=int,
     help="Numero massimo di articoli da processare per run (default: 5, mutuamente esclusivo con --pdf)")
 @click.option("--pdf", "pdf_path", type=click.Path(exists=True), default=None,
@@ -801,7 +923,7 @@ def lazy_analyze(ptf, output_dir, start_date, end_date, benchmark,
     show_default=True, help="Provider LLM")
 @click.option("--model", default=None,
     help="Modello LLM (default: qwen2.5-coder:7b per ollama, claude-sonnet-4-20250514 per anthropic)")
-@click.option("--verbose", "-v", is_flag=True, default=False)
+@click.option("--verbose", "-v", is_flag=True, default=False, help="Output verboso")
 def k_agent(max_per_run, pdf_path, llm_provider, model, verbose):
     """Genera nuove K-strategy leggendo articoli da feed RSS."""
     if pdf_path is not None and max_per_run is not None:

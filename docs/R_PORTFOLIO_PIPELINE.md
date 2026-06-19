@@ -181,12 +181,12 @@ quotidiana.
 
 ## Output
 
-### `iq analyze` (headless)
-- PDF relazione tecnica con sezioni: §1 Identità, §2 Config WFO+Clustering,
-  §3 Metriche comparative, §4 OFC, §5 Monte Carlo, §6 Diagnosi strutturale,
-  §7 Decisione finale
+### `iq r-analyze` (headless)
+- PTF card markdown (sempre)
 - PNG grafici statici (matplotlib/seaborn)
-- PTF card markdown
+- PDF relazione tecnica **solo con `--pdf`** (default off) con sezioni:
+  §1 Identità, §2 Config WFO+Clustering, §3 Metriche comparative, §4 OFC,
+  §5 Monte Carlo, §6 Diagnosi strutturale, §7 Decisione finale
 
 ### `r_portfolio_analyst.ipynb` (interattivo, solo Luca)
 - Stessa pipeline con grafici Plotly interattivi
@@ -200,7 +200,7 @@ quotidiana.
 | Componente | File | Funzione/Comando |
 |---|---|---|
 | Pipeline headless | `notebooks/libs_py/r_functions.py` | `run_r_portfolio_analysis()` |
-| CLI | `investia_quant/cli.py` | `iq analyze` |
+| CLI | `investia_quant/cli.py` | `iq r-analyze` |
 | WFO | `notebooks/libs_py/r_functions.py` | `run_wfo_pipeline()` |
 | Stabilità griglia | `notebooks/libs_py/r_functions.py` | `reduce_grid_via_stability()` |
 | Compare path | `notebooks/libs_py/r_functions.py` | `compare_wfo_pipelines()` |

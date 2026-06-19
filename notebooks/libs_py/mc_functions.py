@@ -1425,6 +1425,156 @@ def run_lazy_analysis(
     }
 
 
+def _compute_lazy_full(
+    portfolio_cfg: dict,
+    ptf_name: str,
+    output_dir,
+    start_date='2016-01-01',
+    end_date=None,
+    benchmark='SPY',
+    init_cash=100_000.0,
+    fees=0.001,
+    years=10,
+    n_simulations_mc_a=1000,
+    n_simulations_mc_b=500,
+    verbose=False,
+) -> dict:
+    """
+    Pipeline Lazy completa per un SINGOLO PTF: analisi headless + backtest
+    B&H + stability rolling + MC A1/A2 + MC B + DSR + metriche + verdetto.
+
+    Estratta dal loop di run_lazy_batch_analysis() per essere riusabile sia
+    nella classificazione batch (riga CSV) sia nella relazione tecnica PDF
+    (oggetti completi). Ritorna un dict con TUTTI gli oggetti intermedi:
+
+        'risultati'   : output di run_lazy_analysis (best_freq, freq_df,
+                        portfolio_pf, optimal_weights, frontier_result, plots_dir)
+        'pf_proposed' : vbt.Portfolio del PTF reale (pesi fissi, best_freq)
+        'stability'   : output di lazy_rolling_stability
+        'mc_a1'       : MC iid bootstrap
+        'mc_a2'       : MC block bootstrap (usato anche da project_lazy_capital)
+        'mc_b'        : MC Block B (skill ribilanciamento)
+        'dsr'         : Deflated Sharpe Ratio
+        'sr', 'T'     : Sharpe e n. osservazioni
+        'cagr','maxdd': metriche aggregate
+        'checks'      : dict dei 3 criteri
+        'verdetto'    : 'PROMOSSO' | 'RIGETTATO'
+        'row'         : riga di classificazione (per il CSV batch)
+    """
+    from pathlib import Path
+    # mc_run_iid_bootstrap / mc_run_block_bootstrap / ofc_compute_dsr sono
+    # definite in r_functions.py e NON importate a livello di modulo qui:
+    # import locale per evitare di toccare le import globali di mc_functions.py.
+    from r_functions import (
+        mc_run_iid_bootstrap,
+        mc_run_block_bootstrap,
+        ofc_compute_dsr,
+    )
+
+    # 2. analisi lazy headless + backtest B&H con best_freq
+    sub_output_dir = Path(output_dir) / ptf_name
+    risultati = run_lazy_analysis(
+        portfolio_cfg=portfolio_cfg,
+        output_dir=sub_output_dir,
+        title=ptf_name,
+        start_date=start_date,
+        end_date=end_date,
+        benchmark=benchmark,
+        init_cash=init_cash,
+        fees=fees,
+        years=years,
+        plot=False,
+        save_png=True,
+        auto_freq=True,
+        freq_selection_metric='sharpe',
+        verbose=verbose,
+    )
+    pf_proposed = run_bh_backtest(portfolio_cfg, start_date, end_date,
+                                  init_cash, fees, risultati['best_freq'])
+
+    # 2b. benchmark B&H (singolo ticker) per il confronto §3 della relazione
+    try:
+        pf_benchmark = run_bh_backtest({benchmark: 1.0}, start_date, end_date,
+                                       init_cash, fees, None)
+    except Exception:
+        pf_benchmark = None
+
+    # 3. stabilità rolling del PTF reale
+    stability = lazy_rolling_stability(
+        pf=pf_proposed,
+        target_horizon=5,
+        loss_prob_threshold=0.02,
+        verbose=False,
+    )
+
+    # 4. MC A1 (iid bootstrap) e A2 (block bootstrap)
+    rng_a1 = np.random.default_rng(42)
+    mc_a1 = mc_run_iid_bootstrap(pf_proposed, n_simulations_mc_a, rng_a1)
+    rng_a2 = np.random.default_rng(42)
+    mc_a2 = mc_run_block_bootstrap(pf_proposed, 20, n_simulations_mc_a, rng_a2)
+
+    # 5. MC B (rebalancing con jitter)
+    mc_b = lazy_mc_block_b_rebalancing(
+        portfolio=portfolio_cfg, start_date=start_date, end_date=end_date,
+        best_freq=risultati['best_freq'], n_simulations=n_simulations_mc_b,
+        jitter_days=30, init_cash=init_cash, fees=fees, verbose=False,
+    )
+
+    # 6. DSR
+    sr = float(pf_proposed.sharpe_ratio())
+    T = int(pf_proposed.value().dropna().__len__())
+    dsr = ofc_compute_dsr(sr_hat=sr, n_trials=1, T=T)
+
+    # 7. metriche e verdetto
+    cagr = _cagr_from_equity(pf_proposed)
+    maxdd = abs(float(pf_proposed.max_drawdown()))
+
+    checks = {
+        'mc_a2_sharpe_p50_positive': mc_a2['percentiles']['p50']['Sharpe'] > 0,
+        'mc_b_skill': mc_b['skill'],
+        'dsr_positive': dsr > 0,
+    }
+    n_passed = sum(checks.values())
+    verdetto = 'PROMOSSO' if n_passed >= 2 else 'RIGETTATO'
+
+    # 8. riga di classificazione
+    row = {
+        'Nome': ptf_name,
+        'BestFreq': risultati['best_freq'] or 'BH',
+        'CAGR%': round(cagr * 100, 2),
+        'Sharpe': round(sr, 3),
+        'MaxDD%': round(maxdd * 100, 2),
+        'StabilityOK': stability['stable'],
+        'PLoss5y%': round(stability['p_loss_at_horizon'] * 100, 2) if not np.isnan(stability['p_loss_at_horizon']) else np.nan,
+        'MinSafeHorizon': stability.get('min_safe_horizon'),
+        'MC_A2_Sharpe_p50': round(mc_a2['percentiles']['p50']['Sharpe'], 3),
+        'MC_B_pvalue': round(mc_b['p_value_sharpe'], 3),
+        'MC_B_skill': mc_b['skill'],
+        'DSR': round(dsr, 3),
+        'CriteriPassati': f"{n_passed}/3",
+        'Verdetto': verdetto,
+    }
+
+    return {
+        'risultati': risultati,
+        'pf_proposed': pf_proposed,
+        'pf_benchmark': pf_benchmark,
+        'benchmark': benchmark,
+        'stability': stability,
+        'mc_a1': mc_a1,
+        'mc_a2': mc_a2,
+        'mc_b': mc_b,
+        'dsr': dsr,
+        'sr': sr,
+        'T': T,
+        'cagr': cagr,
+        'maxdd': maxdd,
+        'checks': checks,
+        'verdetto': verdetto,
+        'row': row,
+    }
+
+
 def run_lazy_batch_analysis(
     registry: dict,
     ptf_names: list,
@@ -1440,24 +1590,24 @@ def run_lazy_batch_analysis(
     cache_dir=None,           # default stabile: <project_root>/outputs/lazy_cache/
     override: bool = False,
     verbose=False,
+    details_out: dict = None,
 ) -> "pd.DataFrame":
     """
     Esegue la pipeline Lazy completa (run_lazy_analysis + stability +
     MC A1/A2 + MC B + DSR + verdetto) su una lista di PTF dal registry.
     Salva un CSV 'classification_<timestamp>.csv' in output_dir.
     Ritorna il DataFrame classification.
+
+    Se `details_out` è un dict, viene popolato in-place con
+    {ptf_name: rich_dict} dove rich_dict è l'output di _compute_lazy_full()
+    (oggetti completi: pf, stability, mc_a1/a2, mc_b, dsr, frontiera, ecc.).
+    Necessario per generare la relazione tecnica PDF (iq l-analyze --pdf):
+    quando richiesto, i PTF vengono ricalcolati anche se in cache, così gli
+    oggetti rich sono disponibili (la cache row/mc_a2 viene comunque aggiornata).
     """
     from pathlib import Path
     from datetime import datetime as _dt
     import pickle
-    # mc_run_iid_bootstrap / mc_run_block_bootstrap / ofc_compute_dsr sono
-    # definite in r_functions.py e NON sono importate a livello di modulo qui:
-    # import locale per evitare di toccare le import globali di mc_functions.py.
-    from r_functions import (
-        mc_run_iid_bootstrap,
-        mc_run_block_bootstrap,
-        ofc_compute_dsr,
-    )
 
     if cache_dir:
         _cache_dir = Path(cache_dir)
@@ -1469,6 +1619,9 @@ def run_lazy_batch_analysis(
     _cache_dir.mkdir(parents=True, exist_ok=True)
 
     rows = []
+    # Quando servono gli oggetti rich (relazione tecnica PDF) la cache row non
+    # basta: occorre ricalcolare per riavere pf/stability/mc/frontiera.
+    need_details = details_out is not None
 
     for ptf_name in ptf_names:
         # 1. risoluzione dal registry
@@ -1478,7 +1631,7 @@ def run_lazy_batch_analysis(
             continue
 
         cache_file = _cache_dir / f'{ptf_name}.pkl'
-        if (not override) and cache_file.exists():
+        if (not override) and (not need_details) and cache_file.exists():
             try:
                 with open(cache_file, 'rb') as f:
                     cached_row = pickle.load(f)
@@ -1491,83 +1644,28 @@ def run_lazy_batch_analysis(
                     print(f"[CACHE] {ptf_name}: cache corrotta ({e}), ricalcolo.")
 
         try:
-            # 2. analisi lazy headless + backtest B&H con best_freq
-            sub_output_dir = Path(output_dir) / ptf_name
-            risultati = run_lazy_analysis(
+            # 2-8. pipeline completa per il singolo PTF (oggetti rich)
+            rich = _compute_lazy_full(
                 portfolio_cfg=portfolio_cfg,
-                output_dir=sub_output_dir,
-                title=ptf_name,
+                ptf_name=ptf_name,
+                output_dir=output_dir,
                 start_date=start_date,
                 end_date=end_date,
                 benchmark=benchmark,
                 init_cash=init_cash,
                 fees=fees,
                 years=years,
-                plot=False,
-                save_png=True,
-                auto_freq=True,
-                freq_selection_metric='sharpe',
+                n_simulations_mc_a=n_simulations_mc_a,
+                n_simulations_mc_b=n_simulations_mc_b,
                 verbose=verbose,
             )
-            pf_proposed = run_bh_backtest(portfolio_cfg, start_date, end_date,
-                                          init_cash, fees, risultati['best_freq'])
-
-            # 3. stabilità rolling del PTF reale
-            stability = lazy_rolling_stability(
-                pf=pf_proposed,
-                target_horizon=5,
-                loss_prob_threshold=0.02,
-                verbose=False,
-            )
-
-            # 4. MC A1 (iid bootstrap) e A2 (block bootstrap)
-            rng_a1 = np.random.default_rng(42)
-            mc_a1 = mc_run_iid_bootstrap(pf_proposed, n_simulations_mc_a, rng_a1)
-            rng_a2 = np.random.default_rng(42)
-            mc_a2 = mc_run_block_bootstrap(pf_proposed, 20, n_simulations_mc_a, rng_a2)
-
-            # 5. MC B (rebalancing con jitter)
-            mc_b = lazy_mc_block_b_rebalancing(
-                portfolio=portfolio_cfg, start_date=start_date, end_date=end_date,
-                best_freq=risultati['best_freq'], n_simulations=n_simulations_mc_b,
-                jitter_days=30, init_cash=init_cash, fees=fees, verbose=False,
-            )
-
-            # 6. DSR
-            sr = float(pf_proposed.sharpe_ratio())
-            T = int(pf_proposed.value().dropna().__len__())
-            dsr = ofc_compute_dsr(sr_hat=sr, n_trials=1, T=T)
-
-            # 7. metriche e verdetto
-            cagr = _cagr_from_equity(pf_proposed)
-            maxdd = abs(float(pf_proposed.max_drawdown()))
-
-            checks = {
-                'mc_a2_sharpe_p50_positive': mc_a2['percentiles']['p50']['Sharpe'] > 0,
-                'mc_b_skill': mc_b['skill'],
-                'dsr_positive': dsr > 0,
-            }
-            n_passed = sum(checks.values())
-            verdetto = 'PROMOSSO' if n_passed >= 2 else 'RIGETTATO'
-
-            # 8. riga di classificazione
-            row = {
-                'Nome': ptf_name,
-                'BestFreq': risultati['best_freq'] or 'BH',
-                'CAGR%': round(cagr * 100, 2),
-                'Sharpe': round(sr, 3),
-                'MaxDD%': round(maxdd * 100, 2),
-                'StabilityOK': stability['stable'],
-                'PLoss5y%': round(stability['p_loss_at_horizon'] * 100, 2) if not np.isnan(stability['p_loss_at_horizon']) else np.nan,
-                'MinSafeHorizon': stability.get('min_safe_horizon'),
-                'MC_A2_Sharpe_p50': round(mc_a2['percentiles']['p50']['Sharpe'], 3),
-                'MC_B_pvalue': round(mc_b['p_value_sharpe'], 3),
-                'MC_B_skill': mc_b['skill'],
-                'DSR': round(dsr, 3),
-                'CriteriPassati': f"{n_passed}/3",
-                'Verdetto': verdetto,
-            }
+            row = rich['row']
+            mc_a2 = rich['mc_a2']
             rows.append(row)
+            if need_details:
+                # path della cache MC esposto per project_lazy_capital (§6 PDF)
+                rich['cache_dir'] = str(_cache_dir)
+                details_out[ptf_name] = rich
             try:
                 with open(cache_file, 'wb') as f:
                     pickle.dump(row, f)
@@ -1968,4 +2066,462 @@ def project_lazy_capital(
         results['_figs_detail'] = figs_detail
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# Relazione Tecnica Lazy (PDF) — funzione indipendente (no riuso di
+# generate_relazione_tecnica di r_functions). Stesso stack reportlab, palette
+# coerente, struttura §1-§7 specifica per i Lazy portfolio.
+# ---------------------------------------------------------------------------
+
+# Palette coerente con la relazione R (replicata localmente per indipendenza)
+_RL_LAZY_NAVY    = '#1B2A4A'
+_RL_LAZY_NAVY_LT = '#2C3E6B'
+_RL_LAZY_GREEN   = '#27AE60'
+_RL_LAZY_RED     = '#E74C3C'
+_RL_LAZY_GRAY_LT = '#F5F6FA'
+_RL_LAZY_GRAY_BD = '#D5D8DC'
+_RL_LAZY_TEXT    = '#2C3E50'
+
+
+def generate_relazione_tecnica_lazy(
+    *,
+    portfolio_title: str,
+    asset_allocation: dict,
+    period: tuple,
+    pf_proposed,
+    stability: dict,
+    dsr: float,
+    mc_a: dict,
+    mc_b: dict,
+    verdetto: str,
+    output_path,
+    ptf_type: str = 'lazy',
+    optimal_weights: dict = None,
+    best_freq: str = None,
+    pf_benchmark=None,
+    benchmark: str = 'SPY',
+    frontier_df=None,
+    capital_projection: dict = None,
+    initial_capital: float = 10_000.0,
+    plots_dir=None,
+    gen_date: str = None,
+):
+    """
+    Genera la Relazione Tecnica PDF di un Lazy portfolio con reportlab.
+
+    Funzione INDIPENDENTE da generate_relazione_tecnica() di r_functions:
+    nessun import cross-funzione, solo riuso di _cagr_from_equity() (helper di
+    basso livello già presente in questo modulo). Struttura:
+
+        §1 Identità            — nome, tipo, asset allocation
+        §2 Configurazione      — asset class/pesi, freq ribilanciamento, periodo
+        §3 Metriche comparative— CAGR/Sharpe/MaxDD vs benchmark, frontiera
+                                 (reale vs teorica)
+        §4 Validazione         — lazy_rolling_stability (P(roll 5y < 0%)), DSR
+        §5 Monte Carlo         — Block A (CI) + Block B (skill test) — solo
+                                 risultati numerici, nessun disclaimer/caveat
+        §6 Proiezione capitale — project_lazy_capital, percentili P10-P50-P90
+        §7 Decisione finale    — verdetto promozione
+
+    Parameters
+    ----------
+    asset_allocation : dict
+        ticker -> peso del PTF reale (config).
+    pf_proposed : vbt.Portfolio
+        Backtest del PTF reale (pesi fissi, best_freq).
+    mc_a : dict
+        Output di mc_run_block_bootstrap (chiavi 'percentiles', 'actual_metrics').
+    mc_b : dict
+        Output di lazy_mc_block_b_rebalancing.
+    capital_projection : dict | None
+        {'p10': Series, 'p50': Series, 'p90': Series} da project_lazy_capital.
+    output_path : path-like
+        Path del PDF (es. outputs/lazy_reports/<ptf>_relazione_tecnica.pdf).
+
+    Returns
+    -------
+    Path
+        Path del PDF scritto.
+    """
+    from pathlib import Path
+    import datetime as _dt
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors as rl_colors
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import mm
+    from reportlab.platypus import (
+        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
+        HRFlowable, KeepTogether,
+    )
+    from reportlab.platypus import Image as _RLImage
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
+    try:
+        from PIL import Image as _PILImage
+        _HAS_PIL = True
+    except ImportError:
+        _HAS_PIL = False
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    plots_dir = Path(plots_dir) if plots_dir is not None else None
+    if gen_date is None:
+        gen_date = _dt.date.today().isoformat()
+    period_start, period_end = (period if period and len(period) == 2
+                                else (str(period), gen_date))
+
+    C_NAVY    = rl_colors.HexColor(_RL_LAZY_NAVY)
+    C_NAVY_LT = rl_colors.HexColor(_RL_LAZY_NAVY_LT)
+    C_GREEN   = rl_colors.HexColor(_RL_LAZY_GREEN)
+    C_RED     = rl_colors.HexColor(_RL_LAZY_RED)
+    C_GRAY_LT = rl_colors.HexColor(_RL_LAZY_GRAY_LT)
+    C_GRAY_BD = rl_colors.HexColor(_RL_LAZY_GRAY_BD)
+    C_WHITE   = rl_colors.white
+    C_TEXT    = rl_colors.HexColor(_RL_LAZY_TEXT)
+
+    PAGE_W, PAGE_H = A4
+    MARGIN    = 20 * mm
+    CONTENT_W = PAGE_W - 2 * MARGIN
+
+    styles = getSampleStyleSheet()
+
+    def _st(name, parent='Normal', **kw):
+        return ParagraphStyle(name, parent=styles[parent], **kw)
+
+    st_title    = _st('_lz_title', 'Title', fontSize=24, textColor=C_NAVY,
+                      spaceAfter=4, alignment=TA_CENTER, fontName='Helvetica-Bold')
+    st_subtitle = _st('_lz_sub', fontSize=10, textColor=C_NAVY_LT,
+                      spaceAfter=12, alignment=TA_CENTER)
+    st_section  = _st('_lz_sec', fontSize=13, textColor=C_NAVY, spaceBefore=12,
+                      spaceAfter=5, fontName='Helvetica-Bold')
+    st_subsec   = _st('_lz_ssec', fontSize=10.5, textColor=C_NAVY_LT, spaceBefore=7,
+                      spaceAfter=3, fontName='Helvetica-Bold')
+    st_body     = _st('_lz_body', fontSize=9.5, textColor=C_TEXT, spaceAfter=6,
+                      alignment=TA_JUSTIFY, leading=14)
+    st_caption  = _st('_lz_cap', fontSize=7.5, textColor=C_NAVY_LT, spaceAfter=6,
+                      alignment=TA_CENTER, fontName='Helvetica-Oblique')
+    st_cell_hdr = _st('_lz_chdr', fontSize=8.5, textColor=C_WHITE,
+                      fontName='Helvetica-Bold')
+    st_cell_hdrc= _st('_lz_chdrc', fontSize=8.5, textColor=C_WHITE,
+                      fontName='Helvetica-Bold', alignment=TA_CENTER)
+    st_verd     = _st('_lz_verd', fontSize=9, textColor=C_WHITE,
+                      fontName='Helvetica-Bold', alignment=TA_CENTER)
+    st_vbox     = _st('_lz_vbox', fontSize=9.5, textColor=C_NAVY, leading=14,
+                      alignment=TA_JUSTIFY)
+
+    def _ts_base():
+        return [
+            ('BACKGROUND', (0, 0), (-1, 0), C_NAVY_LT),
+            ('TEXTCOLOR',  (0, 0), (-1, 0), C_WHITE),
+            ('FONTNAME',   (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE',   (0, 0), (-1, -1), 8.5),
+            ('GRID',       (0, 0), (-1, -1), 0.3, C_GRAY_BD),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [C_WHITE, C_GRAY_LT]),
+            ('VALIGN',     (0, 0), (-1, -1), 'MIDDLE'),
+            ('TOPPADDING', (0, 0), (-1, -1), 4),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+            ('LEFTPADDING',   (0, 0), (-1, -1), 6),
+            ('RIGHTPADDING',  (0, 0), (-1, -1), 6),
+        ]
+
+    _ptf_label  = f"Relazione Tecnica · {portfolio_title}"
+    _foot_label = f"Generato il {gen_date} · investia.cloud · uso interno"
+
+    def _draw_hf(canvas, doc):
+        canvas.saveState()
+        canvas.setFillColor(C_NAVY)
+        canvas.rect(0, PAGE_H - 12 * mm, PAGE_W, 12 * mm, fill=1, stroke=0)
+        canvas.setFont('Helvetica-Bold', 9)
+        canvas.setFillColor(C_WHITE)
+        canvas.drawString(MARGIN, PAGE_H - 8 * mm,
+                          'TSlab — Lazy Portfolio Lab')
+        canvas.drawRightString(PAGE_W - MARGIN, PAGE_H - 8 * mm, _ptf_label)
+        canvas.setFont('Helvetica', 7.5)
+        canvas.setFillColor(rl_colors.HexColor('#666666'))
+        canvas.drawString(MARGIN, 8 * mm, _foot_label)
+        canvas.drawRightString(PAGE_W - MARGIN, 8 * mm, f"Pag. {doc.page}")
+        canvas.setStrokeColor(C_GRAY_BD)
+        canvas.setLineWidth(0.5)
+        canvas.line(MARGIN, 11 * mm, PAGE_W - MARGIN, 11 * mm)
+        canvas.restoreState()
+
+    def _img(fname, caption=None):
+        if plots_dir is None:
+            return []
+        p = plots_dir / fname
+        if not p.exists():
+            return []
+        try:
+            w = CONTENT_W
+            if _HAS_PIL:
+                with _PILImage.open(p) as im:
+                    iw, ih = im.size
+                h = w * (ih / iw)
+            else:
+                h = w * 0.6
+            elems = [_RLImage(str(p), width=w, height=h)]
+            if caption:
+                elems.append(Paragraph(caption, st_caption))
+            return [KeepTogether(elems)]
+        except Exception:
+            return []
+
+    def _hr():
+        return HRFlowable(width='100%', thickness=0.5, color=C_NAVY_LT, spaceAfter=8)
+
+    def _metric(pf, which):
+        if pf is None:
+            return 'N/A'
+        try:
+            if which == 'cum':    return f"{float(pf.total_return()) * 100:.1f}%"
+            if which == 'cagr':   return f"{_cagr_from_equity(pf) * 100:.1f}%"
+            if which == 'sharpe': return f"{float(pf.sharpe_ratio()):.2f}"
+            if which == 'maxdd':  return f"{abs(float(pf.max_drawdown())) * 100:.1f}%"
+        except Exception:
+            return 'N/A'
+        return 'N/A'
+
+    def _pct(x, dec=1):
+        try:
+            return f"{float(x) * 100:.{dec}f}%"
+        except Exception:
+            return 'N/A'
+
+    def _num(x, dec=2):
+        try:
+            return f"{float(x):.{dec}f}"
+        except Exception:
+            return 'N/A'
+
+    story = []
+
+    # ── Cover ────────────────────────────────────────────────────────────────
+    story.append(Spacer(1, 8 * mm))
+    story.append(Paragraph(f"Relazione Tecnica · {portfolio_title}", st_title))
+    story.append(Paragraph(
+        f"Lazy portfolio ({ptf_type}) · Benchmark {benchmark} · "
+        f"Ribilanciamento {best_freq or 'Buy & Hold'}", st_subtitle))
+    story.append(_hr())
+
+    # ── §1 Identità ──────────────────────────────────────────────────────────
+    story.append(Paragraph("1. Identità del Portafoglio", st_section))
+    n_assets = len(asset_allocation or {})
+    id_data = [
+        [Paragraph('Campo', st_cell_hdr), Paragraph('Valore', st_cell_hdr)],
+        ['Nome',             portfolio_title],
+        ['Tipo',             ptf_type],
+        ['Engine',           'Lazy portfolio (pesi fissi, ribilanciamento periodico)'],
+        ['N. asset',         str(n_assets)],
+        ['Asset allocation', ', '.join(f"{k} {v:.0%}" for k, v in (asset_allocation or {}).items())],
+        ['Benchmark',        benchmark],
+        ['Periodo analisi',  f"{period_start} → {period_end}"],
+        ['Data generazione', gen_date],
+    ]
+    id_t = Table(id_data, colWidths=[45 * mm, CONTENT_W - 45 * mm])
+    id_t.setStyle(TableStyle(_ts_base()))
+    story += [id_t, Spacer(1, 5 * mm)]
+
+    # ── §2 Configurazione ────────────────────────────────────────────────────
+    story.append(Paragraph("2. Configurazione", st_section))
+    cfg_rows = [[Paragraph('Asset', st_cell_hdr),
+                 Paragraph('Peso reale', st_cell_hdrc),
+                 Paragraph('Peso max-Sharpe (frontiera)', st_cell_hdrc)]]
+    _ow = optimal_weights or {}
+    for tk, w in (asset_allocation or {}).items():
+        w_opt = _ow.get(tk, _ow.get(tk.upper()))
+        cfg_rows.append([tk, f"{w:.1%}",
+                         f"{w_opt:.1%}" if w_opt is not None else 'N/A'])
+    cfg_t = Table(cfg_rows, colWidths=[CONTENT_W - 100 * mm, 50 * mm, 50 * mm])
+    cfg_t.setStyle(TableStyle(_ts_base() + [('ALIGN', (1, 0), (-1, -1), 'CENTER')]))
+    story += [cfg_t, Spacer(1, 3 * mm)]
+    cfg2 = [
+        [Paragraph('Parametro', st_cell_hdr), Paragraph('Valore', st_cell_hdr)],
+        ['Frequenza ribilanciamento', best_freq or 'Buy & Hold (nessun ribilanciamento)'],
+        ['Periodo storico backtest',  f"{period_start} → {period_end}"],
+    ]
+    cfg2_t = Table(cfg2, colWidths=[60 * mm, CONTENT_W - 60 * mm])
+    cfg2_t.setStyle(TableStyle(_ts_base()))
+    story += [cfg2_t, Spacer(1, 5 * mm)]
+
+    # ── §3 Metriche comparative ──────────────────────────────────────────────
+    story.append(Paragraph("3. Metriche Comparative", st_section))
+    cmp_rows = [
+        [Paragraph('Metrica', st_cell_hdr),
+         Paragraph(portfolio_title, st_cell_hdrc),
+         Paragraph(f"Benchmark ({benchmark})", st_cell_hdrc)],
+        ['CAGR',           _metric(pf_proposed, 'cagr'),   _metric(pf_benchmark, 'cagr')],
+        ['Sharpe',         _metric(pf_proposed, 'sharpe'), _metric(pf_benchmark, 'sharpe')],
+        ['Max Drawdown',   _metric(pf_proposed, 'maxdd'),  _metric(pf_benchmark, 'maxdd')],
+        ['Rendimento tot.', _metric(pf_proposed, 'cum'),   _metric(pf_benchmark, 'cum')],
+    ]
+    _hw = (CONTENT_W - 50 * mm) / 2
+    cmp_t = Table(cmp_rows, colWidths=[50 * mm, _hw, _hw])
+    cmp_t.setStyle(TableStyle(_ts_base() + [('ALIGN', (1, 0), (-1, -1), 'CENTER')]))
+    story += [cmp_t, Spacer(1, 4 * mm)]
+
+    # Frontiera efficiente: reale vs teorica (riga Max Sharpe di df_special)
+    if frontier_df is not None:
+        try:
+            if 'Max Sharpe' in frontier_df.index:
+                _r = frontier_df.loc['Max Sharpe']
+                story.append(Paragraph("3.a Frontiera efficiente — Max Sharpe (teorico vs reale)", st_subsec))
+                fr_rows = [
+                    [Paragraph('Grandezza', st_cell_hdr),
+                     Paragraph('Teorico', st_cell_hdrc),
+                     Paragraph('Reale', st_cell_hdrc)],
+                    ['Return',     _pct(_r.get('Return')),     _pct(_r.get('Real Return'))],
+                    ['Volatility', _pct(_r.get('Volatility')), _pct(_r.get('Real Volatility'))],
+                    ['Sharpe',     _num(_r.get('Sharpe')),     _num(_r.get('Real Sharpe'))],
+                ]
+                fr_t = Table(fr_rows, colWidths=[50 * mm, _hw, _hw])
+                fr_t.setStyle(TableStyle(_ts_base() + [('ALIGN', (1, 0), (-1, -1), 'CENTER')]))
+                story += [fr_t, Spacer(1, 3 * mm)]
+        except Exception:
+            pass
+    story += _img('frontier.png', 'Frontiera efficiente')
+    story += _img('freq_comparison.png', 'Confronto frequenze di ribilanciamento')
+    story.append(Spacer(1, 3 * mm))
+
+    # ── §4 Validazione statistica ────────────────────────────────────────────
+    story.append(Paragraph("4. Validazione Statistica", st_section))
+    _th = stability.get('target_horizon', 5)
+    _ploss = stability.get('p_loss_at_horizon')
+    _msh = stability.get('min_safe_horizon')
+    val_rows = [
+        [Paragraph('Test', st_cell_hdr),
+         Paragraph('Valore', st_cell_hdrc),
+         Paragraph('Esito', st_cell_hdrc)],
+        [f'P(rendimento rolling {_th}y < 0%)',
+         _pct(_ploss) if _ploss is not None else 'N/A',
+         'STABILE' if stability.get('stable') else 'INSTABILE'],
+        ['Soglia P(loss)', _pct(stability.get('loss_prob_threshold')), '—'],
+        ['Min safe horizon', f"{_msh}y" if _msh is not None else 'N/A', '—'],
+        ['Deflated Sharpe Ratio (DSR)', _num(dsr, 3),
+         'POSITIVO' if (dsr is not None and dsr > 0) else 'NON POSITIVO'],
+    ]
+    val_t = Table(val_rows, colWidths=[70 * mm, _hw - 10 * mm, _hw + 10 * mm])
+    val_t.setStyle(TableStyle(_ts_base() + [('ALIGN', (1, 0), (-1, -1), 'CENTER')]))
+    story += [val_t, Spacer(1, 5 * mm)]
+
+    # ── §5 Monte Carlo (solo risultati numerici, nessun caveat) ──────────────
+    story.append(Paragraph("5. Monte Carlo", st_section))
+    story.append(Paragraph("5.a Block A — Intervalli di confidenza (Block Bootstrap)", st_subsec))
+    _perc = (mc_a or {}).get('percentiles', {})
+    _act  = (mc_a or {}).get('actual_metrics', {})
+    def _pv(lbl, metric, pct=True):
+        try:
+            v = _perc.get(lbl, {}).get(metric)
+            return _pct(v) if pct else _num(v)
+        except Exception:
+            return 'N/A'
+    def _av(metric, pct=True):
+        try:
+            v = _act.get(metric)
+            return _pct(v) if pct else _num(v)
+        except Exception:
+            return 'N/A'
+    mca_rows = [
+        [Paragraph('Metrica', st_cell_hdr),
+         Paragraph('p5', st_cell_hdrc), Paragraph('p50', st_cell_hdrc),
+         Paragraph('p95', st_cell_hdrc), Paragraph('Reale', st_cell_hdrc)],
+        ['CAGR',   _pv('p5', 'CAGR'),   _pv('p50', 'CAGR'),   _pv('p95', 'CAGR'),   _av('CAGR')],
+        ['Sharpe', _pv('p5', 'Sharpe', False), _pv('p50', 'Sharpe', False),
+                   _pv('p95', 'Sharpe', False), _av('Sharpe', False)],
+        ['MaxDD',  _pv('p5', 'MaxDD'),  _pv('p50', 'MaxDD'),  _pv('p95', 'MaxDD'),  _av('MaxDD')],
+    ]
+    _cw = (CONTENT_W - 40 * mm) / 4
+    mca_t = Table(mca_rows, colWidths=[40 * mm, _cw, _cw, _cw, _cw])
+    mca_t.setStyle(TableStyle(_ts_base() + [('ALIGN', (1, 0), (-1, -1), 'CENTER')]))
+    story += [mca_t, Spacer(1, 3 * mm)]
+
+    story.append(Paragraph("5.b Block B — Skill test ribilanciamento", st_subsec))
+    mcb_rows = [
+        [Paragraph('Grandezza', st_cell_hdr), Paragraph('Valore', st_cell_hdrc)],
+        ['Sharpe reale',       _num((mc_b or {}).get('actual_sharpe'))],
+        ['p-value Sharpe',     _num((mc_b or {}).get('p_value_sharpe'), 3)],
+        ['CAGR reale',         _pct((mc_b or {}).get('actual_cagr'))],
+        ['p-value CAGR',       _num((mc_b or {}).get('p_value_cagr'), 3)],
+        ['Skill (p<0.05)',     'SI' if (mc_b or {}).get('skill') else 'NO'],
+        ['N. simulazioni',     str((mc_b or {}).get('n_simulations', 'N/A'))],
+    ]
+    mcb_t = Table(mcb_rows, colWidths=[70 * mm, CONTENT_W - 70 * mm])
+    mcb_t.setStyle(TableStyle(_ts_base() + [('ALIGN', (1, 0), (-1, -1), 'CENTER')]))
+    story += [mcb_t, Spacer(1, 5 * mm)]
+
+    # ── §6 Proiezione capitale futuro ────────────────────────────────────────
+    story.append(Paragraph("6. Proiezione Capitale Futuro", st_section))
+    if capital_projection:
+        _keys = [k for k in ('p10', 'p50', 'p90') if k in capital_projection]
+        if _keys:
+            _any = capital_projection[_keys[0]]
+            _years = list(_any.index)
+            _milestones = [y for y in (1, 3, 5, 10) if y in _years]
+            if not _milestones:
+                _milestones = _years[-3:] if len(_years) >= 3 else _years
+            hdr = [Paragraph('Percentile', st_cell_hdr)] + \
+                  [Paragraph(f"Anno {y}", st_cell_hdrc) for y in _milestones]
+            proj_rows = [hdr]
+            _label = {'p10': 'P10 (pessimistico)', 'p50': 'P50 (mediano)',
+                      'p90': 'P90 (ottimistico)'}
+            for k in _keys:
+                ser = capital_projection[k]
+                proj_rows.append(
+                    [_label.get(k, k)] +
+                    [f"€{float(ser.loc[y]):,.0f}" if y in ser.index else 'N/A'
+                     for y in _milestones])
+            _cwp = (CONTENT_W - 50 * mm) / max(1, len(_milestones))
+            proj_t = Table(proj_rows, colWidths=[50 * mm] + [_cwp] * len(_milestones))
+            proj_t.setStyle(TableStyle(_ts_base() + [('ALIGN', (1, 0), (-1, -1), 'CENTER')]))
+            story.append(Paragraph(
+                f"Capitale iniziale €{initial_capital:,.0f}. Proiezione basata sulla "
+                f"distribuzione CAGR simulata (Monte Carlo Block Bootstrap).", st_body))
+            story += [proj_t, Spacer(1, 5 * mm)]
+        else:
+            story.append(Paragraph("Proiezione capitale non disponibile.", st_body))
+    else:
+        story.append(Paragraph("Proiezione capitale non disponibile.", st_body))
+
+    # ── §7 Decisione finale ──────────────────────────────────────────────────
+    story.append(Paragraph("7. Decisione Finale", st_section))
+    _promosso = str(verdetto).upper().strip() == 'PROMOSSO'
+    verd_t = Table(
+        [[_p_verd] for _p_verd in [Paragraph(
+            f"VERDETTO: {str(verdetto).upper()}", st_verd)]],
+        colWidths=[CONTENT_W])
+    verd_t.setStyle(TableStyle([
+        ('BACKGROUND',    (0, 0), (-1, -1), C_GREEN if _promosso else C_RED),
+        ('TOPPADDING',    (0, 0), (-1, -1), 10),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 10),
+    ]))
+    story += [verd_t, Spacer(1, 4 * mm)]
+
+    _vtext = (
+        f"Il portafoglio <b>{portfolio_title}</b> ha ottenuto verdetto "
+        f"<b>{str(verdetto).upper()}</b> sulla base dei criteri di validazione "
+        f"(MC Block A p50 Sharpe, MC Block B skill, DSR). "
+        f"CAGR {_metric(pf_proposed, 'cagr')}, Sharpe {_metric(pf_proposed, 'sharpe')}, "
+        f"MaxDD {_metric(pf_proposed, 'maxdd')}; "
+        f"P(rolling {_th}y &lt; 0%) {_pct(_ploss) if _ploss is not None else 'N/A'}; "
+        f"DSR {_num(dsr, 3)}."
+    )
+    vbox = Table([[Paragraph(_vtext, st_vbox)]], colWidths=[CONTENT_W])
+    vbox.setStyle(TableStyle([
+        ('BACKGROUND',    (0, 0), (-1, -1), rl_colors.HexColor('#EAF0FB')),
+        ('BOX',           (0, 0), (-1, -1), 1.2, C_NAVY_LT),
+        ('TOPPADDING',    (0, 0), (-1, -1), 10),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 10),
+        ('LEFTPADDING',   (0, 0), (-1, -1), 12),
+        ('RIGHTPADDING',  (0, 0), (-1, -1), 12),
+    ]))
+    story.append(vbox)
+
+    doc = SimpleDocTemplate(
+        str(output_path), pagesize=A4,
+        topMargin=18 * mm, bottomMargin=18 * mm,
+        leftMargin=MARGIN, rightMargin=MARGIN,
+        title=f"Relazione Tecnica Lazy {portfolio_title}",
+        author="TSlab",
+    )
+    doc.build(story, onFirstPage=_draw_hf, onLaterPages=_draw_hf)
+    return output_path
 
