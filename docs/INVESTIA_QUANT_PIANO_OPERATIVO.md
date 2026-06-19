@@ -1,6 +1,6 @@
 # investia-quant — Piano Operativo
 
-**Ultimo aggiornamento**: 18 giugno 2026
+**Ultimo aggiornamento**: 19 giugno 2026
 **Root progetto**: `~/investia-quant`
 
 ---
@@ -9,16 +9,20 @@
 
 **Branch `main`** aggiornato e pulito. Ultimi commit:
 ```
-feat(panel): viewer CSV completo, funzioni helper in k_functions.py, elimina inspector
-fix(k): aggiungi criteri BH_Beat_Ret e BH_Beat_DD al verdetto di promozione
-feat(cli): iq k-agent + playwright + pypdf in pyproject.toml
-feat(k): cache MC su disco, classification.csv, metriche complete, load WFO da disco
-refactor(cli): unifica k-analyze e k-test, elimina test_strategies.py
-docs: pipeline valutazione K-strategy e R-portfolio
+fix(r-portfolio): risk_off_tickers per-PTF con default da k_tickers (era sempre vuoto, pf_rot None silenzioso)
+docs: aggiorna piano operativo con rename r-analyze/l-analyze e flag --pdf
+feat(cli): rename analyze→r-analyze, lazy-analyze→l-analyze, flag --pdf simmetrico, relazione tecnica AI Lazy, IQ_ADMIN_GUIDE
+fix(mc-plot): serializzazione Timestamp in write_image dei fan chart MC (kaleido/orjson)
+fix(r-portfolio): salva su wfo_file_save solo il path scelto in §8, non sempre Standard
 ```
 
 **Working tree**: clean.
 **Branch parcheggiati**: nessuno.
+
+⚠️ **Regola operativa fissata il 19/06** (violata e recuperata a caro prezzo in
+questa stessa sessione): **un branch alla volta, commit + merge in `main`
+prima di aprirne un altro**. Niente nuovi branch finché quello corrente non
+è chiuso. Niente stash dimenticati.
 
 ### Notebooks dev attivi
 
@@ -122,9 +126,9 @@ cron irina (locale) ore 03:00         → iq k-analyze --ptf <PTF_DA_DEFINIRE>
 | Aspetto | Dettaglio |
 |---|---|
 | JN dev | `lazy_portfolio_analyst.ipynb` — solo Luca |
-| CLI | `iq lazy` ← da costruire |
-| Web | Già pubblicato in v1 portale, da reintegrare |
-| Gap | Relazione tecnica AI-generated — da aggiungere |
+| CLI | `iq l-analyze --ptf [--pdf]` ✅ (rinominato da `lazy-analyze` il 19/06) |
+| Web | Da reintegrare in investia-platform — design sospeso (vedi priorità alta) |
+| Relazione tecnica AI | ✅ `generate_relazione_tecnica_lazy()`, §1-§7, completata il 19/06 |
 | Utenti | Tutti i livelli inclusi gestori bancari |
 
 ### Filiera R-strategies (esplorativa)
@@ -139,27 +143,76 @@ cron irina (locale) ore 03:00         → iq k-analyze --ptf <PTF_DA_DEFINIRE>
 
 ## Lavori in piedi, in ordine di priorità
 
+### Priorità MASSIMA
+
+**0. Risk ON/OFF non applicato dal runtime di produzione** · filiera R · ⚠️ gap critico
+
+Scoperto e in parte risolto il 19/06, ma resta un pezzo scoperto e ora urgente.
+
+Cosa è stato risolto il 19/06: `run_r_portfolio_analysis()` (pipeline di
+analisi, usata da `iq r-analyze`) leggeva `risk_off_tickers` da una chiave
+(`portfolio_cfg.get("risk_off_tickers", [])`) che non è mai esistita in
+nessun dict di `r_portfolios.py` → sempre `[]` → `risk_off_data=None` →
+`pf_rot` (variante Risk ON/OFF) sempre `None` per entrambi i path, sostituito
+silenziosamente da `pf_rot_base` → relazione tecnica mostrava sempre N/A
+per le colonne "— Risk ON/OFF". **Fix**: default ora preso da
+`k_tickers.risk_off_tickers` (stessa lista globale già usata dal JN), con
+possibilità di override per-PTF in `r_portfolios.py` (non ancora popolato
+per nessun PTF specifico — usa tutti il default). Verificato sul motore di
+selezione: il meccanismo è lo stesso identico per Standard e Cluster
+(overlay applicato dopo la selezione, righe ~8109-8126 di `run_wfo_pipeline`)
+— non c'è logica diversa da capire per Cluster, timore iniziale infondato.
+
+**Cosa resta scoperto, ed è il motivo della priorità massima**: il runtime
+di produzione (`r_run_portfolio` in `r_functions.py`, ~riga 3311, eseguito
+da `iq run`) **non ha alcun parametro per Risk ON/OFF** — nessun
+`risk_off_tickers`, nessuna logica di overlay. Estrae solo
+`rebalance_frequency` e `n_top` dal summary (via
+`extract_operational_params_from_summary`). L'overlay Risk ON/OFF esiste
+SOLO nella pipeline di analisi, mai nel runtime.
+
+Perché è ora massima priorità e non più "da investigare quando serve":
+il 19/06, testando il fix su `portfolio_germany_plan`, la raccomandazione
+AI della relazione tecnica è **Cluster — Risk ON/OFF** (Sharpe 1.04 vs 0.27,
+CAGR 31.3% vs 9.8%). Se questo PTF viene deployato seguendo la
+raccomandazione, il runtime eseguirebbe comunque la selezione nuda, **senza
+la protezione difensiva che ha motivato la scelta** — un disallineamento
+silenzioso tra cosa l'architetto pensa di aver deployato e cosa gira
+davvero in produzione.
+
+Da fare: progettare come `r_run_portfolio`/`iq run` ottiene
+`risk_off_tickers` (probabilmente da `r_portfolios.py`, stesso posto del
+fix di analisi) e applica l'overlay (stesso overlay "universo allargato"
+già verificato, non serve logica nuova — solo portarla nel runtime).
+
 ### Priorità alta
 
-**1. Relazione tecnica AI per Lazy portfolio** · filiera Lazy · ancora da fare
+**1. Web Lazy portfolio** · filiera Lazy
 
-**2. Web Lazy portfolio** · filiera Lazy
-
-Reintegrazione in investia-platform (Fase 4 roadmap ecosistema), non ancora iniziata.
+Reintegrazione in investia-platform. Discussione di design avviata il 19/06,
+poi sospesa: emerso che `investia-platform` oggi non ha alcuna separazione
+modulare (`webapp/routers/{analysis,dashboard,portfolio}.py` è già e solo
+cert-monitor, flat — non un modulo montato accanto ad altri). Serve prima
+vedere `webapp/main.py` e `webapp/auth.py` per capire come sono cablati
+routing e auth, poi disegnare lo schema di modularizzazione (cert-monitor
+come primo modulo + Lazy come secondo), e solo dopo scegliere un nuovo nome
+per cert-monitor (il modulo è cresciuto oltre il monitoraggio: analisi
+evoluta, gestione portafoglio certificati, export smart via LLM). Rename
+solo a livello UI/docs — repo GitHub invariato.
 
 ### Priorità media
 
-**3. Agente relazioni tecniche** · filiera R
+**2. Agente relazioni tecniche** · filiera R
 
 Batch su tutti i PTF: chiama `run_r_portfolio_analysis()` in loop.
 
-**4. Comprensione R_Strategies + fix API vectorbt** · filiera R-strategies
+**3. Comprensione R_Strategies + fix API vectorbt** · filiera R-strategies
 
 Fix `from_returns` → `from_holding`. Ruolo operativo da chiarire.
 
 ### Priorità bassa
 
-**5. PTF K per crontab** · filiera K · ⏳ BLOCCATO
+**4. PTF K per crontab** · filiera K · ⏳ BLOCCATO
 
 Crontab `iq k-agent` attivo su `irina` (ore 02:00, --max 15, anthropic).
 Crontab `iq k-analyze` in attesa: l'universo ticker per i trading system
@@ -170,7 +223,7 @@ Azione: definire PTF K e attivare `iq k-analyze` in crontab a fine 2026,
 in parallelo alla certificazione PTF per la release 2027.
 
 
-**6. Potenziamento Block B** · filiera R
+**5. Potenziamento Block B** · filiera R
 
 Sorgenti di skill alternative al momentum. Motivazione: molti PTF non hanno
 skill momentum ma battono il benchmark per altri driver (clustering Ward + risk-off).
@@ -183,6 +236,15 @@ Sorgenti candidate:
 - Multi-factor composito
 
 Da fare: design session prima di toccare codice.
+
+**6. Save/load completo per ri-analisi decisionale R-portfolio** · filiera R
+
+Accantonato il 19/06: il caso "riprendere un PTF già promosso" è coperto
+da §10 Load (summary_df del path scelto, ora corretto dal fix del 19/06).
+Resta scoperto solo "rivedere il confronto tra i 4 path senza rifare
+WFO+OFC+MC" — accettato rifare manualmente finché i volumi restano bassi
+(non vale il costo di salvare `ci_summary_df`/`skill_results` per tutti
+i path + gestire la ricostruzione di `compare_wfo_pipelines`).
 
 ---
 
@@ -287,6 +349,9 @@ Non risolvere autonomamente. Segnala e attendi istruzioni.
 ### B-005 — Narrativa 6.b/6.c sempre sul path Standard · RESOLVED
 ### B-006 — Nomenclatura invertita in `compute_skill_profile` · RESOLVED
 ### B-007 — `boxplot()` keyword `labels` deprecata · RESOLVED
+### B-008 — `wfo_file_save` scriveva sempre il path Standard, mai il path scelto in §8 · RESOLVED (19/06)
+### B-009 — `write_image` fan chart MC crash su Timestamp non serializzabile (kaleido/orjson) · RESOLVED (19/06)
+### B-010 — `risk_off_tickers` sempre vuota in `run_r_portfolio_analysis` (chiave mai esistita in r_portfolios.py) → pf_rot Risk ON/OFF sempre None, fallback silenzioso su Base · RESOLVED (19/06, solo lato analisi — vedi gap aperto §0 priorità massima per il runtime)
 
 ---
 
@@ -423,6 +488,45 @@ Branch vari → main.
   enormi — corretto matematicamente (capitalizzazione composta) ma
   da comunicare con cautela: usano la distribuzione di un solo
   storico decennale (2016-2026, favorevole sia a equity che a oro).
+
+### Sessione 19/06/2026 — CLI consistency, relazione tecnica Lazy, 3 bug critici R-portfolio
+
+**CLI — naming e relazione tecnica Lazy:**
+- Rename `analyze` → `r-analyze`, `lazy-analyze` → `l-analyze` (simmetria)
+- Flag `--pdf` aggiunto a entrambi, default `False` (era sempre generata
+  per R, mai opzionale): senza `--pdf` la pipeline + card `.md` girano
+  comunque, senza generare il PDF
+- `generate_relazione_tecnica_lazy()` nuova in `mc_functions.py`: §1-§7
+  dedicati (Identità, Configurazione, Metriche comparative, Validazione
+  statistica, Monte Carlo, Proiezione capitale, Decisione finale).
+  Estratto `_compute_lazy_full()` da `run_lazy_batch_analysis` per esporre
+  i risultati ricchi per-PTF necessari al PDF (stability, MC A/B, DSR,
+  proiezione) che il batch scartava
+- Help in linea uniforme per tutti i comandi `iq` + nuovo `docs/IQ_ADMIN_GUIDE.md`
+
+**Tre bug trovati e risolti in cascata sulla pipeline R (vedi B-008/009/010):**
+1. Save §8 scriveva sempre Standard su `wfo_file_save`, mai il path
+   effettivamente scelto dall'architetto — fix: nuova cella dopo la
+   decisione che salva il path scelto
+2. Crash `write_image` su Timestamp non serializzabile (fan chart MC,
+   kaleido/orjson) — risolto, causa esatta non confermata via traceback
+   ma il fix ha eliminato il crash
+3. `risk_off_tickers` sempre vuota lato analisi (B-010) — risolto;
+   **scoperto nel farlo che il runtime di produzione non supporta Risk
+   ON/OFF in alcuna forma** → nuovo item priorità MASSIMA
+
+**Verificato e chiuso**: il meccanismo Risk ON/OFF (overlay "universo
+allargato" post-selezione) è identico per Standard e Cluster — timore
+iniziale di un meccanismo Cluster diverso/ignoto, infondato.
+
+**Incidente operativo**: violata la regola "un branch alla volta" (4 branch
++ 1 stash aperti in parallelo durante la sessione) → richiesto un recovery
+manuale (reset --soft, separazione commit, pulizia notebook sporchi).
+Regola fissata esplicitamente per il futuro (vedi Stato attuale).
+
+**Accantonato**: panel comparativo R-portfolio e save/load completo per
+ri-analisi decisionale (item 6, priorità bassa) — volumi PTF troppo bassi
+oggi per giustificare il lavoro.
 
 
 ## Deploy VPS — procedura standard
