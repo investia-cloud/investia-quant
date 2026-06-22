@@ -739,6 +739,7 @@ def collect_wfo_selections(
     stocks_data: pd.DataFrame,
     benchmark_data: pd.Series | None = None,
     debug: bool = False,
+    per_window_universe: dict | None = None,
 ) -> pd.DataFrame:
     """
     Raccoglie le selezioni da una Walk-Forward Optimization summary.
@@ -810,6 +811,17 @@ def collect_wfo_selections(
                 print(f"[WFO] SKIP: slice vuota | window={window}")
             continue
 
+        # ── restrizione pool per-finestra (cluster path, profile×regime) ──────
+        if per_window_universe is not None:
+            eligible = per_window_universe.get(str(window))
+            if eligible is not None:
+                keep = [c for c in slice_prices.columns if c in set(eligible)]
+                if keep:
+                    slice_prices = slice_prices[keep]
+                    if debug:
+                        print(f"[WFO] pool ristretto | window={window} | "
+                              f"{len(keep)}/{len(stocks.columns)} ticker")
+
         # ── run engine sulla slice ────────────────────────────────────────────
         engine_result = run_rotational_engine(
             prices=slice_prices,
@@ -871,6 +883,7 @@ def build_portfolio_from_wfo_summary(
     show_report: bool = True,
     vbt_plot_width: int = 1200,
     debug: bool = False,
+    per_window_universe: dict | None = None,
 ) -> tuple:
     """
     Funzione di alto livello per i Notebook.
@@ -889,6 +902,7 @@ def build_portfolio_from_wfo_summary(
         stocks_data=stocks_data,
         benchmark_data=benchmark_data,
         debug=debug,
+        per_window_universe=per_window_universe,
     )
 
     if selections.empty:
@@ -7305,30 +7319,53 @@ def plot_cluster_heatmap(
     plt.show()
 
 
+def _build_cluster_pool_labels(profile: str, regime_val: int) -> set:
+    """
+    Ritorna le label cluster eleggibili come pool di selezione per una finestra,
+    in base a profile e regime (1=ON, 0=OFF).
+
+    satellite + ON  → HIGH_MOMENTUM ∪ AVOID
+    satellite + OFF → DEFENSIVE ∪ BALANCED
+    core      + ON  → HIGH_MOMENTUM ∪ BALANCED
+    core      + OFF → DEFENSIVE
+    """
+    if profile == "satellite":
+        return {"HIGH_MOMENTUM", "AVOID"} if regime_val == 1 \
+               else {"DEFENSIVE", "BALANCED"}
+    else:  # core
+        return {"HIGH_MOMENTUM", "BALANCED"} if regime_val == 1 \
+               else {"DEFENSIVE"}
+
+
+_N_TOP_TABLE: dict = {
+    ("stock", "satellite"): [3, 5, 8],
+    ("stock", "core"):      [5, 8, 10],
+    ("etf",   "satellite"): [1, 3, 5, 8],
+    ("etf",   "core"):      [3, 5, 8, 10],
+}
+
+
+def resolve_n_top(asset_type: str = "stock", profile: str = "satellite") -> list[int]:
+    """Ritorna il range assoluto di n_top per Standard e Cluster, dato asset_type e profile."""
+    return _N_TOP_TABLE.get((asset_type, profile), [3, 5, 8])
+
+
 def build_cluster_grids(
     cluster_labels : dict,
     cluster_groups : dict,
-    n_top_min      : int   = 2,
-    n_top_fraction : tuple = (0.10, 0.20, 0.30),
+    n_top_min      : int   = 2,           # mantenuto per compatibilità, non più usato
+    n_top_fraction : tuple = (0.10, 0.20, 0.30),  # mantenuto per compatibilità, non più usato
+    profile        : str   = "satellite",
+    asset_type     : str   = "stock",
 ) -> dict:
 
-    def _build_n_top(n_assets: int) -> list[int]:
-        candidates = sorted(set(
-            max(n_top_min, round(n_assets * f))
-            for f in n_top_fraction
-        ))
-        candidates = [v for v in candidates
-                      if v <= max(n_top_min, int(n_assets * 0.40))]
-        if len(candidates) < 2:
-            candidates = [n_top_min, max(n_top_min + 1, candidates[-1])]
-        return candidates
+    n_top = resolve_n_top(asset_type, profile)
 
     grids = {}
 
     for cid, label in cluster_labels.items():
         tickers  = cluster_groups.get(cid, [])
         n_assets = len(tickers)
-        n_top    = _build_n_top(n_assets)
 
         print(f"\nCluster {cid} [{label}] — {n_assets} asset → n_top: {n_top}")
 
@@ -7481,11 +7518,20 @@ def aggregate_cluster_portfolios(
     end_date       : str   = None,
     init_cash      : float = 100_000,
     plot           : bool  = True,
+    profile        : str   = "satellite",
 ) -> dict:
+    _WEIGHT_ON = {
+        "satellite": {"AVOID": 0.30, "HIGH_MOMENTUM": 0.30, "BALANCED": 0.30, "DEFENSIVE": 0.10},
+        "core":      {"HIGH_MOMENTUM": 0.60, "BALANCED": 0.30, "DEFENSIVE": 0.10},
+    }
+    _WEIGHT_OFF = {
+        "satellite": {"AVOID": 0.05, "HIGH_MOMENTUM": 0.05, "BALANCED": 0.20, "DEFENSIVE": 0.70},
+        "core":      {"HIGH_MOMENTUM": 0.10, "BALANCED": 0.20, "DEFENSIVE": 0.70},
+    }
     if weight_on is None:
-        weight_on  = {"HIGH_MOMENTUM": 0.60, "BALANCED": 0.30, "DEFENSIVE": 0.10}
+        weight_on  = _WEIGHT_ON.get(profile, _WEIGHT_ON["satellite"])
     if weight_off is None:
-        weight_off = {"HIGH_MOMENTUM": 0.10, "BALANCED": 0.20, "DEFENSIVE": 0.70}
+        weight_off = _WEIGHT_OFF.get(profile, _WEIGHT_OFF["satellite"])
 
     cluster_returns = {}
     cluster_pf      = {}
@@ -7599,28 +7645,28 @@ def merge_cluster_summary_dfs(
     wfo_results    : dict,
     cluster_labels : dict,
     regime         : pd.Series,
-    dominant_on    : str = "HIGH_MOMENTUM",
-    dominant_off   : str = "DEFENSIVE",
+    dominant_on    : str  = None,
+    dominant_off   : str  = None,
+    profile        : str  = "satellite",
 ) -> pd.DataFrame:
     """
     Produce un summary_df aggregato compatibile con
     build_rotational_portfolios_from_wfo_result.
 
-    Per ogni finestra WFO:
-      - se il regime medio nella finestra è ON  → parametri da dominant_on
-      - se il regime medio nella finestra è OFF → parametri da dominant_off
+    Selezione per-finestra del cluster dominante, dipendente da profile:
 
-    Parameters
-    ----------
-    wfo_results    : output di run_clustered_wfo
-    cluster_labels : {cluster_id: label}
-    regime         : pd.Series 0/1 da compute_market_regime
-    dominant_on    : label cluster da usare in Risk ON
-    dominant_off   : label cluster da usare in Risk OFF
+    satellite — Risk ON:
+      HIGH_MOMENTUM vs AVOID: sceglie quello con TestScore più alto in
+      quella finestra; se uno solo disponibile usa quello; se nessuno dei
+      due: BALANCED → DEFENSIVE → ultima rete di sicurezza.
+    satellite — Risk OFF:
+      Priorità deterministica: DEFENSIVE → BALANCED → (HM/AVOID per score).
 
-    Returns
-    -------
-    summary_df compatibile con build_rotational_portfolios_from_wfo_result
+    core — Risk ON:  HIGH_MOMENTUM → BALANCED → DEFENSIVE (mai AVOID).
+    core — Risk OFF: DEFENSIVE → BALANCED → HIGH_MOMENTUM (mai AVOID).
+
+    Se dominant_on/dominant_off sono passati esplicitamente (non None):
+      override manuale — comportamento legacy, quei valori fissi vincono.
     """
 
     # Mappa label → summary_df
@@ -7630,32 +7676,106 @@ def merge_cluster_summary_dfs(
             label = cluster_labels[cid]
             label_to_summary[label] = res['summary_df']
 
-    # Verifica che i cluster dominanti esistano
-    for dominant in [dominant_on, dominant_off]:
-        if dominant not in label_to_summary:
-            available = list(label_to_summary.keys())
-            print(f"⚠️  Cluster '{dominant}' non trovato, "
-                  f"disponibili: {available}")
-            # Fallback: usa BALANCED se disponibile, altrimenti il primo
-            fallback = "BALANCED" if "BALANCED" in available else available[0]
-            if dominant == dominant_on:
-                dominant_on  = fallback
-            else:
-                dominant_off = fallback
-            print(f"   → Fallback su '{fallback}'")
+    override_mode = dominant_on is not None or dominant_off is not None
 
-    # Prendi tutte le finestre disponibili (usa il summary più lungo)
+    if override_mode:
+        if dominant_on is None:
+            dominant_on = "HIGH_MOMENTUM"
+        if dominant_off is None:
+            dominant_off = "DEFENSIVE"
+        for dominant in [dominant_on, dominant_off]:
+            if dominant not in label_to_summary:
+                available = list(label_to_summary.keys())
+                print(f"⚠️  Cluster '{dominant}' non trovato, disponibili: {available}")
+                fallback = "BALANCED" if "BALANCED" in available else available[0]
+                if dominant == dominant_on:
+                    dominant_on  = fallback
+                else:
+                    dominant_off = fallback
+                print(f"   → Fallback su '{fallback}'")
+
+    # Tutte le finestre disponibili (unione di tutti i cluster)
     all_windows = set()
     for df in label_to_summary.values():
         all_windows.update(df.index.tolist())
     all_windows = sorted(all_windows)
 
+    # ---- Helper per selezione per-finestra --------------------------------
+
+    def _in_window(label, window):
+        return label in label_to_summary and window in label_to_summary[label].index
+
+    def _test_score(label, window):
+        if not _in_window(label, window):
+            return float('-inf')
+        ts = label_to_summary[label].loc[window].get('TestScore', float('-inf'))
+        return float(ts) if pd.notna(ts) else float('-inf')
+
+    def _first_available(priority, window):
+        for label in priority:
+            if _in_window(label, window):
+                return label
+        return None
+
+    def _best_by_score(candidates, window):
+        scored = sorted(
+            [(label, _test_score(label, window)) for label in candidates
+             if _in_window(label, window)],
+            key=lambda x: x[1], reverse=True
+        )
+        if not scored:
+            return None, None
+        label, score = scored[0]
+        if len(scored) > 1:
+            reason = (f"TestScore {label}={score:.4f}"
+                      f" vs {scored[1][0]}={scored[1][1]:.4f}")
+        else:
+            reason = f"TestScore {label}={score:.4f} (unico disponibile)"
+        return label, reason
+
+    def _last_resort(window):
+        for label in label_to_summary:
+            if _in_window(label, window):
+                print(f"[WARN] nessuna label nota disponibile, "
+                      f"fallback arbitrario su '{label}'")
+                return label, "WARN: fallback arbitrario"
+        return None, "WARN: nessuna label disponibile"
+
+    def _select_dominant_profile(window, is_on):
+        if profile == "satellite":
+            if is_on:
+                label, reason = _best_by_score(["HIGH_MOMENTUM", "AVOID"], window)
+                if label:
+                    return label, f"satellite ON: {reason}"
+                label = _first_available(["BALANCED", "DEFENSIVE"], window)
+                if label:
+                    return label, "satellite ON: fallback deterministico"
+            else:
+                label = _first_available(["DEFENSIVE", "BALANCED"], window)
+                if label:
+                    return label, "satellite OFF: deterministico"
+                label, reason = _best_by_score(["HIGH_MOMENTUM", "AVOID"], window)
+                if label:
+                    return label, f"satellite OFF: {reason}"
+        else:  # core
+            if is_on:
+                label = _first_available(
+                    ["HIGH_MOMENTUM", "BALANCED", "DEFENSIVE"], window)
+                if label:
+                    return label, "core ON: deterministico"
+            else:
+                label = _first_available(
+                    ["DEFENSIVE", "BALANCED", "HIGH_MOMENTUM"], window)
+                if label:
+                    return label, "core OFF: deterministico"
+        return _last_resort(window)
+
+    # ---- Loop finestre ----------------------------------------------------
+
     rows = []
     for window in all_windows:
-        # Estrai date dalla finestra (es. "2022-01-01 →2022-12-31")
-        # Il regime viene valutato sulla data di fine finestra
+        # Parsing data di fine finestra per regime lookup
         try:
-            # Parsing della data di fine finestra dall'index
             if isinstance(window, tuple):
                 end_date_win = pd.Timestamp(window[1])
             elif isinstance(window, str) and '→' in window:
@@ -7665,59 +7785,69 @@ def merge_cluster_summary_dfs(
         except Exception:
             end_date_win = None
 
-        # Determina regime dominante nella finestra
         if end_date_win is not None and end_date_win in regime.index:
             regime_val = int(regime.loc[end_date_win])
         elif end_date_win is not None:
-            # Prendi il valore più vicino
             idx_pos    = regime.index.get_indexer([end_date_win],
                                                    method='nearest')[0]
             regime_val = int(regime.iloc[idx_pos])
         else:
-            regime_val = 1  # default ON
+            regime_val = 1
 
-        # Seleziona cluster dominante
-        dominant = dominant_on if regime_val == 1 else dominant_off
-        src_df   = label_to_summary[dominant]
+        is_on = regime_val == 1
 
-        # Prendi riga corrispondente alla finestra
-        if window in src_df.index:
-            row = src_df.loc[window].copy()
-        else:
-            # Finestra non presente nel cluster dominante → usa l'altro
-            fallback_label = dominant_off if dominant == dominant_on \
-                             else dominant_on
-            fallback_df    = label_to_summary.get(fallback_label)
-            if fallback_df is not None and window in fallback_df.index:
-                row = fallback_df.loc[window].copy()
+        if override_mode:
+            dominant  = dominant_on if is_on else dominant_off
+            reasoning = "override manuale"
+            src_df    = label_to_summary[dominant]
+            if window in src_df.index:
+                row = src_df.loc[window].copy()
             else:
-                # Ultima riga disponibile come fallback finale
-                row = src_df.iloc[-1].copy()
+                fallback_label = dominant_off if is_on else dominant_on
+                fallback_df    = label_to_summary.get(fallback_label)
+                if fallback_df is not None and window in fallback_df.index:
+                    dominant  = fallback_label
+                    row       = fallback_df.loc[window].copy()
+                else:
+                    row = src_df.iloc[-1].copy()
+        else:
+            dominant, reasoning = _select_dominant_profile(window, is_on)
+            if dominant is not None and _in_window(dominant, window):
+                row = label_to_summary[dominant].loc[window].copy()
+            else:
+                any_label = next(iter(label_to_summary))
+                row       = label_to_summary[any_label].iloc[-1].copy()
+                dominant  = any_label
+                reasoning = "WARN: fallback degenere"
+            print(f"  Window {window}: {'ON' if is_on else 'OFF':3s} → "
+                  f"{dominant} [{reasoning}]")
 
-        row['_cluster_used'] = dominant   # colonna debug, non impatta il motore
+        row['_cluster_used'] = dominant
         row['_regime']       = regime_val
         rows.append((window, row))
 
-    # Ricostruisce DataFrame con stesso formato di summary_df originale
+    # ---- Ricostruzione DataFrame ------------------------------------------
+
     merged = pd.DataFrame(
         [r for _, r in rows],
         index=[w for w, _ in rows]
     )
     merged.index.name = "Window"
 
-    # Stampa riepilogo
     n_on  = (merged['_regime'] == 1).sum()
     n_off = (merged['_regime'] == 0).sum()
     print(f"\n{'='*50}")
-    print(f"SUMMARY DF AGGREGATO")
+    print(f"SUMMARY DF AGGREGATO (profile={profile})")
     print(f"{'='*50}")
     print(f"Finestre totali : {len(merged)}")
-    print(f"Risk ON  → {dominant_on:<16} : {n_on} finestre")
-    print(f"Risk OFF → {dominant_off:<16} : {n_off} finestre")
-
-    by_cluster = merged['_cluster_used'].value_counts()
-    # for label, count in by_cluster.items():
-    #     print(f"  {label}: {count} finestre ({count/len(merged):.0%})")
+    if override_mode:
+        print(f"Risk ON  → {dominant_on:<16} : {n_on} finestre")
+        print(f"Risk OFF → {dominant_off:<16} : {n_off} finestre")
+    else:
+        on_counts  = merged[merged['_regime'] == 1]['_cluster_used'].value_counts()
+        off_counts = merged[merged['_regime'] == 0]['_cluster_used'].value_counts()
+        print(f"Risk ON  ({n_on} finestre): {on_counts.to_dict()}")
+        print(f"Risk OFF ({n_off} finestre): {off_counts.to_dict()}")
 
     return merged
 
@@ -7761,6 +7891,8 @@ def run_wfo_pipeline(
     adaptive_k       : bool  = False,
     adaptive_k_method: str   = 'hybrid',
     min_cluster_size : int   = None,   # <<< NUOVO: vincolo anti-frammentazione
+    profile          : str   = "satellite",
+    asset_type       : str   = "stock",
 
     # Parametri regime
     dominant_on      : str   = "HIGH_MOMENTUM",
@@ -7794,11 +7926,19 @@ def run_wfo_pipeline(
       progressivamente fino a ottenere cluster ammissibili.
     """
 
+    _WEIGHT_ON = {
+        "satellite": {"AVOID": 0.30, "HIGH_MOMENTUM": 0.30, "BALANCED": 0.30, "DEFENSIVE": 0.10},
+        "core":      {"HIGH_MOMENTUM": 0.60, "BALANCED": 0.30, "DEFENSIVE": 0.10},
+    }
+    _WEIGHT_OFF = {
+        "satellite": {"AVOID": 0.05, "HIGH_MOMENTUM": 0.05, "BALANCED": 0.20, "DEFENSIVE": 0.70},
+        "core":      {"HIGH_MOMENTUM": 0.10, "BALANCED": 0.20, "DEFENSIVE": 0.70},
+    }
     if weight_on is None:
-        weight_on  = {"HIGH_MOMENTUM": 0.60, "BALANCED": 0.30, "DEFENSIVE": 0.10}
+        weight_on  = _WEIGHT_ON.get(profile, _WEIGHT_ON["satellite"])
 
     if weight_off is None:
-        weight_off = {"HIGH_MOMENTUM": 0.10, "BALANCED": 0.20, "DEFENSIVE": 0.70}
+        weight_off = _WEIGHT_OFF.get(profile, _WEIGHT_OFF["satellite"])
 
     if short_map is None:
         short_map = {
@@ -7974,6 +8114,8 @@ def run_wfo_pipeline(
             cluster_groups = cluster_result['cluster_groups'],
             n_top_min      = n_top_min,
             n_top_fraction = n_top_fraction,
+            profile        = profile,
+            asset_type     = asset_type,
         )
 
         # ----------------------------------------------------------
@@ -8006,13 +8148,17 @@ def run_wfo_pipeline(
         print("STEP 4 — Regime Risk ON/OFF")
         print("="*55)
 
+        _momentum_labels = {"HIGH_MOMENTUM", "AVOID"} if profile == "satellite" \
+                           else {"HIGH_MOMENTUM"}
+
         equity_tickers = [
             t for t, cid in cluster_result['cluster_map'].items()
-            if cluster_result['cluster_labels'][cid] == dominant_on
+            if cluster_result['cluster_labels'][cid] in _momentum_labels
         ]
 
         if not equity_tickers:
-            print(f"⚠️  Nessun ticker '{dominant_on}' — uso tutti")
+            _lbl_str = "/".join(sorted(_momentum_labels))
+            print(f"⚠️  Nessun ticker '{_lbl_str}' — uso tutti")
             equity_tickers = tickers
 
         regime = compute_market_regime(
@@ -8031,8 +8177,7 @@ def run_wfo_pipeline(
             wfo_results    = wfo_results,
             cluster_labels = cluster_result['cluster_labels'],
             regime         = regime,
-            dominant_on    = dominant_on,
-            dominant_off   = dominant_off,
+            profile        = profile,
         )
 
         summary_df_final = get_clean_summary_df(merged_summary)
@@ -8105,6 +8250,44 @@ def run_wfo_pipeline(
     print("STEP 6 — Costruzione portafogli")
     print("="*55)
 
+    # Pool eleggibili per-finestra (solo path Cluster)
+    # merged_summary ha ancora _regime; summary_df_final l'ha già rimossa.
+    _per_window_universe = None
+    if use_clustering and cluster_result is not None and merged_summary is not None:
+        _cmap    = cluster_result['cluster_map']    # {ticker: cid}
+        _clabels = cluster_result['cluster_labels'] # {cid: label}
+        _risk_off_cols = set(risk_off_data.columns) if risk_off_data is not None else set()
+
+        _per_window_universe = {}
+        print(f"\n[STEP 6] Pool eleggibili per finestra (profile={profile}):")
+        print(f"  [NOTA] cluster_map statico — pool identico per tutte le finestre ON, "
+              f"identico per tutte le finestre OFF.")
+        for _win, _row in merged_summary.iterrows():
+            _regime_val  = int(_row.get('_regime', 1))
+            _pool_labels = _build_cluster_pool_labels(profile, _regime_val)
+            _pool_tickers = {t for t, cid in _cmap.items()
+                             if _clabels.get(cid) in _pool_labels}
+            _present_labels = {_clabels.get(cid) for t, cid in _cmap.items()
+                               if t in _pool_tickers} - {None}
+            _missing_labels = _pool_labels - _present_labels
+            if not _pool_tickers:
+                print(f"  [WARN] window={str(_win)} "
+                      f"{'ON' if _regime_val else 'OFF':3s}: "
+                      f"NESSUN ticker nel pool — label richieste {sorted(_pool_labels)} "
+                      f"assenti nella partizione. Pool ridotto a soli "
+                      f"{len(_risk_off_cols)} risk-off ticker. "
+                      f"Verificare la partizione cluster (adaptive_k, min_cluster_size).")
+            elif _missing_labels:
+                print(f"  [INFO] window={str(_win)} "
+                      f"{'ON' if _regime_val else 'OFF':3s}: "
+                      f"label {sorted(_missing_labels)} assenti dalla partizione — "
+                      f"pool usa solo {sorted(_present_labels)}.")
+            _per_window_universe[str(_win)] = list(_pool_tickers | _risk_off_cols)
+            print(f"  {str(_win)}: {'ON' if _regime_val else 'OFF':3s} "
+                  f"pool_labels={sorted(_pool_labels)} "
+                  f"presenti={sorted(_present_labels)} "
+                  f"n_ticker={len(_pool_tickers)} (+{len(_risk_off_cols)} risk-off)")
+
     # Con Risk ON/OFF
     if risk_on_off and risk_off_data is not None:
         print("\n▶ Portafoglio CON Risk ON/OFF...")
@@ -8135,16 +8318,17 @@ def run_wfo_pipeline(
         mode_label = "Clustered" if use_clustering else "Standard"
 
         pf_rot, pf_bm, sel = build_rotational_portfolios_from_wfo_result(
-            summary_df      = summary_df_final,
-            stocks_data     = oos_data,
-            start_date      = analisys_start_date,
-            end_date        = analisys_end_date,
-            benchmark_data  = benchmark_data,
-            benchmark_title = benchmark_title,
-            portfolio_name  = f"{portfolio_title} – {mode_label} OOS WFO - Total Return (Risk on/off)",
-            init_cash       = init_cash,
-            plot            = plot,
-            debug           = False,
+            summary_df          = summary_df_final,
+            stocks_data         = oos_data,
+            start_date          = analisys_start_date,
+            end_date            = analisys_end_date,
+            benchmark_data      = benchmark_data,
+            benchmark_title     = benchmark_title,
+            portfolio_name      = f"{portfolio_title} – {mode_label} OOS WFO - Total Return (Risk on/off)",
+            init_cash           = init_cash,
+            plot                = plot,
+            debug               = False,
+            per_window_universe = _per_window_universe,
         )
 
         results['pf_rot']       = pf_rot
@@ -8178,16 +8362,17 @@ def run_wfo_pipeline(
     mode_label = "Clustered" if use_clustering else "Standard"
 
     pf_rot_base, pf_bm_base, sel_base = build_rotational_portfolios_from_wfo_result(
-        summary_df      = summary_df_final,
-        stocks_data     = stocks_data,
-        start_date      = analisys_start_date,
-        end_date        = analisys_end_date,
-        benchmark_data  = benchmark_data,
-        benchmark_title = benchmark_title,
-        portfolio_name  = f"{portfolio_title} – {mode_label} OOS WFO - Total Return",
-        init_cash       = init_cash,
-        plot            = plot,
-        debug           = False,
+        summary_df          = summary_df_final,
+        stocks_data         = stocks_data,
+        start_date          = analisys_start_date,
+        end_date            = analisys_end_date,
+        benchmark_data      = benchmark_data,
+        benchmark_title     = benchmark_title,
+        portfolio_name      = f"{portfolio_title} – {mode_label} OOS WFO - Total Return",
+        init_cash           = init_cash,
+        plot                = plot,
+        debug               = False,
+        per_window_universe = _per_window_universe,
     )
 
     results['pf_rot_base']        = pf_rot_base
@@ -13948,6 +14133,7 @@ def run_r_portfolio_analysis(
     from k_tickers import risk_off_tickers as _default_risk_off_tickers
     risk_off_tickers    = portfolio_cfg.get("risk_off_tickers", _default_risk_off_tickers)
     init_cash           = portfolio_cfg.get("init_cash", 100_000)
+    asset_type          = portfolio_cfg.get("asset_type", "stock")
 
     tickers = (
         extract_tickers_from_wikipedia(tickers, exclude=["GOOG"], rename={"BRK.B": "BRK-B"})
@@ -13997,7 +14183,7 @@ def run_r_portfolio_analysis(
         "rebalance_frequency":     ["QE", "ME"],
         "momentum_lookback_days":  [10, 20, 40, 60],
         "riskparity_lookback_days":[10, 20, 40, 60],
-        "n_top":                   [1, 5, 8, 10],
+        "n_top":                   resolve_n_top(asset_type, profile),
         "use_acceleration":        [True, False],
         "momentum_weight":         [0.5, 0.7, 1.0],
         "filter_ema":              [True, False],
@@ -14062,6 +14248,8 @@ def run_r_portfolio_analysis(
         init_cash              = init_cash,
         risk_on_off            = True,
         plot                   = False,
+        profile                = profile,
+        asset_type             = asset_type,
     )
     pf_rot_std       = results_std["pf_rot"]
     pf_rot_std_base  = results_std["pf_rot_base"]
@@ -14115,6 +14303,8 @@ def run_r_portfolio_analysis(
         plot               = False,
         save_plots         = True,
         plots_dir          = plots_dir,
+        profile            = profile,
+        asset_type         = asset_type,
     )
     pf_rot_cluster       = results_cluster["pf_rot"]
     pf_rot_cluster_base  = results_cluster["pf_rot_base"]

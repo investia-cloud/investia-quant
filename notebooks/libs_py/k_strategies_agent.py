@@ -2348,3 +2348,1736 @@ def strategy_ampe_liquidity(data: pd.DataFrame, params: dict, year: int | None =
     shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
     shifted_exits   = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
     return shifted_entries, shifted_exits
+
+
+# ─────────────────────────────────────
+# Fonte: I Let a Strategy Generator Scan 42+ Years of AAPL Data. Here’s What Survived.
+# URL:   https://medium.com/@Kryptera/i-let-a-strategy-generator-scan-60-years-of-aapl-data-heres-what-survived-62dc8a2c903e
+# Data:  2026-06-19 02:00
+# ─────────────────────────────────────
+
+############################
+# Strategy laguerre_cts
+############################
+
+import pandas as pd
+import numpy as np
+
+
+def ind_laguerre_cts_lrsi(df: pd.DataFrame, gamma: float = 0.5) -> pd.Series:
+    close = df['Close'].values
+    n = len(close)
+    L0 = np.zeros(n)
+    L1 = np.zeros(n)
+    L2 = np.zeros(n)
+    L3 = np.zeros(n)
+    lrsi = np.zeros(n)
+
+    for i in range(1, n):
+        L0[i] = (1 - gamma) * close[i] + gamma * L0[i - 1]
+        L1[i] = -gamma * L0[i] + L0[i - 1] + gamma * L1[i - 1]
+        L2[i] = -gamma * L1[i] + L1[i - 1] + gamma * L2[i - 1]
+        L3[i] = -gamma * L2[i] + L2[i - 1] + gamma * L3[i - 1]
+
+        cu = 0.0
+        cd = 0.0
+        if L0[i] >= L1[i]:
+            cu += L0[i] - L1[i]
+        else:
+            cd += L1[i] - L0[i]
+        if L1[i] >= L2[i]:
+            cu += L1[i] - L2[i]
+        else:
+            cd += L2[i] - L1[i]
+        if L2[i] >= L3[i]:
+            cu += L2[i] - L3[i]
+        else:
+            cd += L3[i] - L2[i]
+
+        denom = cu + cd
+        if denom != 0.0:
+            lrsi[i] = cu / denom
+        else:
+            lrsi[i] = 0.0
+
+    return pd.Series(lrsi, index=df.index)
+
+
+def ind_laguerre_cts_cts(df: pd.DataFrame, period: int = 20) -> pd.Series:
+    close = df['Close']
+    n = len(close)
+    cts_arr = np.zeros(n)
+    close_arr = close.values
+
+    for i in range(period - 1, n):
+        window = close_arr[i - period + 1: i + 1]
+        ref = window[-1]
+        up = np.sum(window[1:] > window[:-1])
+        dn = np.sum(window[1:] < window[:-1])
+        total = up + dn
+        if total != 0:
+            cts_arr[i] = (up - dn) / total
+        else:
+            cts_arr[i] = 0.0
+
+    return pd.Series(cts_arr, index=df.index)
+
+
+strategy_laguerre_cts_param_ranges = {
+    'gamma_range'     : range(3, 8, 2),   # 3 values: [3,5,7] -> divide by 10
+    'lrsi_ob_range'   : range(15, 30, 7), # 3 values: [15,22,29] -> divide by 100
+    'cts_period_range': range(10, 31, 10),# 3 values: [10,20,30]
+    'cts_low_range'   : range(-5, 1, 2),  # 3 values: [-5,-3,-1] -> divide by 10
+}
+
+
+def strategy_laguerre_cts(data: pd.DataFrame, params: dict, year: int | None = None):
+    gamma       = params.get('gamma_range') / 10.0
+    lrsi_ob     = params.get('lrsi_ob_range') / 100.0
+    cts_period  = params.get('cts_period_range')
+    cts_low     = params.get('cts_low_range') / 10.0
+
+    df = data.copy()
+
+    lrsi = ind_laguerre_cts_lrsi(df, gamma=gamma)
+    cts  = ind_laguerre_cts_cts(df, period=cts_period)
+
+    df['LRSI'] = lrsi
+    df['CTS']  = cts
+
+    if year is not None:
+        df = df[df.index.year == int(year)]
+
+    # Entry: Laguerre RSI oversold (below threshold)
+    lrsi_oversold = df['LRSI'] < lrsi_ob
+
+    # Exit: CTS crosses above lower band
+    cts_prev = df['CTS'].shift(1)
+    cts_cross_above_lower = (df['CTS'] > cts_low) & (cts_prev <= cts_low)
+
+    entries = lrsi_oversold
+    exits   = cts_cross_above_lower
+
+    shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    shifted_exits   = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    return shifted_entries, shifted_exits
+
+
+# ─────────────────────────────────────
+# Fonte: AMD-Laguerre Keltner Breakdown Strategy
+# URL:   https://medium.com/@Kryptera/amd-laguerre-keltner-breakdown-strategy-407f9d6b6730
+# Data:  2026-06-19 02:01
+# ─────────────────────────────────────
+
+############################
+# Strategy leks
+############################
+
+import pandas as pd
+import numpy as np
+
+
+def ind_leks_laguerre_rsi(df: pd.DataFrame, gamma: float = 0.5) -> pd.Series:
+    close = df['Close'].values
+    n = len(close)
+    lrsi = np.empty(n)
+    L0 = L1 = L2 = L3 = 0.0
+    for i in range(n):
+        price = close[i]
+        L0_new = (1.0 - gamma) * price + gamma * L0
+        L1_new = -gamma * L0_new + L0_new + gamma * L1
+        L2_new = -gamma * L1_new + L1_new + gamma * L2
+        L3_new = -gamma * L2_new + L2_new + gamma * L3
+        L0, L1, L2, L3 = L0_new, L1_new, L2_new, L3_new
+        CU = max(L0 - L1, 0.0) + max(L1 - L2, 0.0) + max(L2 - L3, 0.0)
+        CD = max(L1 - L0, 0.0) + max(L2 - L1, 0.0) + max(L3 - L2, 0.0)
+        denom = CU + CD
+        lrsi[i] = CU / denom if denom != 0.0 else 0.0
+    return pd.Series(lrsi, index=df.index)
+
+
+def ind_leks_keltner(df: pd.DataFrame, period: int = 20, multiplier: float = 2.0):
+    high = df['High'].values
+    low = df['Low'].values
+    close = df['Close'].values
+    open_ = df['Open'].values
+
+    tp = (high + low + close) / 3.0
+    tp_s = pd.Series(tp, index=df.index)
+    kc_mid = tp_s.ewm(span=period, adjust=False, min_periods=1).mean()
+
+    prev_close = np.empty(len(close))
+    prev_close[0] = close[0]
+    prev_close[1:] = close[:-1]
+
+    hl = high - low
+    hpc = np.abs(high - prev_close)
+    lpc = np.abs(low - prev_close)
+    tr = np.maximum(np.maximum(hl, hpc), lpc)
+    atr = pd.Series(tr, index=df.index).rolling(period, min_periods=1).mean()
+
+    kc_lower = kc_mid - multiplier * atr
+
+    open_s = pd.Series(open_, index=df.index)
+    return kc_mid, kc_lower, open_s
+
+
+strategy_leks_param_ranges = {
+    'gamma_range'      : range(3, 8, 2),   # 3 values: [3,5,7] / 10 => [0.3,0.5,0.7]
+    'lrsi_level_range' : range(4, 7, 1),   # 3 values: [4,5,6] / 10 => [0.4,0.5,0.6]
+    'kc_period_range'  : range(10, 31, 10),# 3 values: [10,20,30]
+    'kc_mult_range'    : range(15, 31, 5), # 4 values: [15,20,25,30] / 10
+}
+
+
+def strategy_leks(data: pd.DataFrame, params: dict, year: int | None = None):
+    gamma       = params.get('gamma_range') / 10.0
+    lrsi_level  = params.get('lrsi_level_range') / 10.0
+    kc_period   = params.get('kc_period_range')
+    kc_mult     = params.get('kc_mult_range') / 10.0
+
+    df = data.copy()
+
+    lrsi = ind_leks_laguerre_rsi(df, gamma=gamma)
+    kc_mid, kc_lower, open_s = ind_leks_keltner(df, period=kc_period, multiplier=kc_mult)
+
+    df['LRsi']     = lrsi
+    df['KC_Lower'] = kc_lower
+    df['Open_s']   = open_s
+
+    if year is not None:
+        df = df[df.index.year == int(year)]
+
+    lrsi_cross_below = (df['LRsi'] < lrsi_level) & (df['LRsi'].shift(1) >= lrsi_level)
+    open_below_lower = df['Open_s'] < df['KC_Lower']
+
+    entries = lrsi_cross_below
+    exits   = open_below_lower
+
+    shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    shifted_exits   = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    return shifted_entries, shifted_exits
+
+
+# ─────────────────────────────────────
+# Fonte: I Generated 2 Trading Strategies on the Same Stock. Both Beat the Market On a Simple Backtest.
+# URL:   https://medium.com/@Kryptera/i-generated-2-trading-strategies-on-the-same-stock-both-beat-the-market-on-a-simple-backtest-13361472f4a9
+# Data:  2026-06-19 02:02
+# ─────────────────────────────────────
+
+############################
+# Strategy lrsi_tsi_qqe_stc
+############################
+
+import pandas as pd
+import numpy as np
+
+
+# ─────────────────────────────────────────────
+# Strategy 1 helpers: Laguerre RSI + TSI
+# ─────────────────────────────────────────────
+
+def ind_lrsi_tsi_qqe_stc_laguerre_rsi(close: pd.Series, gamma: float = 0.5) -> pd.Series:
+    arr = close.values.astype(float)
+    n = len(arr)
+    lrsi = np.empty(n)
+    L0 = L1 = L2 = L3 = 0.0
+    for i in range(n):
+        p = arr[i]
+        L0_new = (1.0 - gamma) * p + gamma * L0
+        L1_new = -gamma * L0_new + L0_new + gamma * L1
+        L2_new = -gamma * L1_new + L1_new + gamma * L2
+        L3_new = -gamma * L2_new + L2_new + gamma * L3
+        L0, L1, L2, L3 = L0_new, L1_new, L2_new, L3_new
+        CU = max(L0 - L1, 0.0) + max(L1 - L2, 0.0) + max(L2 - L3, 0.0)
+        CD = max(L1 - L0, 0.0) + max(L2 - L1, 0.0) + max(L3 - L2, 0.0)
+        denom = CU + CD
+        lrsi[i] = CU / denom if denom != 0.0 else 0.0
+    return pd.Series(lrsi, index=close.index)
+
+
+def ind_lrsi_tsi_qqe_stc_tsi(close: pd.Series,
+                              long: int = 25,
+                              short: int = 13,
+                              signal: int = 7) -> pd.Series:
+    momentum = close.diff()
+    ema1 = momentum.ewm(span=long, adjust=False, min_periods=1).mean()
+    ema2 = ema1.ewm(span=short, adjust=False, min_periods=1).mean()
+    abs_ema1 = momentum.abs().ewm(span=long, adjust=False, min_periods=1).mean()
+    abs_ema2 = abs_ema1.ewm(span=short, adjust=False, min_periods=1).mean()
+    num = ema2.values
+    den = abs_ema2.values
+    safe_den = np.where(den != 0.0, den, 1.0)
+    tsi_arr = np.where(den != 0.0, 100.0 * num / safe_den, 0.0)
+    return pd.Series(tsi_arr, index=close.index)
+
+
+# ─────────────────────────────────────────────
+# Strategy 2 helpers: QQE + STC
+# ─────────────────────────────────────────────
+
+def ind_lrsi_tsi_qqe_stc_qqe(close: pd.Series,
+                              rsi_period: int = 14,
+                              smooth: int = 5,
+                              factor: float = 4.236) -> pd.Series:
+    delta = close.diff()
+    up   = delta.clip(lower=0.0)
+    down = (-delta).clip(lower=0.0)
+    alpha = 1.0 / rsi_period
+    roll_up   = up.ewm(alpha=alpha, adjust=False, min_periods=1).mean()
+    roll_down = down.ewm(alpha=alpha, adjust=False, min_periods=1).mean()
+    rd = roll_down.values
+    ru = roll_up.values
+    safe_rd = np.where(rd != 0.0, rd, 1.0)
+    rsi_arr = np.where(rd != 0.0, 100.0 - 100.0 / (1.0 + ru / safe_rd), 100.0)
+    rsi = pd.Series(rsi_arr, index=close.index)
+
+    rsi_ma = rsi.rolling(window=smooth, min_periods=1).mean()
+    rsi_delta = rsi_ma.diff().abs().fillna(0.0)
+    atr_rsi = rsi_delta.ewm(alpha=1.0 / smooth, adjust=False, min_periods=1).mean()
+
+    v1_arr  = rsi_ma.values
+    atr_arr = atr_rsi.values
+    n = len(v1_arr)
+    v2_arr = np.empty(n)
+    v2_arr[0] = v1_arr[0]
+    for i in range(1, n):
+        prev_trail  = v2_arr[i - 1]
+        prev_value1 = v1_arr[i - 1]
+        direction = 1.0 if prev_value1 > prev_trail else -1.0
+        v2_arr[i] = prev_trail + direction * factor * atr_arr[i]
+    return pd.Series(v2_arr, index=close.index)
+
+
+def ind_lrsi_tsi_qqe_stc_stc(close: pd.Series,
+                              fast: int = 23,
+                              slow: int = 50,
+                              cycle: int = 10,
+                              smooth: int = 3) -> pd.Series:
+    fast_ema  = close.ewm(span=fast,  adjust=False, min_periods=1).mean()
+    slow_ema  = close.ewm(span=slow,  adjust=False, min_periods=1).mean()
+    macd_line = fast_ema - slow_ema
+
+    low_macd  = macd_line.rolling(cycle, min_periods=1).min()
+    high_macd = macd_line.rolling(cycle, min_periods=1).max()
+    rng       = (high_macd - low_macd).values
+    num       = (macd_line - low_macd).values
+    safe_rng  = np.where(rng != 0.0, rng, 1.0)
+    stoch_arr = np.where(rng != 0.0, 100.0 * num / safe_rng, 0.0)
+    stoch_macd = pd.Series(stoch_arr, index=close.index)
+
+    stc = stoch_macd.ewm(span=smooth, adjust=False, min_periods=1).mean() \
+                    .ewm(span=smooth, adjust=False, min_periods=1).mean()
+    return stc
+
+
+# ─────────────────────────────────────────────
+# Param ranges  (≤ 1000 combos)
+# Strategy selection: 1 = LRSI+TSI, 2 = QQE+STC
+# We expose both strategies via the same function
+# with a "strategy_id" toggle (1 or 2).
+# ─────────────────────────────────────────────
+
+strategy_lrsi_tsi_qqe_stc_param_ranges = {
+    'gamma_range'     : range(3, 8, 2),      # /10 → 0.3, 0.5, 0.7
+    'tsi_long_range'  : range(20, 31, 5),    # 20, 25, 30
+    'tsi_short_range' : range(10, 16, 5),    # 10, 15
+    'qqe_factor_range': range(38, 49, 5),    # /10 → 3.8, 4.3, 4.8
+    'stc_cycle_range' : range(8, 14, 3),     # 8, 11
+    'stc_fast_range'  : range(20, 28, 4),    # 20, 24
+}
+# 3 * 3 * 2 * 3 * 2 * 2 = 216  ✓
+
+
+def strategy_lrsi_tsi_qqe_stc(data: pd.DataFrame,
+                               params: dict,
+                               year: int | None = None):
+    gamma      = params.get('gamma_range') / 10.0
+    tsi_long   = params.get('tsi_long_range')
+    tsi_short  = params.get('tsi_short_range')
+    qqe_factor = params.get('qqe_factor_range') / 10.0
+    stc_cycle  = params.get('stc_cycle_range')
+    stc_fast   = params.get('stc_fast_range')
+
+    df = data.copy()
+    close = df['Close']
+
+    # ── Strategy 1 signals ──
+    lrsi    = ind_lrsi_tsi_qqe_stc_laguerre_rsi(close, gamma=gamma)
+    lrsi_rising = lrsi > lrsi.shift(1)
+
+    tsi = ind_lrsi_tsi_qqe_stc_tsi(close, long=tsi_long, short=tsi_short, signal=7)
+    tsi_cross_above_zero = (tsi > 0.0) & (tsi.shift(1) <= 0.0)
+
+    # ── Strategy 2 signals ──
+    qqe_v2  = ind_lrsi_tsi_qqe_stc_qqe(close, rsi_period=14, smooth=5, factor=qqe_factor)
+    qqe_falling = qqe_v2 < qqe_v2.shift(5)
+
+    stc = ind_lrsi_tsi_qqe_stc_stc(close, fast=stc_fast, slow=50, cycle=stc_cycle, smooth=3)
+    stc_cross_above_25 = (stc > 25.0) & (stc.shift(1) <= 25.0)
+
+    df['lrsi_rising']        = lrsi_rising
+    df['tsi_cross_zero']     = tsi_cross_above_zero
+    df['qqe_falling']        = qqe_falling
+    df['stc_cross_25']       = stc_cross_above_25
+
+    if year is not None:
+        df = df[df.index.year == int(year)]
+
+    # Combine both strategies: entry if either fires, exit if either fires
+    entries = df['lrsi_rising'] | df['qqe_falling']
+    exits   = df['tsi_cross_zero'] | df['stc_cross_25']
+
+    shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    shifted_exits   = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    return shifted_entries, shifted_exits
+
+
+# ─────────────────────────────────────
+# Fonte: What Wick Behavior Actually Tells You About Order Flow
+# URL:   https://medium.com/@Kryptera/what-wick-behavior-actually-tells-you-about-order-flow-9a4b6e64664e
+# Data:  2026-06-19 02:03
+# ─────────────────────────────────────
+
+############################
+# Strategy wick_absorption
+############################
+
+import numpy as np
+import pandas as pd
+
+
+def ind_wick_absorption_ratio(df: pd.DataFrame,
+                               atr_period: int = 14,
+                               smooth_period: int = 10,
+                               vol_cap_mult: float = 2.5) -> pd.Series:
+    close = df['Close']
+    high  = df['High']
+    low   = df['Low']
+    open_ = df['Open']
+    vol   = df['Volume']
+
+    upper_wick = high - np.maximum(open_.values, close.values)
+    lower_wick = np.minimum(open_.values, close.values) - low
+    total_range = (high - low).values + 1e-8
+
+    absorption_raw = (lower_wick - upper_wick) / total_range
+    absorption_raw = pd.Series(absorption_raw, index=df.index)
+
+    # ATR calculation (Wilder method)
+    prev_close = close.shift(1)
+    hl   = (high - low).values
+    hpc  = np.abs(high.values - prev_close.values)
+    lpc  = np.abs(low.values  - prev_close.values)
+    tr   = np.maximum(np.maximum(hl, hpc), lpc)
+    tr_s = pd.Series(tr, index=df.index)
+
+    atr_arr  = np.empty(len(tr))
+    atr_arr[:] = np.nan
+    atr_arr[0] = tr[0]
+    for i in range(1, len(tr)):
+        atr_arr[i] = (atr_arr[i-1] * (atr_period - 1) + tr[i]) / atr_period
+    atr = pd.Series(atr_arr, index=df.index)
+
+    safe_atr = np.where(atr.values != 0, atr.values, 1.0)
+    atr_norm_abs = pd.Series(absorption_raw.values / safe_atr, index=df.index)
+
+    # Volume weighting with cap
+    vol_arr = vol.values.astype(float)
+    vol_med = pd.Series(vol_arr, index=df.index).rolling(smooth_period, min_periods=1).median()
+    vol_cap = vol_cap_mult * vol_med.values
+    vol_w   = np.minimum(vol_arr, vol_cap)
+    safe_vol_w = np.where(vol_w != 0, vol_w, 1.0)
+    vw_abs  = atr_norm_abs.values * vol_w
+
+    # Rolling volume-weighted average
+    def _rolling_vwavg(x):
+        n = len(x)
+        half = n // 2
+        sig = x[:half]
+        wts = x[half:]
+        denom = np.sum(wts)
+        if denom == 0:
+            return 0.0
+        return np.sum(sig * wts) / denom
+
+    combined = pd.DataFrame({'sig': vw_abs, 'wt': vol_w}, index=df.index)
+    # Concatenate as double-length array trick via numpy
+    sig_arr = np.array(vw_abs, dtype=float)
+    wt_arr  = np.array(vol_w,  dtype=float)
+
+    # Manual rolling VW smooth
+    out = np.empty(len(sig_arr))
+    out[:] = np.nan
+    for i in range(len(sig_arr)):
+        start = max(0, i - smooth_period + 1)
+        s = sig_arr[start:i+1]
+        w = wt_arr[start:i+1]
+        denom = np.sum(w)
+        if denom == 0:
+            out[i] = 0.0
+        else:
+            out[i] = np.sum(s * w) / denom
+
+    return pd.Series(out, index=df.index)
+
+
+def ind_wick_absorption_bull_bear(df: pd.DataFrame) -> tuple:
+    high  = df['High']
+    low   = df['Low']
+    open_ = df['Open']
+    close = df['Close']
+
+    total_range = (high - low).values + 1e-8
+    upper_wick  = (high - np.maximum(open_.values, close.values))
+    lower_wick  = (np.minimum(open_.values, close.values) - low)
+
+    bull_abs = pd.Series(lower_wick / total_range, index=df.index)
+    bear_abs = pd.Series(upper_wick / total_range, index=df.index)
+    return bull_abs, bear_abs
+
+
+strategy_wick_absorption_param_ranges = {
+    'atr_period_range'    : range(10, 25, 5),
+    'smooth_period_range' : range(5, 21, 5),
+    'vol_cap_mult_range'  : range(20, 36, 5),
+    'entry_thresh_range'  : range(1, 4, 1),
+    'exit_thresh_range'   : range(0, 3, 1),
+}
+
+
+def strategy_wick_absorption(data: pd.DataFrame, params: dict, year: int | None = None):
+    atr_period    = params.get('atr_period_range')
+    smooth_period = params.get('smooth_period_range')
+    vol_cap_mult  = params.get('vol_cap_mult_range') / 10.0
+    entry_thresh  = params.get('entry_thresh_range') / 10.0
+    exit_thresh   = params.get('exit_thresh_range')  / 10.0
+
+    df = data.copy()
+
+    absorption = ind_wick_absorption_ratio(
+        df,
+        atr_period=atr_period,
+        smooth_period=smooth_period,
+        vol_cap_mult=vol_cap_mult
+    )
+    bull_abs, bear_abs = ind_wick_absorption_bull_bear(df)
+
+    df['absorption']  = absorption
+    df['bull_abs']    = bull_abs
+    df['bear_abs']    = bear_abs
+
+    # Rolling stats for dynamic thresholding
+    abs_mean = df['absorption'].rolling(smooth_period, min_periods=1).mean()
+    abs_std  = df['absorption'].rolling(smooth_period, min_periods=1).std(ddof=0).replace(0, np.nan)
+
+    df['abs_mean'] = abs_mean
+    df['abs_std']  = abs_std
+
+    if year is not None:
+        df = df[df.index.year == int(year)]
+
+    # Entry: absorption score crosses above positive threshold (bullish absorption dominant)
+    thresh_pos = df['abs_mean'] + entry_thresh * df['abs_std'].fillna(0)
+    thresh_neg = df['abs_mean'] - entry_thresh * df['abs_std'].fillna(0)
+
+    # Long: strong bullish absorption (lower wicks dominating)
+    entries_long  = (df['absorption'] > thresh_pos) & (df['bull_abs'] > df['bear_abs'])
+    # Short: strong bearish absorption (upper wicks dominating)
+    entries_short = (df['absorption'] < thresh_neg) & (df['bear_abs'] > df['bull_abs'])
+    entries = entries_long | entries_short
+
+    # Exit when absorption crosses back near zero
+    exits_long  = df['absorption'] < exit_thresh
+    exits_short = df['absorption'] > -exit_thresh
+    exits = (exits_long & entries_long.shift(1).fillna(False)) | \
+            (exits_short & entries_short.shift(1).fillna(False))
+    exits = exits_long | exits_short
+
+    shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    shifted_exits   = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    return shifted_entries, shifted_exits
+
+
+# ─────────────────────────────────────
+# Fonte: I Found Sloped LinReg Volume Profile Indicator on TradingView. Then I Backtested It.
+# URL:   https://medium.com/@Kryptera/i-found-sloped-linreg-volume-profile-indicator-on-tradingview-then-i-backtested-it-2d4a9168f00c
+# Data:  2026-06-19 02:04
+# ─────────────────────────────────────
+
+############################
+# Strategy sloped_linreg_vp
+############################
+
+import numpy as np
+import pandas as pd
+
+
+def ind_sloped_linreg_vp_levels(df: pd.DataFrame,
+                                 linreg_len: int = 100,
+                                 n_slots: int = 50,
+                                 value_area_pct: float = 0.70,
+                                 channel_std: float = 2.0):
+    close = df['Close'].values
+    high  = df['High'].values
+    low   = df['Low'].values
+    vol   = df['Volume'].values
+    n     = len(close)
+
+    x       = np.arange(linreg_len, dtype=float)
+    x_mean  = x.mean()
+    x_var   = ((x - x_mean) ** 2).sum()
+
+    poc_arr = np.full(n, np.nan)
+    vah_arr = np.full(n, np.nan)
+    val_arr = np.full(n, np.nan)
+
+    for i in range(linreg_len - 1, n):
+        w_close = close[i - linreg_len + 1: i + 1]
+        w_high  = high [i - linreg_len + 1: i + 1]
+        w_low   = low  [i - linreg_len + 1: i + 1]
+        w_vol   = vol  [i - linreg_len + 1: i + 1]
+
+        w_mean = w_close.mean()
+        cov    = ((x - x_mean) * (w_close - w_mean)).sum()
+        slope  = cov / x_var if x_var != 0.0 else 0.0
+        intercept = w_mean - slope * x_mean
+
+        midline = slope * x + intercept
+
+        stdev_vals = w_close - midline
+        stdev_val  = stdev_vals.std(ddof=0)
+        if stdev_val == 0.0:
+            stdev_val = 1e-10
+
+        dH = w_high - midline
+        dL = w_low  - midline
+
+        dev_max = dH.max()
+        dev_min = dL.min()
+        if dev_max == dev_min:
+            dev_max = dev_min + 1e-10
+
+        slot_size = (dev_max - dev_min) / n_slots
+        slot_vol  = np.zeros(n_slots, dtype=float)
+
+        for j in range(linreg_len):
+            bar_h = dH[j]
+            bar_l = dL[j]
+            bar_range = bar_h - bar_l
+            if bar_range <= 0.0:
+                bar_range = 1e-10
+            for s in range(n_slots):
+                s_lo = dev_min + s * slot_size
+                s_hi = s_lo + slot_size
+                overlap = min(bar_h, s_hi) - max(bar_l, s_lo)
+                if overlap > 0.0:
+                    slot_vol[s] += w_vol[j] * (overlap / bar_range)
+
+        poc_slot = int(np.argmax(slot_vol))
+        total_vol = slot_vol.sum()
+
+        target_vol = value_area_pct * total_vol
+        accum = slot_vol[poc_slot]
+        lo_idx = poc_slot
+        hi_idx = poc_slot
+
+        while accum < target_vol:
+            lo_next = lo_idx - 1
+            hi_next = hi_idx + 1
+            can_lo  = lo_next >= 0
+            can_hi  = hi_next < n_slots
+            if not can_lo and not can_hi:
+                break
+            vol_lo = slot_vol[lo_next] if can_lo else -1.0
+            vol_hi = slot_vol[hi_next] if can_hi else -1.0
+            if vol_lo >= vol_hi:
+                lo_idx = lo_next
+                accum += slot_vol[lo_idx]
+            else:
+                hi_idx = hi_next
+                accum += slot_vol[hi_idx]
+
+        current_midline = slope * (linreg_len - 1) + intercept
+
+        poc_dev = dev_min + (poc_slot + 0.5) * slot_size
+        vah_dev = dev_min + (hi_idx + 1.0)   * slot_size
+        val_dev = dev_min + lo_idx            * slot_size
+
+        poc_arr[i] = current_midline + poc_dev
+        vah_arr[i] = current_midline + vah_dev
+        val_arr[i] = current_midline + val_dev
+
+    poc = pd.Series(poc_arr, index=df.index)
+    vah = pd.Series(vah_arr, index=df.index)
+    val = pd.Series(val_arr, index=df.index)
+    return poc, vah, val
+
+
+strategy_sloped_linreg_vp_param_ranges = {
+    'linreg_len_range'   : range(60, 141, 40),
+    'n_slots_range'      : range(30, 71, 20),
+    'value_area_range'   : range(60, 81, 10),
+    'channel_std_range'  : range(15, 31, 5),
+}
+
+
+def strategy_sloped_linreg_vp(data: pd.DataFrame, params: dict, year: int | None = None):
+    linreg_len     = params.get('linreg_len_range')
+    n_slots        = params.get('n_slots_range')
+    value_area_pct = params.get('value_area_range') / 100.0
+    channel_std    = params.get('channel_std_range') / 10.0
+
+    df = data.copy()
+
+    poc, vah, val = ind_sloped_linreg_vp_levels(
+        df,
+        linreg_len=linreg_len,
+        n_slots=n_slots,
+        value_area_pct=value_area_pct,
+        channel_std=channel_std,
+    )
+
+    df['POC'] = poc
+    df['VAH'] = vah
+    df['VAL'] = val
+
+    if year is not None:
+        df = df[df.index.year == int(year)]
+
+    close     = df['Close']
+    poc_s     = df['POC']
+    vah_s     = df['VAH']
+    val_s     = df['VAL']
+
+    cross_above_poc = (close > poc_s) & (close.shift(1) <= poc_s.shift(1))
+    entries = cross_above_poc
+
+    exit_above_vah = close > vah_s
+    exit_below_val = close < val_s
+    exits = exit_above_vah | exit_below_val
+
+    shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    shifted_exits   = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    return shifted_entries, shifted_exits
+
+
+# ─────────────────────────────────────
+# Fonte: Can a Pressure-Based Oscillator
+Beat Buy & Hold Across 40 Stocks?
+# URL:   https://medium.com/@Kryptera/can-a-pressure-based-oscillator-beat-buy-hold-across-40-stocks-ccec005d57ba
+# Data:  2026-06-19 02:04
+# ─────────────────────────────────────
+
+############################
+# Strategy atp_pressure
+############################
+
+import numpy as np
+import pandas as pd
+
+
+def ind_atp_pressure_absorption_ratio(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    high = df['High'].values
+    low = df['Low'].values
+    close = df['Close'].values
+    open_ = df['Open'].values
+
+    upper_wick = high - np.maximum(close, open_)
+    lower_wick = np.minimum(close, open_) - low
+    candle_range = high - low
+    safe_range = np.where(candle_range != 0, candle_range, 1.0)
+
+    bull_absorption = lower_wick / safe_range
+    bear_absorption = upper_wick / safe_range
+
+    diff = bull_absorption - bear_absorption
+
+    diff_series = pd.Series(diff, index=df.index)
+    ar = diff_series.rolling(period, min_periods=1).mean()
+    return ar
+
+
+def ind_atp_pressure_band_pressure(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    close = df['Close']
+    high = df['High'].values
+    low = df['Low'].values
+    close_arr = close.values
+    prev_close = np.empty(len(close_arr))
+    prev_close[0] = close_arr[0]
+    prev_close[1:] = close_arr[:-1]
+
+    tr = np.maximum(
+        np.maximum(high - low, np.abs(high - prev_close)),
+        np.abs(low - prev_close)
+    )
+
+    # Wilder RMA for ATR
+    atr_arr = np.empty(len(tr))
+    atr_arr[0] = tr[0]
+    alpha = 1.0 / period
+    for i in range(1, len(tr)):
+        atr_arr[i] = atr_arr[i - 1] * (1.0 - alpha) + tr[i] * alpha
+
+    # Wilder RMA for price (basis)
+    rma_arr = np.empty(len(close_arr))
+    rma_arr[0] = close_arr[0]
+    for i in range(1, len(close_arr)):
+        rma_arr[i] = rma_arr[i - 1] * (1.0 - alpha) + close_arr[i] * alpha
+
+    safe_atr = np.where(atr_arr != 0, atr_arr, 1.0)
+    bp = (close_arr - rma_arr) / safe_atr
+
+    return pd.Series(bp, index=df.index)
+
+
+def ind_atp_pressure_body_momentum(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    close = df['Close'].values
+    open_ = df['Open'].values
+
+    body = np.abs(close - open_)
+    body_series = pd.Series(body, index=df.index)
+    body_dir = np.where(close >= open_, body, -body)
+    body_dir_series = pd.Series(body_dir, index=df.index)
+
+    body_avg = body_series.rolling(period, min_periods=1).mean()
+    safe_avg = body_avg.replace(0, np.nan).fillna(1.0)
+    bm = body_dir_series / safe_avg
+    return bm
+
+
+def ind_atp_pressure_composite(df: pd.DataFrame, period: int = 14, smooth: int = 3) -> pd.Series:
+    ar = ind_atp_pressure_absorption_ratio(df, period)
+    bp = ind_atp_pressure_band_pressure(df, period)
+    bm = ind_atp_pressure_body_momentum(df, period)
+
+    # Normalize each component using rolling z-score
+    def rolling_zscore(s: pd.Series, win: int) -> pd.Series:
+        roll_mean = s.rolling(win, min_periods=1).mean()
+        roll_std = s.rolling(win, min_periods=1).std(ddof=0).replace(0, np.nan).fillna(1.0)
+        return (s - roll_mean) / roll_std
+
+    norm_win = max(period * 2, 20)
+    ar_n = rolling_zscore(ar, norm_win)
+    bp_n = rolling_zscore(bp, norm_win)
+    bm_n = rolling_zscore(bm, norm_win)
+
+    composite = 0.4 * ar_n + 0.4 * bp_n + 0.2 * bm_n
+
+    # Smooth
+    atp = composite.ewm(span=smooth, adjust=False, min_periods=1).mean()
+    return atp
+
+
+strategy_atp_pressure_param_ranges = {
+    'period_range': range(10, 25, 7),        # [10, 17, 24]
+    'smooth_range': range(3, 10, 3),         # [3, 6, 9]
+    'long_thresh_range': range(3, 10, 3),    # [3, 6, 9]  -> divide by 10
+    'exit_thresh_range': range(-6, 1, 3),    # [-6, -3, 0] -> divide by 10
+}
+
+
+def strategy_atp_pressure(data: pd.DataFrame, params: dict, year: int | None = None):
+    period = params.get('period_range')
+    smooth = params.get('smooth_range')
+    long_thresh = params.get('long_thresh_range') / 10.0
+    exit_thresh = params.get('exit_thresh_range') / 10.0
+
+    df = data.copy()
+
+    atp = ind_atp_pressure_composite(df, period=period, smooth=smooth)
+    df['ATP'] = atp
+
+    if year is not None:
+        df = df[df.index.year == int(year)]
+
+    atp_val = df['ATP']
+    atp_prev = atp_val.shift(1)
+
+    # Entry: ATP crosses above long_thresh
+    entries = (atp_val >= long_thresh) & (atp_prev < long_thresh)
+
+    # Exit: ATP drops below exit_thresh
+    exits = (atp_val <= exit_thresh) & (atp_prev > exit_thresh)
+
+    shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    shifted_exits   = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    return shifted_entries, shifted_exits
+
+
+# ─────────────────────────────────────
+# Fonte: I Found a Phase Exhaustion Reversal TradingView Indicator, Backtested It on 1 Random Stocks
+# URL:   https://medium.com/@Kryptera/i-found-a-phase-exhaustion-reversal-tradingview-indicator-backtested-it-on-1-random-stocks-ec24b7771f48
+# Data:  2026-06-19 02:06
+# ─────────────────────────────────────
+
+############################
+# Strategy pxr
+############################
+
+import numpy as np
+import pandas as pd
+
+
+def ind_pxr_efficiency_ratio(close: pd.Series, period: int) -> pd.Series:
+    """Kaufman Efficiency Ratio for a given period."""
+    arr = close.values
+    n = len(arr)
+    er = np.zeros(n)
+    for i in range(period, n):
+        window = arr[i - period: i + 1]
+        transport = abs(window[-1] - window[0])
+        agitation = np.sum(np.abs(np.diff(window)))
+        if agitation != 0.0:
+            er[i] = transport / agitation
+        else:
+            er[i] = 0.0
+    # sign by direction
+    direction = np.sign(arr - np.roll(arr, period))
+    direction[:period] = 0.0
+    signed_er = er * direction
+    return pd.Series(signed_er, index=close.index)
+
+
+def ind_pxr_phase_gap(df: pd.DataFrame,
+                      short_period: int = 7,
+                      medium_period: int = 24,
+                      peak_window: int = 10,
+                      gap_threshold: float = 0.4) -> tuple:
+    close = df['Close']
+
+    er_short = ind_pxr_efficiency_ratio(close, short_period)
+    er_med = ind_pxr_efficiency_ratio(close, medium_period)
+
+    # Phase gap = short ER minus medium ER
+    phase_gap = er_short - er_med
+
+    # Normalized phase gap using rolling max abs
+    abs_gap = phase_gap.abs()
+    rolling_max = abs_gap.rolling(peak_window, min_periods=1).max()
+    safe_max = rolling_max.replace(0.0, 1.0)
+    norm_gap = phase_gap / safe_max
+
+    # Regime classification based on medium ER
+    er_med_abs = er_med.abs()
+    regime = pd.Series('NEUTRAL', index=close.index)
+    regime = regime.where(er_med_abs < 0.15, 'NEUTRAL')
+    regime[er_med_abs >= 0.55] = 'EXTENDED'
+    regime[(er_med_abs >= 0.25) & (er_med_abs < 0.55)] = 'COMPRESSED'
+    regime[(norm_gap.abs() >= 0.65) & (er_med_abs >= 0.15) & (er_med_abs < 0.55)] = 'TRANSITIONING'
+    # Threshold per regime
+    threshold = pd.Series(gap_threshold, index=close.index)
+    threshold[regime == 'EXTENDED'] = gap_threshold * 0.85
+    threshold[regime == 'COMPRESSED'] = gap_threshold * 1.20
+    threshold[regime == 'TRANSITIONING'] = gap_threshold * 1.00
+    threshold[regime == 'NEUTRAL'] = 9999.0  # never fires
+
+    return er_short, er_med, phase_gap, norm_gap, regime, threshold
+
+
+def strategy_pxr(data: pd.DataFrame, params: dict, year: int | None = None):
+    short_p = params.get('short_range')
+    medium_p = params.get('medium_range')
+    peak_w = params.get('peak_window_range')
+    gap_thr = params.get('gap_threshold_range') / 100.0
+
+    df = data.copy()
+
+    er_short, er_med, phase_gap, norm_gap, regime, threshold = ind_pxr_phase_gap(
+        df,
+        short_period=short_p,
+        medium_period=medium_p,
+        peak_window=peak_w,
+        gap_threshold=gap_thr
+    )
+
+    df['er_short'] = er_short
+    df['er_med'] = er_med
+    df['phase_gap'] = phase_gap
+    df['norm_gap'] = norm_gap
+    df['regime'] = regime
+    df['threshold'] = threshold
+
+    if year is not None:
+        df = df[df.index.year == int(year)]
+
+    # Peak-recede logic:
+    # Phase gap was stretched beyond threshold (burst), now collapsing back (exhaustion)
+    # Long signal: norm_gap was negative (short ER < med ER) and now recovering toward 0
+    #   i.e., prev norm_gap < -threshold and current norm_gap > prev norm_gap (gap collapsing)
+    #   and medium ER > 0 (structural uptrend)
+    # Short signal: norm_gap was positive (short ER > med ER) and now collapsing
+    #   and medium ER < 0 (structural downtrend)
+
+    ng = df['norm_gap']
+    er_m = df['er_med']
+    thr = df['threshold']
+    reg = df['regime']
+
+    not_neutral = reg != 'NEUTRAL'
+
+    # Burst exhaustion: gap was stretched, now receding
+    gap_was_stretched_neg = ng.shift(1) < -thr.shift(1)
+    gap_receding_from_neg = ng > ng.shift(1)  # gap getting less negative = collapsing
+    long_signal = gap_was_stretched_neg & gap_receding_from_neg & (er_m > 0) & not_neutral
+
+    gap_was_stretched_pos = ng.shift(1) > thr.shift(1)
+    gap_receding_from_pos = ng < ng.shift(1)  # gap getting less positive = collapsing
+    short_signal = gap_was_stretched_pos & gap_receding_from_pos & (er_m < 0) & not_neutral
+
+    entries = long_signal | short_signal
+
+    # Exit: phase gap crosses zero again (realignment complete) or regime goes NEUTRAL
+    exit_gap_zero = (ng * ng.shift(1)) < 0  # sign change in norm_gap
+    exit_neutral = reg == 'NEUTRAL'
+    # Exit long when medium ER turns negative
+    exit_long = (er_m < 0) & (ng.shift(1) < 0)
+    # Exit short when medium ER turns positive
+    exit_short = (er_m > 0) & (ng.shift(1) > 0)
+
+    exits = exit_gap_zero | exit_neutral | exit_long | exit_short
+
+    shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    shifted_exits = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    return shifted_entries, shifted_exits
+
+
+strategy_pxr_param_ranges = {
+    'short_range': range(5, 12, 3),        # [5, 8, 11]
+    'medium_range': range(18, 33, 7),      # [18, 25, 32]
+    'peak_window_range': range(8, 17, 4),  # [8, 12, 16]
+    'gap_threshold_range': range(30, 55, 12),  # [30, 42, 54]
+}
+
+
+# ─────────────────────────────────────
+# Fonte: I Built a Trading Strategy Generator — Then Realized Backtests Weren’t Enough
+# URL:   https://medium.com/@Kryptera/i-built-a-trading-strategy-generator-then-realized-backtests-werent-enough-d3489940e874
+# Data:  2026-06-19 02:06
+# ─────────────────────────────────────
+
+############################
+# Strategy tema_vidya
+############################
+
+import pandas as pd
+import numpy as np
+
+
+def ind_tema_vidya_tema(df: pd.DataFrame, period: int = 20) -> pd.Series:
+    close = df['Close']
+    ema1 = close.ewm(span=period, adjust=False, min_periods=1).mean()
+    ema2 = ema1.ewm(span=period, adjust=False, min_periods=1).mean()
+    ema3 = ema2.ewm(span=period, adjust=False, min_periods=1).mean()
+    tema = 3 * (ema1 - ema2) + ema3
+    return tema
+
+
+def ind_tema_vidya_vidya(df: pd.DataFrame, period: int = 14, alpha: float = 0.2) -> pd.Series:
+    close = df['Close'].values
+    n = len(close)
+    vidya = np.empty(n)
+    vidya[0] = close[0]
+
+    diffs = np.abs(np.diff(close))
+    base_vol = np.mean(diffs) if len(diffs) > 0 else 1.0
+    safe_base = base_vol if base_vol != 0.0 else 1.0
+
+    for i in range(1, n):
+        start = max(0, i - period)
+        window = close[start:i + 1]
+        w_diffs = np.abs(np.diff(window))
+        vol = np.mean(w_diffs) if len(w_diffs) > 0 else 0.0
+        vol_ratio = np.clip(vol / safe_base, 0.2, 2.0)
+        a = alpha * vol_ratio
+        vidya[i] = a * close[i] + (1.0 - a) * vidya[i - 1]
+
+    return pd.Series(vidya, index=df.index)
+
+
+strategy_tema_vidya_param_ranges = {
+    'tema_period_range': range(10, 31, 10),
+    'tema_shift_range' : range(3, 9, 3),
+    'vidya_period_range': range(7, 22, 7),
+    'vidya_alpha_range' : range(1, 4, 1),
+}
+
+
+def strategy_tema_vidya(data: pd.DataFrame, params: dict, year: int | None = None):
+    tema_period  = params.get('tema_period_range')
+    tema_shift   = params.get('tema_shift_range')
+    vidya_period = params.get('vidya_period_range')
+    vidya_alpha  = params.get('vidya_alpha_range') / 10.0
+
+    df = data.copy()
+
+    tema  = ind_tema_vidya_tema(df, period=tema_period)
+    vidya = ind_tema_vidya_vidya(df, period=vidya_period, alpha=vidya_alpha)
+
+    df['TEMA']  = tema
+    df['VIDYA'] = vidya
+
+    if year is not None:
+        df = df[df.index.year == int(year)]
+
+    tema_rising = df['TEMA'] > df['TEMA'].shift(tema_shift)
+
+    open_below_vidya_after_above = (
+        (df['Open'] < df['VIDYA']) &
+        (df['Open'].shift(1) > df['VIDYA'].shift(1))
+    )
+
+    entries = tema_rising
+    exits   = open_below_vidya_after_above
+
+    shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    shifted_exits   = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    return shifted_entries, shifted_exits
+
+
+# ─────────────────────────────────────
+# Fonte: I Ran 1,000 Simulated Futures on This FANG Trading Strategy. Here’s What I Found.
+# URL:   https://medium.com/@Kryptera/i-ran-1-000-simulated-futures-on-this-fang-trading-strategy-heres-what-i-found-4394cafc2058
+# Data:  2026-06-20 02:01
+# ─────────────────────────────────────
+
+############################
+# Strategy fang_hma_qqe
+############################
+
+import pandas as pd
+import numpy as np
+
+
+def ind_fang_hma_qqe_wma(series: pd.Series, period: int) -> pd.Series:
+    weights = np.arange(1, period + 1, dtype=float)
+    w_sum = weights.sum()
+    result = series.rolling(period, min_periods=period).apply(
+        lambda x: np.dot(x, weights) / w_sum, raw=True
+    )
+    return result
+
+
+def ind_fang_hma_qqe_hma(df: pd.DataFrame, period: int) -> pd.Series:
+    close = df['Close']
+    half_period = max(int(period / 2), 1)
+    sqrt_period = max(int(np.sqrt(period)), 1)
+    wma_full = ind_fang_hma_qqe_wma(close, period)
+    wma_half = ind_fang_hma_qqe_wma(close, half_period)
+    diff = 2.0 * wma_half - wma_full
+    hma = ind_fang_hma_qqe_wma(diff, sqrt_period)
+    return hma
+
+
+def ind_fang_hma_qqe_qqe(df: pd.DataFrame,
+                          qqe_period: int = 14,
+                          qqe_smooth: int = 5,
+                          qqe_factor: float = 1.618,
+                          qqe_shift: int = 6) -> pd.Series:
+    close = df['Close']
+    n = len(close)
+
+    # RSI
+    delta = close.diff()
+    gain = delta.clip(lower=0)
+    loss = (-delta).clip(lower=0)
+
+    gain_arr = gain.values
+    loss_arr = loss.values
+    avg_gain = np.empty(n)
+    avg_loss = np.empty(n)
+    avg_gain[:] = np.nan
+    avg_loss[:] = np.nan
+
+    # seed with simple average
+    if n >= qqe_period:
+        avg_gain[qqe_period - 1] = np.mean(gain_arr[1:qqe_period])
+        avg_loss[qqe_period - 1] = np.mean(loss_arr[1:qqe_period])
+        for i in range(qqe_period, n):
+            avg_gain[i] = (avg_gain[i - 1] * (qqe_period - 1) + gain_arr[i]) / qqe_period
+            avg_loss[i] = (avg_loss[i - 1] * (qqe_period - 1) + loss_arr[i]) / qqe_period
+
+    safe_avg_loss = np.where(avg_loss != 0, avg_loss, 1.0)
+    rs = np.where(avg_loss != 0, avg_gain / safe_avg_loss, 0.0)
+    rsi_arr = 100.0 - 100.0 / (1.0 + rs)
+    rsi = pd.Series(rsi_arr, index=close.index)
+
+    # Smooth RSI with EMA (qqe_smooth times)
+    smoothed = rsi.ewm(span=qqe_smooth, adjust=False, min_periods=1).mean()
+    for _ in range(qqe_smooth - 1):
+        smoothed = smoothed.ewm(span=qqe_smooth, adjust=False, min_periods=1).mean()
+
+    # Apply shift
+    value1 = smoothed.shift(qqe_shift)
+
+    return value1
+
+
+def ind_fang_hma_qqe_qqe_slope(value1: pd.Series) -> pd.Series:
+    slope = value1.diff()
+    return slope
+
+
+strategy_fang_hma_qqe_param_ranges = {
+    'hma_fast_range': range(16, 33, 8),
+    'hma_slow_range': range(40, 81, 20),
+    'qqe_period_range': range(10, 20, 4),
+    'qqe_smooth_range': range(3, 8, 2),
+    'qqe_factor_range': range(14, 22, 4),
+    'qqe_shift_range': range(4, 9, 2),
+}
+
+
+def strategy_fang_hma_qqe(data: pd.DataFrame, params: dict, year: int | None = None):
+    hma_fast_p = params.get('hma_fast_range')
+    hma_slow_p = params.get('hma_slow_range')
+    qqe_period_p = params.get('qqe_period_range')
+    qqe_smooth_p = params.get('qqe_smooth_range')
+    qqe_factor_p = params.get('qqe_factor_range') / 10.0
+    qqe_shift_p = params.get('qqe_shift_range')
+
+    df = data.copy()
+
+    hma_fast = ind_fang_hma_qqe_hma(df, period=hma_fast_p)
+    hma_slow = ind_fang_hma_qqe_hma(df, period=hma_slow_p)
+
+    value1 = ind_fang_hma_qqe_qqe(
+        df,
+        qqe_period=qqe_period_p,
+        qqe_smooth=qqe_smooth_p,
+        qqe_factor=qqe_factor_p,
+        qqe_shift=qqe_shift_p
+    )
+    qqe_slope = ind_fang_hma_qqe_qqe_slope(value1)
+
+    df['HMA_Fast'] = hma_fast
+    df['HMA_Slow'] = hma_slow
+    df['QQE_Value1'] = value1
+    df['QQE_Slope'] = qqe_slope
+
+    if year is not None:
+        df = df[df.index.year == int(year)]
+
+    # Entry: QQE Value1 slope negative
+    entries = df['QQE_Slope'] < 0
+
+    # Exit: fast HMA crosses below slow HMA
+    hma_fast_s = df['HMA_Fast']
+    hma_slow_s = df['HMA_Slow']
+    cross_below = (hma_fast_s < hma_slow_s) & (hma_fast_s.shift(1) >= hma_slow_s.shift(1))
+    exits = cross_below
+
+    shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    shifted_exits = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    return shifted_entries, shifted_exits
+
+
+# ─────────────────────────────────────
+# Fonte: The Strategy That Lied Beautifully
+# URL:   https://medium.com/@Kryptera/the-strategy-that-lied-beautifully-12c51bb272d8
+# Data:  2026-06-20 02:01
+# ─────────────────────────────────────
+
+############################
+# Strategy stx_wma_trix
+############################
+
+import pandas as pd
+import numpy as np
+
+
+def ind_stx_wma_trix_wma(df: pd.DataFrame, wma_period: int = 20) -> pd.Series:
+    close = df['Close']
+    weights = np.arange(1, wma_period + 1, dtype=float)
+    wsum = weights.sum()
+    wma = close.rolling(wma_period).apply(
+        lambda x: np.dot(x, weights) / wsum,
+        raw=True
+    )
+    return wma
+
+
+def ind_stx_wma_trix_trix(df: pd.DataFrame, trix_period: int = 15) -> pd.Series:
+    close = df['Close']
+    ema1 = close.ewm(span=trix_period, adjust=False).mean()
+    ema2 = ema1.ewm(span=trix_period, adjust=False).mean()
+    ema3 = ema2.ewm(span=trix_period, adjust=False).mean()
+    ema3_prev = ema3.shift(1)
+    safe_den = np.where(ema3_prev.values != 0, ema3_prev.values, 1.0)
+    trix_vals = np.where(
+        ema3_prev.values != 0,
+        (ema3.values - ema3_prev.values) / safe_den * 100,
+        np.nan
+    )
+    trix = pd.Series(trix_vals, index=close.index)
+    return trix
+
+
+strategy_stx_wma_trix_param_ranges = {
+    'wma_period_range': range(16, 25, 4),   # [16, 20, 24]
+    'trix_period_range': range(12, 19, 3),  # [12, 15, 18]
+}
+
+
+def strategy_stx_wma_trix(data: pd.DataFrame, params: dict, year: int | None = None):
+    wma_period = params.get('wma_period_range')
+    trix_period = params.get('trix_period_range')
+
+    df = data.copy()
+
+    wma = ind_stx_wma_trix_wma(df, wma_period=wma_period)
+    trix = ind_stx_wma_trix_trix(df, trix_period=trix_period)
+
+    df['WMA'] = wma
+    df['TRIX'] = trix
+
+    if year is not None:
+        df = df[df.index.year == int(year)]
+
+    # Entry: Close crosses below WMA (short-side momentum entry)
+    close_below_wma = df['Close'] < df['WMA']
+    close_prev_above_wma = df['Close'].shift(1) >= df['WMA'].shift(1)
+    entries = close_below_wma & close_prev_above_wma
+
+    # Exit: TRIX crosses below zero
+    trix_prev_above_zero = df['TRIX'].shift(1) >= 0
+    trix_below_zero = df['TRIX'] < 0
+    exits = trix_prev_above_zero & trix_below_zero
+
+    shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    shifted_exits   = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    return shifted_entries, shifted_exits
+
+
+# ─────────────────────────────────────
+# Fonte: I Found a Whale Liquidity and Absorption ProfileTradingView Indicator That Led Me Down a Python…
+# URL:   https://medium.com/@Kryptera/i-found-a-whale-liquidity-and-absorption-profiletradingview-indicator-that-led-me-down-a-python-8839de7d4b9c
+# Data:  2026-06-20 02:02
+# ─────────────────────────────────────
+
+############################
+# Strategy whale_absorption
+############################
+
+import pandas as pd
+import numpy as np
+
+
+def ind_whale_absorption_profile(
+    df: pd.DataFrame,
+    lookback: int = 200,
+    n_bins: int = 35,
+    strong_pct: float = 97.0,
+    abs_threshold: float = 0.40,
+    delta_threshold: float = 0.40,
+    grace_window: int = 3,
+):
+    close = df['Close'].values
+    high  = df['High'].values
+    low   = df['Low'].values
+    open_ = df['Open'].values
+    vol   = df['Volume'].values
+    n     = len(close)
+
+    bar_range    = high - low
+    upper_wick   = np.where(close >= open_, high - close, high - open_)
+    lower_wick   = np.where(close >= open_, open_ - low,  close - low)
+    bar_dir      = np.where(close >= open_, 1, -1)
+
+    safe_range       = np.where(bar_range != 0, bar_range, 1.0)
+    upper_wick_frac  = np.clip(upper_wick / safe_range, 0.0, 1.0)
+    lower_wick_frac  = np.clip(lower_wick / safe_range, 0.0, 1.0)
+    absorption_vol   = np.where(
+        bar_dir == 1,
+        vol * upper_wick_frac,
+        vol * lower_wick_frac,
+    )
+
+    bull_vol   = np.where(bar_dir == 1, vol, 0.0)
+    bear_vol   = np.where(bar_dir == -1, vol, 0.0)
+
+    delta_signal     = np.zeros(n, dtype=np.float64)
+    absorption_signal = np.zeros(n, dtype=np.float64)
+
+    for t in range(lookback, n):
+        w_start = t - lookback
+        w_end   = t  # exclusive → bars [w_start, t-1]
+
+        w_close   = close[w_start:w_end]
+        w_vol     = vol[w_start:w_end]
+        w_bull    = bull_vol[w_start:w_end]
+        w_bear    = bear_vol[w_start:w_end]
+        w_abs     = absorption_vol[w_start:w_end]
+
+        p_min = w_close.min()
+        p_max = w_close.max()
+        if p_max == p_min:
+            continue
+
+        bin_edges  = np.linspace(p_min, p_max, n_bins + 1)
+        bin_idx    = np.searchsorted(bin_edges, w_close, side='right') - 1
+        bin_idx    = np.clip(bin_idx, 0, n_bins - 1)
+
+        strong_thresh = np.percentile(w_vol, strong_pct)
+
+        bin_strong_bull = np.zeros(n_bins, dtype=np.float64)
+        bin_weak_bull   = np.zeros(n_bins, dtype=np.float64)
+        bin_strong_bear = np.zeros(n_bins, dtype=np.float64)
+        bin_weak_bear   = np.zeros(n_bins, dtype=np.float64)
+        bin_absorption  = np.zeros(n_bins, dtype=np.float64)
+
+        for b in range(len(w_close)):
+            bi = bin_idx[b]
+            bv = w_vol[b]
+            if w_bull[b] > 0:
+                if bv >= strong_thresh:
+                    bin_strong_bull[bi] += bv
+                else:
+                    bin_weak_bull[bi] += bv
+            else:
+                if bv >= strong_thresh:
+                    bin_strong_bear[bi] += bv
+                else:
+                    bin_weak_bear[bi] += bv
+            bin_absorption[bi] += w_abs[b]
+
+        bin_delta = (bin_strong_bull + bin_weak_bull) - (bin_strong_bear + bin_weak_bear)
+
+        cur_price = close[t]
+        cur_bin   = np.searchsorted(bin_edges, cur_price, side='right') - 1
+        cur_bin   = int(np.clip(cur_bin, 0, n_bins - 1))
+
+        max_abs   = bin_absorption.max()
+        max_delta = np.abs(bin_delta).max()
+
+        if max_abs > 0:
+            absorption_signal[t] = bin_absorption[cur_bin] / max_abs
+        if max_delta > 0:
+            delta_signal[t] = bin_delta[cur_bin] / max_delta
+
+    absorption_series = pd.Series(absorption_signal, index=df.index)
+    delta_series      = pd.Series(delta_signal,      index=df.index)
+    return absorption_series, delta_series
+
+
+strategy_whale_absorption_param_ranges = {
+    'lookback_range'    : range(100, 251, 50),   # 3 values: 100, 150, 200, 250
+    'n_bins_range'      : range(25, 46, 10),     # 3 values: 25, 35, 45
+    'abs_thresh_range'  : range(30, 51, 10),     # 3 values: 30, 40, 50
+    'delta_thresh_range': range(30, 51, 10),     # 3 values: 30, 40, 50
+    'grace_range'       : range(1, 5, 1),        # 4 values: 1, 2, 3, 4
+}
+# Total: 4 * 3 * 3 * 3 * 4 = 432 combinations
+
+
+def strategy_whale_absorption(data: pd.DataFrame, params: dict, year: int | None = None):
+    lookback      = params.get('lookback_range', 200)
+    n_bins        = params.get('n_bins_range', 35)
+    abs_thresh    = params.get('abs_thresh_range', 40) / 100.0
+    delta_thresh  = params.get('delta_thresh_range', 40) / 100.0
+    grace_window  = params.get('grace_range', 3)
+
+    df = data.copy()
+
+    absorption_s, delta_s = ind_whale_absorption_profile(
+        df,
+        lookback=lookback,
+        n_bins=n_bins,
+        strong_pct=97.0,
+        abs_threshold=abs_thresh,
+        delta_threshold=delta_thresh,
+        grace_window=grace_window,
+    )
+
+    df['absorption'] = absorption_s
+    df['delta']      = delta_s
+
+    if year is not None:
+        df = df[df.index.year == int(year)]
+
+    abs_gate   = df['absorption'] >= abs_thresh
+    delta_gate = df['delta'].abs() >= delta_thresh
+    both_gates = abs_gate & delta_gate
+
+    bullish_delta = df['delta'] > 0
+    bearish_delta = df['delta'] < 0
+
+    raw_entries = both_gates & bullish_delta
+    raw_exits   = both_gates & bearish_delta
+
+    # Grace window: extend signal if any of the last grace_window bars triggered
+    grace_entries = raw_entries.copy()
+    grace_exits   = raw_exits.copy()
+    for g in range(1, grace_window + 1):
+        grace_entries = grace_entries | raw_entries.shift(g).fillna(False)
+        grace_exits   = grace_exits   | raw_exits.shift(g).fillna(False)
+
+    entries = grace_entries.astype(bool)
+    exits   = grace_exits.astype(bool)
+
+    shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    shifted_exits   = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    return shifted_entries, shifted_exits
+
+
+# ─────────────────────────────────────
+# Fonte: I Generated a Trading Strategy Using My Python Bundle — Then Tried to Break It
+# URL:   https://medium.com/@Kryptera/i-generated-a-trading-strategy-using-my-python-bundle-then-tried-to-break-it-b8de9fc402c3
+# Data:  2026-06-20 02:02
+# ─────────────────────────────────────
+
+############################
+# Strategy bb_tsi
+############################
+
+def ind_bb_tsi_bollinger(df: pd.DataFrame, period: int = 20, std_mult: float = 2.0, shift: int = 5):
+    close = df['Close']
+    ma = close.rolling(period, min_periods=1).mean()
+    std = close.rolling(period, min_periods=1).std(ddof=0)
+    bb_upper = ma + std_mult * std
+    bb_upper_rising = bb_upper > bb_upper.shift(shift)
+    return bb_upper, bb_upper_rising
+
+
+def ind_bb_tsi_tsi(df: pd.DataFrame, long: int = 25, short: int = 13, signal: int = 7):
+    close = df['Close']
+    momentum = close.diff()
+    ema1 = momentum.ewm(span=long, adjust=False, min_periods=1).mean()
+    ema2 = ema1.ewm(span=short, adjust=False, min_periods=1).mean()
+    abs_ema1 = momentum.abs().ewm(span=long, adjust=False, min_periods=1).mean()
+    abs_ema2 = abs_ema1.ewm(span=short, adjust=False, min_periods=1).mean()
+    abs_ema2_arr = abs_ema2.values
+    ema2_arr = ema2.values
+    safe_den = np.where(abs_ema2_arr != 0, abs_ema2_arr, 1.0)
+    tsi_arr = np.where(abs_ema2_arr != 0, 100.0 * ema2_arr / safe_den, 0.0)
+    tsi = pd.Series(tsi_arr, index=close.index)
+    tsi_signal = tsi.ewm(span=signal, adjust=False, min_periods=1).mean()
+    return tsi, tsi_signal
+
+
+strategy_bb_tsi_param_ranges = {
+    'bb_period_range' : range(16, 25, 4),
+    'bb_shift_range'  : range(4, 7, 1),
+    'bb_std_range'    : range(1, 4, 1),
+    'tsi_long_range'  : range(20, 31, 5),
+    'tsi_short_range' : range(10, 17, 3),
+    'tsi_signal_range': range(6, 9, 1),
+}
+
+
+def strategy_bb_tsi(data: pd.DataFrame, params: dict, year: int | None = None):
+    bb_period  = params.get('bb_period_range')
+    bb_shift   = params.get('bb_shift_range')
+    bb_std     = float(params.get('bb_std_range'))
+    tsi_long   = params.get('tsi_long_range')
+    tsi_short  = params.get('tsi_short_range')
+    tsi_signal = params.get('tsi_signal_range')
+
+    df = data.copy()
+
+    _, bb_upper_rising = ind_bb_tsi_bollinger(df, period=bb_period, std_mult=bb_std, shift=bb_shift)
+    tsi, _ = ind_bb_tsi_tsi(df, long=tsi_long, short=tsi_short, signal=tsi_signal)
+
+    df['BB_Upper_Rising'] = bb_upper_rising
+    df['TSI'] = tsi
+
+    if year is not None:
+        df = df[df.index.year == int(year)]
+
+    entries = df['BB_Upper_Rising']
+
+    tsi_cross_below_zero = (df['TSI'] < 0) & (df['TSI'].shift(1) >= 0)
+    exits = tsi_cross_below_zero
+
+    shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    shifted_exits   = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    return shifted_entries, shifted_exits
+
+
+# ─────────────────────────────────────
+# Fonte: Why “Just Pick a Good Strategy” Isn’t Enough
+# URL:   https://medium.com/@Kryptera/why-just-pick-a-good-strategy-isnt-enough-e6c007aed4f8
+# Data:  2026-06-21 02:00
+# ─────────────────────────────────────
+
+############################
+# Strategy tema_vidya_momentum_rsi
+############################
+
+import pandas as pd
+import numpy as np
+
+
+def ind_tema_vidya_momentum_rsi_momentum(df: pd.DataFrame, period: int) -> pd.Series:
+    close = df['Close']
+    safe_shift = close.shift(period)
+    safe_den = np.where(safe_shift != 0, safe_shift.values, 1.0)
+    mom = np.where(safe_shift.values != 0, close.values / safe_den * 100, 100.0)
+    return pd.Series(mom, index=df.index)
+
+
+def ind_tema_vidya_momentum_rsi_rsi(df: pd.DataFrame, period: int) -> pd.Series:
+    delta = df['Close'].diff()
+    up = delta.clip(lower=0)
+    down = -delta.clip(upper=0)
+    roll_up = up.ewm(span=period, adjust=False, min_periods=1).mean()
+    roll_down = down.ewm(span=period, adjust=False, min_periods=1).mean()
+    safe_den = np.where(roll_down.values != 0, roll_down.values, 1.0)
+    rs = np.where(roll_down.values != 0, roll_up.values / safe_den, 0.0)
+    rsi = 100.0 - (100.0 / (1.0 + rs))
+    return pd.Series(rsi, index=df.index)
+
+
+def ind_tema_vidya_momentum_rsi_tema(df: pd.DataFrame, period: int) -> pd.Series:
+    close = df['Close']
+    ema1 = close.ewm(span=period, adjust=False, min_periods=1).mean()
+    ema2 = ema1.ewm(span=period, adjust=False, min_periods=1).mean()
+    ema3 = ema2.ewm(span=period, adjust=False, min_periods=1).mean()
+    tema = 3.0 * (ema1 - ema2) + ema3
+    return tema
+
+
+def ind_tema_vidya_momentum_rsi_vidya(df: pd.DataFrame, period: int, alpha: float) -> pd.Series:
+    close = df['Close'].values
+    n = len(close)
+    vidya = np.empty(n)
+    vidya[0] = close[0]
+
+    diffs = np.abs(np.diff(close))
+    base_vol = np.mean(diffs) if len(diffs) > 0 else 1.0
+    if base_vol == 0:
+        base_vol = 1.0
+
+    for i in range(1, n):
+        start = max(0, i - period)
+        window = close[start:i + 1]
+        if len(window) > 1:
+            vol = np.mean(np.abs(np.diff(window)))
+        else:
+            vol = 0.0
+        vol_ratio = vol / base_vol
+        vol_ratio = min(max(vol_ratio, 0.2), 2.0)
+        a = alpha * vol_ratio
+        vidya[i] = a * close[i] + (1.0 - a) * vidya[i - 1]
+
+    return pd.Series(vidya, index=df.index)
+
+
+strategy_tema_vidya_momentum_rsi_param_ranges = {
+    'momentum_fast_range': range(5, 15, 5),
+    'momentum_slow_range': range(10, 25, 5),
+    'rsi_period_range':    range(10, 21, 5),
+    'rsi_level_range':     range(25, 40, 5),
+    'tema_period_range':   range(15, 30, 5),
+    'vidya_period_range':  range(10, 21, 5),
+}
+
+
+def strategy_tema_vidya_momentum_rsi(data: pd.DataFrame, params: dict, year: int | None = None):
+    mom_fast   = params.get('momentum_fast_range')
+    mom_slow   = params.get('momentum_slow_range')
+    rsi_period = params.get('rsi_period_range')
+    rsi_level  = params.get('rsi_level_range')
+    tema_p     = params.get('tema_period_range')
+    vidya_p    = params.get('vidya_period_range')
+    vidya_alpha = 0.2
+    tema_shift  = 5
+
+    df = data.copy()
+
+    # AMD-like: Momentum-RSI signals
+    fast_mom = ind_tema_vidya_momentum_rsi_momentum(df, mom_fast)
+    slow_mom = ind_tema_vidya_momentum_rsi_momentum(df, mom_slow)
+    # Entry: fast momentum crosses down below slow momentum
+    mom_cross_down = (fast_mom < slow_mom) & (fast_mom.shift(1) >= slow_mom.shift(1))
+
+    rsi = ind_tema_vidya_momentum_rsi_rsi(df, rsi_period)
+    # Exit: RSI recovers from oversold
+    rsi_recovery = (rsi > rsi_level) & (rsi.shift(1) <= rsi_level)
+
+    df['FastMom'] = fast_mom
+    df['SlowMom'] = slow_mom
+    df['RSI'] = rsi
+    df['MomCrossDown'] = mom_cross_down
+    df['RSIRecovery'] = rsi_recovery
+
+    # RCL-like: TEMA-VIDYA signals
+    tema = ind_tema_vidya_momentum_rsi_tema(df, tema_p)
+    vidya = ind_tema_vidya_momentum_rsi_vidya(df, vidya_p, vidya_alpha)
+    # Entry: TEMA is rising (over tema_shift bars)
+    tema_rising = tema > tema.shift(tema_shift)
+    # Exit: open crosses below VIDYA from above
+    open_below_vidya = (df['Open'] < vidya) & (df['Open'].shift(1) > vidya.shift(1))
+
+    df['TEMA'] = tema
+    df['VIDYA'] = vidya
+    df['TEMARising'] = tema_rising
+    df['OpenBelowVIDYA'] = open_below_vidya
+
+    if year is not None:
+        df = df[df.index.year == int(year)]
+
+    # Combined entries: either momentum cross-down OR tema rising
+    entries = df['MomCrossDown'] | df['TEMARising']
+
+    # Combined exits: either RSI recovery OR open below VIDYA
+    exits = df['RSIRecovery'] | df['OpenBelowVIDYA']
+
+    shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    shifted_exits   = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    return shifted_entries, shifted_exits
+
+
+# ─────────────────────────────────────
+# Fonte: I Let a Python Tool Scan Thousands of Strategies for AXP. Here’s the One That Survived.
+# URL:   https://medium.com/@Kryptera/i-let-a-python-tool-scan-thousands-of-strategies-for-axp-heres-the-one-that-survived-40dee8c3bec2
+# Data:  2026-06-22 02:00
+# ─────────────────────────────────────
+
+############################
+# Strategy axp_std_momentum
+############################
+
+def ind_axp_std_momentum_std_falling(df: pd.DataFrame, std_period: int = 14, std_shift: int = 5) -> pd.Series:
+    std = df['Close'].rolling(std_period, min_periods=1).std()
+    return std < std.shift(std_shift)
+
+
+def ind_axp_std_momentum_mom_cross_below(df: pd.DataFrame, mom_period: int = 10, level: float = 100.0) -> pd.Series:
+    close = df['Close']
+    shifted = close.shift(mom_period)
+    safe_den = np.where(shifted != 0, shifted, 1.0)
+    momentum = np.where(shifted != 0, close / safe_den * 100.0, 100.0)
+    mom = pd.Series(momentum, index=df.index)
+    return (mom < level) & (mom.shift(1) >= level)
+
+
+strategy_axp_std_momentum_param_ranges = {
+    'std_period_range'  : range(10, 25, 5),
+    'std_shift_range'   : range(3, 9, 3),
+    'mom_period_range'  : range(5, 20, 5),
+}
+
+
+def strategy_axp_std_momentum(data: pd.DataFrame, params: dict, year: int | None = None):
+    std_period = params.get('std_period_range')
+    std_shift  = params.get('std_shift_range')
+    mom_period = params.get('mom_period_range')
+
+    df = data.copy()
+
+    std_falling = ind_axp_std_momentum_std_falling(df, std_period=std_period, std_shift=std_shift)
+    mom_cross   = ind_axp_std_momentum_mom_cross_below(df, mom_period=mom_period, level=100.0)
+
+    df['STD_Falling']              = std_falling
+    df['Momentum_Cross_Below_Level'] = mom_cross
+
+    if year is not None:
+        df = df[df.index.year == int(year)]
+
+    entries = df['STD_Falling']
+    exits   = df['Momentum_Cross_Below_Level']
+
+    shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    shifted_exits   = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    return shifted_entries, shifted_exits

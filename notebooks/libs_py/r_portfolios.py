@@ -16,14 +16,16 @@ portfolio_alpha_sect = {
     "Title": "Alpha Sect (Megatrend)",
     "tickers": settoriali,
     "benchmark_portfolio": benchmark_settoriali,
-    "benchmark_title": "Indice sintetico settoriali"
+    "benchmark_title": "Indice sintetico settoriali",
+    "asset_type": "etf",
 }
 
 portfolio_alpha_fact = {
     "Title": "Alpha Fact",
     "tickers": fattoriali,
     "benchmark_portfolio": benchmark_fattoriali,
-    "benchmark_title": "Indice sintetico fattoriali"
+    "benchmark_title": "Indice sintetico fattoriali",
+    "asset_type": "etf",
 }
 
 portfolio_alpha_world = {
@@ -37,7 +39,8 @@ portfolio_alpha_world_vanguard = {
     "Title": "Alpha World Vanguard",
     "tickers": vanguard_etf,
     "benchmark_portfolio": None,
-    "benchmark_title": "V60A.DE"
+    "benchmark_title": "V60A.DE",
+    "asset_type": "etf",
 }
 
 portfolio_alpha_quant = {
