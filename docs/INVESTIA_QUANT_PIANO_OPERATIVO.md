@@ -421,6 +421,8 @@ Non risolvere autonomamente. Segnala e attendi istruzioni.
 ### B-011 — `iq report` risolveva l'universo sp100/nasdaq100 con `alpha_sp100_tickers_by_year` (lista K-portfolio, top performer annuali) invece che dinamicamente via Wikipedia come `iq run`/`iq r-analyze` — selezioni e statistiche storiche non coincidenti con l'esecuzione reale, specialmente a cavallo di cambio anno · RESOLVED (22/06)
 ### B-012 — `n_top` in `build_cluster_grids` calcolato come percentuale della dimensione cluster (fino a 14+ per cluster grandi) invece che range assoluto — diluiva la concentrazione del cluster HIGH_MOMENTUM, vanificandone lo scopo · RESOLVED (22/06, introdotta lookup `resolve_n_top(asset_type, profile)`)
 ### B-013 — stesso problema di B-012 ma sul `full_grid` del path Standard: `n_top=1` non escluso per `asset_type="stock"` → concentrazione totale su singolo titolo (caso reale: SNDK, rally ~60x in un anno, catturato al 100% da `n_top=1` nella finestra 2026) · RESOLVED (22/06, stessa `resolve_n_top` riusata)
+### B-014 — `_recommended_path()` (tie-break fisso "Cluster vince se promosso") disallineata da `_build_verdict_text` CASO C (Sharpe con soglia 0.05) quando entrambi i path PROMOTED — §3 e §7 potevano mostrare raccomandazioni opposte nello stesso documento; criterio inoltre cieco al profilo (satellite/core) · RESOLVED (23/06, unificato in `_select_path_by_profile`: satellite=Sharpe soglia 0.05 invariato, core=MaxDD con eccezione se CAGR < benchmark)
+### B-015 — `_diagnose_mc` forzava `recommended_path=None` a `'std'` (fallback dead-code) quando nessun path supera l'OFC, dichiarando "Standard candidato al deploy" in §6.b in contraddizione con §7 ("deploy non raccomandato") · RESOLVED (23/06, early return per caso genuino None — §6.b/§3/Fig.4 ora mostrano entrambi i path senza endorsement)
 
 ---
 
@@ -677,13 +679,15 @@ Fix diretto (un comando sed, no Code): aggiunto `{profile}` al nome file.
 
 **Bug 2 — trovato testando il caso "nessuno promosso" (profile=core su
 Alpha Nasdaq100)**: `_diagnose_mc` forzava `recommended_path=None` a
-`'std'` ("retro-compat"), scrivendo "Il path candidato al deploy è
-Standard" in §6.b anche quando l'OFC non promuove nessun path — mentre §7
-correttamente concludeva "deploy non raccomandato". In corso di fix
-(`fix/diagnose-mc-no-path-promoted`) al momento della chiusura sessione —
-narrativa onesta per il caso genuino "nessuno promosso", più verifica
-collaterale sulla tabella §3 (la riga "Cluster" potrebbe restare
-evidenziata anche in questo caso, da controllare separatamente).
+`'std'` ("retro-compat", verificato essere dead code — l'unico chiamante
+passa sempre entrambi gli ofc_report), scrivendo "Il path candidato al
+deploy è Standard" in §6.b anche quando l'OFC non promuove nessun path —
+mentre §7 correttamente concludeva "deploy non raccomandato". RESOLVED:
+early return per `recommended_path is None` — §6.b ora mostra B1/B2/Skill
+Profile per entrambi i path senza dichiarare alcun candidato; tabella §3
+e caption Fig.4 anch'esse senza highlight/riferimento fisso quando nessuno
+è promosso. Verificato sul PDF rigenerato: documento internamente
+coerente da §3 a §7, nessuna contraddizione residua.
 
 **Proposta emersa, non implementata**: generazione narrativa via LLM
 invece di combinatoria if/elif scritta a mano — vedi priorità alta, item
