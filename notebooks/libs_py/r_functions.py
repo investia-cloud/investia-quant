@@ -12632,21 +12632,101 @@ def _diagnose_ofc(ofc_report_std: dict, ofc_report_cluster) -> tuple:
     return std_txt, clu_txt
 
 
-def _recommended_path(ofc_report_std, ofc_report_cluster) -> str | None:
+def _select_path_by_profile(
+    profile: str,
+    sharpe_std: float | None,
+    sharpe_cluster: float | None,
+    maxdd_std: float | None,
+    maxdd_cluster: float | None,
+    cagr_std: float | None,
+    cagr_cluster: float | None,
+    cagr_benchmark: float | None,
+) -> str:
     """
-    Ritorna il path raccomandato per la narrativa:
-      'cluster' / 'std' / None
-    
-    Logica (tie-break Cluster preferito):
-      - Cluster promosso (esclusivo o con Standard)   → 'cluster'
-      - Solo Standard promosso                         → 'std'
-      - Nessuno promosso                               → None
+    Sceglie 'std' o 'cluster' quando entrambi i path sono PROMOTED.
+
+    satellite: preferisce Sharpe più alto, soglia 0.05.
+               Se (sharpe_std - sharpe_cluster) > 0.05 → 'std', altrimenti 'cluster'.
+
+    core:      preferisce il path con MaxDD assoluto più basso (capital preservation).
+               Eccezione: se il CAGR del path preferito < CAGR benchmark,
+               sceglie l'altro path (capital preservation senza beat-benchmark è inutile).
+
+    Fallback a 'cluster' se i valori numerici necessari mancano (None).
+    """
+    if profile == "satellite":
+        if sharpe_std is not None and sharpe_cluster is not None:
+            if (sharpe_std - sharpe_cluster) > 0.05:
+                return 'std'
+        return 'cluster'
+    else:  # core
+        if maxdd_std is not None and maxdd_cluster is not None:
+            if maxdd_cluster < maxdd_std:
+                # cluster ha MaxDD migliore
+                if (cagr_cluster is not None and cagr_benchmark is not None
+                        and cagr_cluster < cagr_benchmark):
+                    return 'std'   # eccezione: CAGR cluster sotto benchmark
+                return 'cluster'
+            else:
+                # std ha MaxDD migliore (o pari)
+                if (cagr_std is not None and cagr_benchmark is not None
+                        and cagr_std < cagr_benchmark):
+                    return 'cluster'  # eccezione: CAGR std sotto benchmark
+                return 'std'
+        return 'cluster'  # fallback se MaxDD non disponibile
+
+
+def _recommended_path(
+    ofc_report_std,
+    ofc_report_cluster,
+    metrics_comparison: dict | None = None,
+    profile: str = "satellite",
+) -> str | None:
+    """
+    Ritorna il path raccomandato: 'cluster' / 'std' / None.
+
+    - Solo Cluster promosso  → 'cluster'
+    - Solo Standard promosso → 'std'
+    - Nessuno promosso       → None
+    - Entrambi promossi      → _select_path_by_profile (profile-aware)
+                               Fallback a 'cluster' se metrics_comparison è None.
     """
     std_p = bool(ofc_report_std.get('promoted', False)) if ofc_report_std else False
     clu_p = bool(ofc_report_cluster.get('promoted', False)) if ofc_report_cluster else False
-    if clu_p:                 return 'cluster'
-    if std_p and not clu_p:   return 'std'
-    return None
+
+    if std_p and not clu_p:
+        return 'std'
+    if clu_p and not std_p:
+        return 'cluster'
+    if not std_p and not clu_p:
+        return None
+
+    # Entrambi promossi: selezione profile-aware
+    if metrics_comparison is None:
+        return 'cluster'  # fallback degradato senza dati metriche
+
+    def _v(key, attr):
+        pf = metrics_comparison.get(key)
+        if pf is None:
+            return None
+        try:
+            if attr == 'sharpe': return float(pf.sharpe_ratio())
+            if attr == 'maxdd':  return abs(float(pf.max_drawdown()))
+            if attr == 'cagr':   return float(pf.annualized_return())
+        except Exception:
+            return None
+        return None
+
+    return _select_path_by_profile(
+        profile        = profile,
+        sharpe_std     = _v('std_riskoff',     'sharpe'),
+        sharpe_cluster = _v('cluster_riskoff', 'sharpe'),
+        maxdd_std      = _v('std_riskoff',     'maxdd'),
+        maxdd_cluster  = _v('cluster_riskoff', 'maxdd'),
+        cagr_std       = _v('std_riskoff',     'cagr'),
+        cagr_cluster   = _v('cluster_riskoff', 'cagr'),
+        cagr_benchmark = _v('benchmark',       'cagr'),
+    )
 def _diagnose_mc(
     mc_skill: dict,
     mc_ci,
@@ -12657,6 +12737,7 @@ def _diagnose_mc(
     recommended_path: str | None = None,
     ofc_report_std: dict | None = None,
     ofc_report_cluster: dict | None = None,
+    profile: str = "satellite",
 ) -> tuple:
     '''
     Genera paragrafi diagnostici MC adattivi (sezione 6.b skill + 6.c CI).
@@ -12669,7 +12750,8 @@ def _diagnose_mc(
     ----------
     recommended_path : 'std' | 'cluster' | None
         Se None, viene calcolato da ofc_report_std/cluster se passati;
-        altrimenti default a 'std' per retro-compatibilità.
+        se entrambi None (nessun path promosso), la funzione ritorna
+        una narrativa neutra senza endorse su alcun path.
     
     Returns
     -------
@@ -12677,10 +12759,70 @@ def _diagnose_mc(
     '''
     # Risolvi recommended_path se non passato esplicitamente
     if recommended_path is None and (ofc_report_std is not None or ofc_report_cluster is not None):
-        recommended_path = _recommended_path(ofc_report_std, ofc_report_cluster)
+        recommended_path = _recommended_path(
+            ofc_report_std, ofc_report_cluster,
+            metrics_comparison=metrics_comparison,
+            profile=profile,
+        )
+
+    # ── Caso: nessun path promosso (recommended_path genuinamente None) ──────
     if recommended_path is None:
-        recommended_path = 'std'   # retro-compat
-    
+        def _bpv(mc, test):
+            return mc.get(test, {}).get('p_values', {}).get('CAGR')
+
+        def _sp(b1, b2):
+            p1 = b1 is not None and b1 < 0.10
+            p2 = b2 is not None and b2 < 0.10
+            if p1 and p2:   return 'Strong'
+            if p1:          return 'Selection-driven'
+            if p2:          return 'Timing-driven'
+            return 'No-skill'
+
+        def _path_skill_line(mc, label):
+            b1 = _bpv(mc, 'rotation_reshuffle')
+            b2 = _bpv(mc, 'rebalance_timing')
+            b1s = f"p = {b1:.3f}" if b1 is not None else "N/A"
+            b2s = f"p = {b2:.3f}" if b2 is not None else "N/A"
+            b1r = 'PASS' if (b1 is not None and b1 < 0.10) else 'FAIL'
+            b2r = 'PASS' if (b2 is not None and b2 < 0.10) else 'FAIL'
+            return (
+                f"<b>{label}</b>: B1 ({b1s}) {b1r}, B2 ({b2s}) {b2r} — "
+                f"Skill Profile: <b>{_sp(b1, b2)}</b>."
+            )
+
+        std_line = _path_skill_line(mc_skill, 'Standard')
+        clu_line = _path_skill_line(mc_skill_cluster, 'Cluster') if mc_skill_cluster is not None else None
+
+        skill1_none = (
+            "Nessun path raggiunge la soglia di promozione OFC. "
+            "Di seguito i risultati Skill Tests per entrambe le varianti, a titolo informativo.<br/>"
+            + std_line
+            + (f"<br/>{clu_line}" if clu_line else "")
+        )
+
+        def _civ_n(ci_df, row, col, pct=True):
+            try:
+                v = float(ci_df.loc[row, col])
+                return f"{v*100:.1f}%" if pct else f"{v:.3f}"
+            except Exception:
+                return "N/A"
+
+        def _ci_line(ci_df, label):
+            a1c = _civ_n(ci_df, 'A1 · IID Bootstrap',   'CAGR_p50')
+            a2c = _civ_n(ci_df, 'A2 · Block Bootstrap', 'CAGR_p50')
+            a1d = _civ_n(ci_df, 'A1 · IID Bootstrap',   'MaxDD_p50')
+            a1s = _civ_n(ci_df, 'A1 · IID Bootstrap',   'Sharpe_p50', pct=False)
+            return (
+                f"<b>{label}</b> — CAGR p50 = {a1c}–{a2c} (IID/Block), "
+                f"Sharpe p50 = {a1s}, MaxDD p50 = {a1d}."
+            )
+
+        ci_none = _ci_line(mc_ci, 'Standard')
+        if mc_ci_cluster is not None:
+            ci_none += f"<br/>{_ci_line(mc_ci_cluster, 'Cluster')}"
+
+        return skill1_none, None, ci_none
+
     # Seleziona mc_skill e mc_ci del path raccomandato
     if recommended_path == 'cluster' and mc_skill_cluster is not None:
         mc_skill_main = mc_skill_cluster
@@ -12980,6 +13122,24 @@ def _build_verdict_text(
         except Exception:
             return None
 
+    def _maxdd_val(key):
+        pf = metrics_comparison.get(key)
+        if pf is None:
+            return None
+        try:
+            return abs(float(pf.max_drawdown()))
+        except Exception:
+            return None
+
+    def _cagr_val(key):
+        pf = metrics_comparison.get(key)
+        if pf is None:
+            return None
+        try:
+            return float(pf.annualized_return())
+        except Exception:
+            return None
+
     s3_report = {}
     # B-005: traccia quale profile è "il riferimento" per la caveat No-skill
     skill_profile_for_caveat = skill_profile
@@ -13023,26 +13183,41 @@ def _build_verdict_text(
         # skill_profile_for_caveat resta = skill_profile (Standard)
 
     elif promoted_std and promoted_cluster:
-        # CASO C — Entrambi PROMOTED: preferire Sharpe più alto (logica esistente conservata)
-        sh_std_v = _sharpe_val('std_riskoff')
-        sh_clu_v = _sharpe_val('cluster_riskoff')
-        if sh_std_v is not None and sh_clu_v is not None and (sh_std_v - sh_clu_v) > 0.05:
+        # CASO C — Entrambi PROMOTED: selezione profile-aware via _select_path_by_profile
+        _chosen = _select_path_by_profile(
+            profile        = profile,
+            sharpe_std     = _sharpe_val('std_riskoff'),
+            sharpe_cluster = _sharpe_val('cluster_riskoff'),
+            maxdd_std      = _maxdd_val('std_riskoff'),
+            maxdd_cluster  = _maxdd_val('cluster_riskoff'),
+            cagr_std       = _cagr_val('std_riskoff'),
+            cagr_cluster   = _cagr_val('cluster_riskoff'),
+            cagr_benchmark = _cagr_val('benchmark'),
+        )
+        if _chosen == 'std':
             pref_path   = 'Standard — Risk ON/OFF'
             pref_key    = 'std_riskoff'
             pref_n      = n_pass_std
-            pref_reason = f"Sharpe superiore ({_fmt('std_riskoff','sharpe')} vs {_fmt('cluster_riskoff','sharpe')})"
-            s3_report   = (ofc_report_std or {}).get('signals', {}).get('S3_bootstrap', {})
+            if profile == "satellite":
+                pref_reason = f"Sharpe superiore ({_fmt('std_riskoff','sharpe')} vs {_fmt('cluster_riskoff','sharpe')})"
+            else:
+                pref_reason = f"MaxDD inferiore ({_fmt('std_riskoff','maxdd')} vs {_fmt('cluster_riskoff','maxdd')})"
+            s3_report = (ofc_report_std or {}).get('signals', {}).get('S3_bootstrap', {})
             # skill_profile_for_caveat resta = skill_profile (Standard)
         else:
             pref_path   = 'Cluster — Risk ON/OFF'
             pref_key    = 'cluster_riskoff'
             pref_n      = n_pass_cluster
-            if sh_std_v is not None and sh_clu_v is not None:
-                pref_reason = f"Sharpe superiore ({_fmt('cluster_riskoff','sharpe')} vs {_fmt('std_riskoff','sharpe')})"
+            if profile == "satellite":
+                sh_std_v = _sharpe_val('std_riskoff')
+                sh_clu_v = _sharpe_val('cluster_riskoff')
+                if sh_std_v is not None and sh_clu_v is not None:
+                    pref_reason = f"Sharpe superiore ({_fmt('cluster_riskoff','sharpe')} vs {_fmt('std_riskoff','sharpe')})"
+                else:
+                    pref_reason = "CAGR e stabilità complessivi superiori"
             else:
-                pref_reason = "CAGR e stabilità complessivi superiori"
+                pref_reason = f"MaxDD inferiore ({_fmt('cluster_riskoff','maxdd')} vs {_fmt('std_riskoff','maxdd')})"
             s3_report = (ofc_report_cluster or {}).get('signals', {}).get('S3_bootstrap', {})
-            # B-005: caveat sul Cluster
             if skill_profile_cluster is not None:
                 skill_profile_for_caveat = skill_profile_cluster
         cagr_p  = _fmt(pref_key, 'cagr')
@@ -13565,7 +13740,8 @@ def generate_relazione_tecnica(
     #     "è quella candidata al deploy operativo.", st_body))
 
     # Bug #2 fix: frase introduttiva §3 dinamica come §7
-    _rec = _recommended_path(ofc_report_std, ofc_report_cluster)
+    _rec = _recommended_path(ofc_report_std, ofc_report_cluster,
+                             metrics_comparison=metrics_comparison, profile=profile)
     if _rec == 'cluster':
         _rec_label = "<b>Cluster — Risk ON/OFF</b>"
     elif _rec == 'std':
@@ -13606,17 +13782,27 @@ def generate_relazione_tecnica(
          _m('benchmark','cum'), _m('benchmark','cagr'),
          _m('benchmark','sharpe'), _m('benchmark','maxdd')],
     ]
-    m_ts = _ts_base() + [
-        ('BACKGROUND', (0, 1), (-1, 1), rl_colors.HexColor('#D5EAF5')),
-        ('FONTNAME',   (0, 1), (-1, 1), 'Helvetica-Bold'),
-        ('ALIGN', (1, 0), (-1, -1), 'CENTER'),
-    ]
+    # Evidenzia la riga del path raccomandato (nessuna se nessuno promosso)
+    _highlight_row = 1 if _rec == 'cluster' else (3 if _rec == 'std' else None)
+    m_ts = _ts_base() + [('ALIGN', (1, 0), (-1, -1), 'CENTER')]
+    if _highlight_row is not None:
+        m_ts += [
+            ('BACKGROUND', (0, _highlight_row), (-1, _highlight_row), rl_colors.HexColor('#D5EAF5')),
+            ('FONTNAME',   (0, _highlight_row), (-1, _highlight_row), 'Helvetica-Bold'),
+        ]
     m_t = Table(m_rows, colWidths=[55 * mm, 28 * mm, 25 * mm, 25 * mm, 25 * mm])
     m_t.setStyle(TableStyle(m_ts))
     story += [m_t, Spacer(1, 3 * mm)]
-    story.extend(_img('equity_comparison.png',
-        caption='Fig. 4 — Equity cumulativa comparativa. Cluster — Risk ON/OFF '
-                '(rosso pieno) è la variante di riferimento'))
+    if _rec == 'cluster':
+        _fig4_caption = ('Fig. 4 — Equity cumulativa comparativa. '
+                         'Cluster — Risk ON/OFF (evidenziata) è la variante candidata al deploy.')
+    elif _rec == 'std':
+        _fig4_caption = ('Fig. 4 — Equity cumulativa comparativa. '
+                         'Standard — Risk ON/OFF (evidenziata) è la variante candidata al deploy.')
+    else:
+        _fig4_caption = ('Fig. 4 — Equity cumulativa comparativa. '
+                         'Le quattro varianti sono mostrate a confronto (nessuna ha superato l\'OFC).')
+    story.extend(_img('equity_comparison.png', caption=_fig4_caption))
 
     # Sezione 4: OFC
     story.append(Paragraph("4. Overfitting Check (OFC)", st_section))
@@ -13927,6 +14113,7 @@ def generate_relazione_tecnica(
         mc_ci_cluster      = mc_ci_cluster,
         ofc_report_std     = ofc_report_std,
         ofc_report_cluster = ofc_report_cluster,
+        profile            = profile,
     )
     
     story.append(Paragraph("6.a — Lettura dei segnali OFC", st_subsec))
@@ -14009,7 +14196,8 @@ def generate_relazione_tecnica(
     story.append(Spacer(1, 4 * mm))
     
     # B-005: secondo verdict box compatto per path alternativo
-    rec_path = _recommended_path(ofc_report_std, ofc_report_cluster)
+    rec_path = _recommended_path(ofc_report_std, ofc_report_cluster,
+                                metrics_comparison=metrics_comparison, profile=profile)
     if rec_path == 'cluster':
         # box compatto descrive Standard
         _alt_text = _build_verdict_text_compact(
@@ -14422,8 +14610,8 @@ def run_r_portfolio_analysis(
         "benchmark":       results_std.get("pf_benchmark") or results_std.get("pf_benchmark_base"),
     }
 
-    _card_path = output_dir / f"{portfolio_title.replace(' ', '_').lower()}_{year}.md"
-    _pdf_path  = output_dir / f"{portfolio_title}_{year}_Relazione_Tecnica.pdf"
+    _card_path = output_dir / f"{portfolio_title.replace(' ', '_').lower()}_{year}_{profile}.md"
+    _pdf_path  = output_dir / f"{portfolio_title}_{year}_{profile}_Relazione_Tecnica.pdf"
 
     generate_ptf_card_md(
         portfolio_title    = portfolio_title,
