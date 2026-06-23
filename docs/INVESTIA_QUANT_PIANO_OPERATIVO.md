@@ -1,17 +1,19 @@
 # investia-quant — Piano Operativo
 
-**Ultimo aggiornamento**: 19 giugno 2026
+**Ultimo aggiornamento**: 23 giugno 2026
 **Root progetto**: `~/investia-quant`
 
 ---
 
 ## Stato attuale
 
-**Branch `main`** aggiornato e pulito. Ultimi commit:
+**Branch `main`** aggiornato e pulito. Ultimi commit (sessione 22/06):
 ```
+feat(r-cluster): pool di selezione titoli profile+regime-aware (AVOID eleggibile per satellite, mai per core) — non altera n_top
+feat(r-cluster): tratta AVOID a pari merito con HIGH_MOMENTUM per profilo satellite (allocazione, selezione dominante per-finestra, proxy regime)
+fix(r-portfolio): n_top=1 escluso per asset_type=stock anche su path Standard (era solo su Cluster) — risolve concentrazione estrema (es. SNDK 60x)
+fix(report): risolvi universo sp100/nasdaq100 via Wikipedia (era alpha_sp100_tickers_by_year, lista K-portfolio sbagliata)
 fix(r-portfolio): risk_off_tickers per-PTF con default da k_tickers (era sempre vuoto, pf_rot None silenzioso)
-docs: aggiorna piano operativo con rename r-analyze/l-analyze e flag --pdf
-feat(cli): rename analyze→r-analyze, lazy-analyze→l-analyze, flag --pdf simmetrico, relazione tecnica AI Lazy, IQ_ADMIN_GUIDE
 fix(mc-plot): serializzazione Timestamp in write_image dei fan chart MC (kaleido/orjson)
 fix(r-portfolio): salva su wfo_file_save solo il path scelto in §8, non sempre Standard
 ```
@@ -19,10 +21,8 @@ fix(r-portfolio): salva su wfo_file_save solo il path scelto in §8, non sempre 
 **Working tree**: clean.
 **Branch parcheggiati**: nessuno.
 
-⚠️ **Regola operativa fissata il 19/06** (violata e recuperata a caro prezzo in
-questa stessa sessione): **un branch alla volta, commit + merge in `main`
-prima di aprirne un altro**. Niente nuovi branch finché quello corrente non
-è chiuso. Niente stash dimenticati.
+⚠️ **Regola operativa** (fissata il 19/06, rispettata il 22/06): **un branch
+alla volta, commit + merge in `main` prima di aprirne un altro**.
 
 ### Notebooks dev attivi
 
@@ -186,6 +186,72 @@ fix di analisi) e applica l'overlay (stesso overlay "universo allargato"
 già verificato, non serve logica nuova — solo portarla nel runtime).
 
 ### Priorità alta
+
+**0.c Generazione narrativa della relazione tecnica via LLM** · filiera R · proposta di redesign, da valutare con calma
+
+Emerso il 23/06 inseguendo un secondo bug di incoerenza nella relazione
+(`_diagnose_mc` forzava `recommended_path=None` a `'std'` per
+"retro-compat", scrivendo "path candidato al deploy" anche quando nessun
+path supera l'OFC — stessa famiglia del bug del 22/06, sintomo di un
+problema più ampio): la relazione tecnica oggi è generata da una
+combinatoria di `if/elif` scritta a mano per ogni sezione (§3, §6.b, §7),
+una per ciascuna combinazione di promosso/non-promosso × Standard/Cluster
+× profilo × skill profile. Ogni nuovo parametro (oggi: `profile`) aumenta
+la combinatoria e introduce rischio di sezioni che si disallineano tra
+loro — già successo due volte in due giorni consecutivi.
+
+Proposta valutata: separare nettamente **calcolo** (resta deterministico
+Python — OFC, Sharpe/MaxDD/CAGR, `_select_path_by_profile`, tutto
+invariato) da **narrazione** (LLM, una sola chiamata che riceve un
+pacchetto fatti finale e immutabile — es. JSON con tutti i verdetti/numeri
+già calcolati — e scrive §3/§6.b/§7 in un colpo, garantendo coerenza
+interna per costruzione invece che per disciplina di chi scrive il
+codice).
+
+Coerente con "Agente generazione automatica relazioni tecniche (in
+sviluppo)" già presente nel piano da prima, e con l'uso LLM già attivo
+altrove nel progetto (agente K-strategy).
+
+Rischi da non sottovalutare prima di procedere: hallucination numerica
+(serve validare ogni cifra nel testo generato contro il pacchetto fatti,
+non fidarsi alla cieca), riproducibilità (temperature=0 + salvataggio
+dell'output come parte dell'audit trail), nessun problema reale di
+costo/latenza per un report a PTF.
+
+Non task immediato — cambiamento di architettura della relazione, non un
+fix puntuale. Da discutere con calma in una sessione dedicata, non
+implementare di getto.
+
+**0.b Clustering ricalcolato per finestra IS — mai implementato** · filiera R · gap di design metodologico
+
+Verificato il 22/06: l'intento di progetto era un clustering realmente
+adattivo al mercato — ricalcolato per ogni finestra In-Sample (solo dati
+fino a quel punto) e testato Out-Of-Sample sulla finestra successiva,
+coerente col principio WFO stesso. Non è mai stato implementato:
+`run_clustered_wfo` riceve oggi una partizione cluster già calcolata
+(STEP 1, una sola volta, su dati recenti fino a "oggi" — lookback_days=504)
+e la applica identica a tutte le 13 finestre storiche, comprese quelle di
+10 anni fa. Bias look-ahead sulla composizione dei cluster (la struttura
+di mercato di oggi decide come si raggruppavano i titoli nel 2015),
+distinto dal bias già noto sull'universo simbolico (Wikipedia oggi
+applicato a tutto lo storico, mai risolto, resta accettato come limite
+noto del motore).
+
+Idea valutata e giudicata metodologicamente corretta, ma non banale:
+- Costo computazionale: 13x il costo della fase di clustering (oggi 1
+  esecuzione, diventerebbero 13)
+- Rischio rumore: finestre iniziali (2012-2014) con poco storico
+  potrebbero produrre partizioni instabili — rischio di sostituire un
+  bias sistematico con rumore casuale, da verificare con dati reali
+- Coerenza col pool eleggibile profile+regime appena costruito (22/06):
+  se la partizione cambia per finestra, un titolo può cambiare label nel
+  tempo → turnover più alto, e il motore oggi non modella commissioni
+  (Total Fees Paid: 0.0 in tutti i log) — diventerebbe più rilevante
+
+Non task immediato (i fix del 22/06 hanno già dato miglioramento concreto
+senza questo), ma il prossimo grande tema metodologico per la filiera R —
+tocca la validità di fondo dei numeri presentati in relazione tecnica.
+Richiede design session dedicata prima di assegnare a Code.
 
 **1. Web Lazy portfolio** · filiera Lazy
 
@@ -352,6 +418,9 @@ Non risolvere autonomamente. Segnala e attendi istruzioni.
 ### B-008 — `wfo_file_save` scriveva sempre il path Standard, mai il path scelto in §8 · RESOLVED (19/06)
 ### B-009 — `write_image` fan chart MC crash su Timestamp non serializzabile (kaleido/orjson) · RESOLVED (19/06)
 ### B-010 — `risk_off_tickers` sempre vuota in `run_r_portfolio_analysis` (chiave mai esistita in r_portfolios.py) → pf_rot Risk ON/OFF sempre None, fallback silenzioso su Base · RESOLVED (19/06, solo lato analisi — vedi gap aperto §0 priorità massima per il runtime)
+### B-011 — `iq report` risolveva l'universo sp100/nasdaq100 con `alpha_sp100_tickers_by_year` (lista K-portfolio, top performer annuali) invece che dinamicamente via Wikipedia come `iq run`/`iq r-analyze` — selezioni e statistiche storiche non coincidenti con l'esecuzione reale, specialmente a cavallo di cambio anno · RESOLVED (22/06)
+### B-012 — `n_top` in `build_cluster_grids` calcolato come percentuale della dimensione cluster (fino a 14+ per cluster grandi) invece che range assoluto — diluiva la concentrazione del cluster HIGH_MOMENTUM, vanificandone lo scopo · RESOLVED (22/06, introdotta lookup `resolve_n_top(asset_type, profile)`)
+### B-013 — stesso problema di B-012 ma sul `full_grid` del path Standard: `n_top=1` non escluso per `asset_type="stock"` → concentrazione totale su singolo titolo (caso reale: SNDK, rally ~60x in un anno, catturato al 100% da `n_top=1` nella finestra 2026) · RESOLVED (22/06, stessa `resolve_n_top` riusata)
 
 ---
 
@@ -527,6 +596,107 @@ Regola fissata esplicitamente per il futuro (vedi Stato attuale).
 **Accantonato**: panel comparativo R-portfolio e save/load completo per
 ri-analisi decisionale (item 6, priorità bassa) — volumi PTF troppo bassi
 oggi per giustificare il lavoro.
+
+### Sessione 22/06/2026 — Coerenza profile/asset_type su tutta la filiera R, 3 bug critici, 1 redesign cluster
+
+**Trigger**: verifica visiva del PDF `Alpha Nasdaq100` ha rivelato numeri
+assurdi (Cum Return path Standard: 75774%) — non accettato come "normale",
+indagine a fondo fino alla causa reale invece di patch superficiali.
+
+**Bug trovati e risolti in cascata (vedi B-011/012/013):**
+1. `iq report` usava l'universo K-portfolio (lista curata 25 ticker) per
+   PTF R-portfolio a universo simbolico (sp100/nasdaq100) — selezioni e
+   statistiche non coincidenti con l'esecuzione reale. Causa scoperta
+   grazie a un confronto con calcolo esterno indipendente (Luca+Emanuele),
+   prima dell'invio ai gestori — nessun danno verso clienti, solo verso
+   le statistiche interne in fase di verifica.
+2. `n_top` proporzionale alla dimensione cluster (fino a 14+) in
+   `build_cluster_grids` — diluiva la concentrazione di HIGH_MOMENTUM.
+   Fix: lookup `resolve_n_top(asset_type, profile)`, con tabella esplicita
+   (stock/etf × satellite/core), 1 escluso per singoli titoli (rischio di
+   concentrazione totale su un solo nome).
+3. Stesso problema riscontrato anche sul `full_grid` Standard (gap della
+   patch precedente, non propagata lì) — causa diretta di un episodio
+   reale: `n_top=1` ha concentrato l'intero PTF su SNDK (rally ~60x/anno,
+   verificato NON essere dato corrotto — variazioni giornaliere max 28%,
+   nessun salto anomalo) per la finestra 2026.
+
+**Redesign cluster AVOID/HIGH_MOMENTUM (4 fix in cascata, stesso filo):**
+- Scoperta che `aggregate_cluster_portfolios` (meccanismo a pesi fissi)
+  è dead code — mai chiamata da nessun punto della pipeline reale
+- Il meccanismo vivo è `merge_cluster_summary_dfs`: winner-take-all per
+  finestra, con fallback arbitrario (`available[0]`, ordine di dict) se
+  la label richiesta (default `HIGH_MOMENTUM`) non esiste nella partizione
+- Fix 1: selezione del cluster dominante per-finestra basata su confronto
+  diretto di TestScore tra label ammesse (satellite: AVOID vs HIGH_MOMENTUM
+  a pari merito; core: mai AVOID), non più nome fisso né fallback arbitrario
+- Fix 2: proxy di calcolo regime (`equity_tickers` per `compute_market_regime`)
+  esteso per coerenza — satellite include AVOID∪HIGH_MOMENTUM, core solo
+  HIGH_MOMENTUM (prima: solo HIGH_MOMENTUM sempre, fallback su tutto
+  l'universo se assente)
+- Fix 3 (il più rilevante): il pool di titoli eleggibili per la selezione
+  finale (non solo i parametri) ora dipende da profilo×regime — satellite
+  ON pesca da AVOID∪HIGH_MOMENTUM, non solo dal cluster vincente. `n_top`
+  resta invariato (nessuna alterazione del numero di posizioni). Risultato
+  su Alpha Nasdaq100: Cluster CAGR 26.5%→46.1%, Sharpe 0.97→1.46, Skill
+  Profile No-skill→Selection-driven (B1 ora PASS)
+
+**Gap di design scoperto e valutato, non risolto oggi**: la partizione
+cluster è calcolata una volta su dati recenti e applicata identica a
+tutte le finestre storiche — bias look-ahead distinto da quello
+sull'universo. Vedi priorità alta, item 0.b.
+
+**Confermato indipendentemente, nessuna azione**: il meccanismo Risk
+ON/OFF (overlay "universo allargato") è identico per Standard e Cluster —
+timore iniziale di un meccanismo Cluster diverso, infondato.
+
+**Metodo di sessione**: ogni fix preceduto da lettura diretta del codice
+reale (mai supposizioni accettate senza verifica grep/sed), inclusi alcuni
+errori di percorso recuperati esplicitamente (es. proposta iniziale di
+blend di rendimenti scartata perché concettualmente sbagliata — si stanno
+selezionando titoli, non simulando scenari MC).
+
+### Sessione 23/06/2026 — Incoerenza Standard/Cluster nella relazione (continuazione), profile-awareness raccomandazione
+
+**Bug 1 — incoerenza §3 vs §7 (criterio di raccomandazione disallineato)**:
+`_recommended_path()` (usata da §3 e dal box alternativo §7) usava tie-break
+fisso "Cluster vince se promosso"; `_build_verdict_text` CASO C (verdetto
+principale §7) usava invece confronto Sharpe con soglia 0.05. Le due
+potevano disaccordare quando entrambi i path erano PROMOTED — verificato
+su Alpha Nasdaq100 satellite: §3 evidenziava Cluster, §7 raccomandava
+Standard. RESOLVED: criterio unificato in `_select_path_by_profile()`,
+ora **profile-aware** (non lo era nemmeno nella versione precedente):
+satellite → Sharpe con soglia 0.05 (comportamento storico, invariato);
+core → MaxDD più basso, con eccezione se il CAGR di quel path è inferiore
+al benchmark (capital preservation non ha senso se non batte nemmeno il
+benchmark). Test sintetici 3/3 confermati prima del rerun reale.
+
+**Intervento minimo collaterale**: nome PDF/card `.md` non includeva
+`profile` — due run stesso giorno con profili diversi si sovrascrivevano.
+Fix diretto (un comando sed, no Code): aggiunto `{profile}` al nome file.
+
+**Bug 2 — trovato testando il caso "nessuno promosso" (profile=core su
+Alpha Nasdaq100)**: `_diagnose_mc` forzava `recommended_path=None` a
+`'std'` ("retro-compat"), scrivendo "Il path candidato al deploy è
+Standard" in §6.b anche quando l'OFC non promuove nessun path — mentre §7
+correttamente concludeva "deploy non raccomandato". In corso di fix
+(`fix/diagnose-mc-no-path-promoted`) al momento della chiusura sessione —
+narrativa onesta per il caso genuino "nessuno promosso", più verifica
+collaterale sulla tabella §3 (la riga "Cluster" potrebbe restare
+evidenziata anche in questo caso, da controllare separatamente).
+
+**Proposta emersa, non implementata**: generazione narrativa via LLM
+invece di combinatoria if/elif scritta a mano — vedi priorità alta, item
+0.c. Motivata direttamente da questi due bug consecutivi, stessa famiglia
+di causa (sezioni diverse, logiche scritte a mano separatamente, rischio
+di disallineamento ad ogni nuovo parametro).
+
+**Incidente recuperato**: confusione tra macchine (`irina`/`adriana`) —
+`origin/main` su `irina` sembrava non avere i commit del 22/06; causa
+reale: `irina` non aveva fatto `git pull` recente, non un problema di
+lavoro perso. Verificato che il lavoro era già su `adriana`, committato e
+pushato. Nessuna perdita, solo allarme eccessivo per non aver controllato
+con un semplice fetch prima di concludere il peggio.
 
 
 ## Deploy VPS — procedura standard
