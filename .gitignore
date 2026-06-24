@@ -102,3 +102,4 @@ K-Strategy-Agent/Claude-K-strategy_Key.sh
 K-Strategy-Agent/k_strategy_agent_output.ipynb
 docs/AI_vs_Quant_InvestIA.pdf
 docs/*.pdf
+logs/k_agent.log

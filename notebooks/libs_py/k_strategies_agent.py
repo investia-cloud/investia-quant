@@ -4081,3 +4081,97 @@ def strategy_axp_std_momentum(data: pd.DataFrame, params: dict, year: int | None
     shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
     shifted_exits   = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
     return shifted_entries, shifted_exits
+
+
+# ─────────────────────────────────────
+# Fonte: How to Build a Full Backtest Framework — And Why Good Strategy Might Still Be Useless
+# URL:   https://medium.com/@Kryptera/how-to-build-a-full-backtest-framework-and-why-good-strategy-might-still-be-useless-e097291f6c9d
+# Data:  2026-06-24 02:00
+# ─────────────────────────────────────
+
+############################
+# Strategy bb_mcginley
+############################
+
+import pandas as pd
+import numpy as np
+
+
+def ind_bb_mcginley_bandwidth_above_avg(df: pd.DataFrame,
+                                        bb_period: int = 20,
+                                        bb_std: float = 2.0,
+                                        bb_lookback: int = 20) -> pd.Series:
+    close = df['Close']
+    ma = close.rolling(bb_period, min_periods=1).mean()
+    std = close.rolling(bb_period, min_periods=1).std(ddof=0)
+    upper = ma + bb_std * std
+    lower = ma - bb_std * std
+    safe_ma = np.where(ma != 0, ma, 1.0)
+    bw = np.where(ma != 0, (upper - lower) / safe_ma, 0.0)
+    bw_series = pd.Series(bw, index=close.index)
+    bw_avg = bw_series.rolling(bb_lookback, min_periods=1).mean()
+    return bw_series > bw_avg
+
+
+def ind_bb_mcginley_dynamic(df: pd.DataFrame,
+                            mcginley_period: int = 14) -> pd.Series:
+    close = df['Close']
+    arr = close.values
+    n = len(arr)
+    md = np.empty(n)
+    md[0] = arr[0]
+    k = mcginley_period
+    for i in range(1, n):
+        prev = md[i - 1]
+        price = arr[i]
+        denom = k * (price / prev) ** 4 if prev != 0 else k
+        if denom == 0:
+            denom = 1.0
+        md[i] = prev + (price - prev) / denom
+    return pd.Series(md, index=close.index)
+
+
+def ind_bb_mcginley_exit_signal(df: pd.DataFrame,
+                                mcginley: pd.Series) -> pd.Series:
+    open_price = df['Open']
+    # Open crosses below McGinley after being above it
+    above_prev = open_price.shift(1) >= mcginley.shift(1)
+    below_now = open_price < mcginley
+    return above_prev & below_now
+
+
+strategy_bb_mcginley_param_ranges = {
+    'bb_period_range'    : range(16, 25, 4),
+    'bb_std_range'       : range(1, 4, 1),
+    'bb_lookback_range'  : range(16, 25, 4),
+    'mcginley_range'     : range(11, 18, 3),
+}
+
+
+def strategy_bb_mcginley(data: pd.DataFrame, params: dict, year: int | None = None):
+    bb_period    = params.get('bb_period_range')
+    bb_std       = float(params.get('bb_std_range'))
+    bb_lookback  = params.get('bb_lookback_range')
+    mcginley_p   = params.get('mcginley_range')
+
+    df = data.copy()
+
+    bw_above_avg = ind_bb_mcginley_bandwidth_above_avg(
+        df, bb_period=bb_period, bb_std=bb_std, bb_lookback=bb_lookback
+    )
+    mcginley = ind_bb_mcginley_dynamic(df, mcginley_period=mcginley_p)
+    exit_sig = ind_bb_mcginley_exit_signal(df, mcginley=mcginley)
+
+    df['BB_Width_Above_Avg'] = bw_above_avg
+    df['McGinley'] = mcginley
+    df['Exit_Signal'] = exit_sig
+
+    if year is not None:
+        df = df[df.index.year == int(year)]
+
+    entries = df['BB_Width_Above_Avg']
+    exits   = df['Exit_Signal']
+
+    shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    shifted_exits   = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    return shifted_entries, shifted_exits
