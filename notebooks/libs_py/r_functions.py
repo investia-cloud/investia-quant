@@ -7152,7 +7152,7 @@ def analyze_and_cluster_universe(
             reverse=True,
         )
 
-        forced_labels = ["DEFENSIVE", "BALANCED", "HIGH_MOMENTUM"]
+        forced_labels = ["HIGH_MOMENTUM", "BALANCED", "DEFENSIVE"]
 
         for i, cid in enumerate(sorted_cids):
             idx = min(i, len(forced_labels) - 1)
@@ -7863,6 +7863,93 @@ def get_clean_summary_df(merged: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def _compute_cluster_checkpoints(
+    prices_df        : pd.DataFrame,
+    full_start_date,
+    full_end_date,
+    k                : int  = 3,
+    n_clusters       : int  = 3,
+    adaptive_k       : bool = False,
+    adaptive_k_method: str  = 'hybrid',
+    min_cluster_size : int  = 4,
+) -> list[tuple]:
+    """
+    Compute k cluster partitions at expanding-window checkpoints.
+
+    For each checkpoint t_i (the end of the i-th equal sub-period), the
+    partition is computed on ALL data from full_start_date to t_i
+    (expanding window, no look-ahead).
+
+    Returns a sorted list of (checkpoint_date: pd.Timestamp, cluster_result: dict).
+    Uses _split_history_into_periods only to derive the k checkpoint dates.
+    """
+    periods = _split_history_into_periods(full_start_date, full_end_date, k)
+    checkpoints = []
+
+    for i, (_, chk_date) in enumerate(periods):
+        chk_date = pd.Timestamp(chk_date)
+        px_chk = prices_df.loc[:chk_date].dropna(how='all')
+
+        if len(px_chk) < 60:
+            print(f"[CLUSTER CP {i+1}/{k}] {chk_date.date()}: "
+                  f"dati insufficienti ({len(px_chk)} righe < 60) — skip")
+            continue
+
+        print(f"[CLUSTER CP {i+1}/{k}] Partizione su dati fino al "
+              f"{chk_date.date()} ({len(px_chk)} trading days)…")
+        try:
+            result = analyze_and_cluster_universe(
+                prices            = px_chk,
+                n_clusters        = n_clusters,
+                lookback_days     = len(px_chk) + 1,  # usa tutti i dati disponibili
+                plot              = False,
+                adaptive_k        = adaptive_k,
+                adaptive_k_method = adaptive_k_method,
+                min_cluster_size  = min_cluster_size,
+                save_plots        = False,
+                plots_dir         = None,
+            )
+            if result is not None:
+                _n_lab = sorted({v for v in result.get('cluster_labels', {}).values()})
+                print(f"[CLUSTER CP {i+1}/{k}] OK — "
+                      f"k={len(result.get('cluster_groups', {}))} cluster, "
+                      f"label={_n_lab}")
+                checkpoints.append((chk_date, result))
+            else:
+                print(f"[CLUSTER CP {i+1}/{k}] {chk_date.date()}: "
+                      f"clustering restituisce None — skip")
+        except Exception as _e:
+            print(f"[CLUSTER CP {i+1}/{k}] {chk_date.date()}: errore — {_e} — skip")
+
+    return checkpoints
+
+
+def _cluster_partition_for_window(window_start_date, checkpoints: list) -> dict:
+    """
+    Returns the cluster_result from the most recent checkpoint with
+    checkpoint_date <= window_start_date.
+
+    If no checkpoint precedes the window (window earlier than all checkpoints),
+    falls back to the first checkpoint with a warning — does not block execution.
+    """
+    ws = pd.Timestamp(window_start_date)
+    best = None
+    best_date = None
+
+    for cp_date, cp_result in checkpoints:  # assumed sorted ascending
+        if cp_date <= ws:
+            best = cp_result
+            best_date = cp_date
+
+    if best is None:
+        cp_date0, best = checkpoints[0]
+        print(f"[WARN] Finestra {ws.date()} precede tutti i checkpoint "
+              f"(primo: {cp_date0.date()}) — "
+              f"uso primo checkpoint (possibile look-ahead minimo).")
+
+    return best
+
+
 def run_wfo_pipeline(
     # Dati
     stocks_data_raw  : pd.DataFrame,
@@ -7891,6 +7978,7 @@ def run_wfo_pipeline(
     adaptive_k       : bool  = False,
     adaptive_k_method: str   = 'hybrid',
     min_cluster_size : int   = None,   # <<< NUOVO: vincolo anti-frammentazione
+    expanding_clusters: bool = True,   # <<< calcola partizioni a checkpoint espandenti
     profile          : str   = "satellite",
     asset_type       : str   = "stock",
 
@@ -7980,6 +8068,7 @@ def run_wfo_pipeline(
     }
 
     results = {}
+    _cluster_checkpoints = None   # set inside use_clustering block if expanding_clusters=True
 
     if use_clustering:
         # ----------------------------------------------------------
@@ -8103,6 +8192,47 @@ def run_wfo_pipeline(
             )
 
         # ----------------------------------------------------------
+        # STEP 1b — Checkpoint espandenti (se expanding_clusters=True)
+        # ----------------------------------------------------------
+        if expanding_clusters:
+            print("\n" + "="*55)
+            print("STEP 1b — Cluster checkpoint espandenti (k=3)")
+            print("="*55)
+            _cluster_checkpoints = _compute_cluster_checkpoints(
+                prices_df         = prices_df,
+                full_start_date   = prices_df.index.min(),
+                full_end_date     = prices_df.index.max(),
+                k                 = 3,
+                n_clusters        = selected_k,
+                adaptive_k        = adaptive_k,
+                adaptive_k_method = adaptive_k_method,
+                min_cluster_size  = min_cluster_size,
+            )
+            if _cluster_checkpoints:
+                print(f"[EXPANDING CLUSTERS] {len(_cluster_checkpoints)} checkpoint calcolati: "
+                      + ", ".join(f"{d.date()}" for d, _ in _cluster_checkpoints))
+                # Tabella di confronto: ticker che cambiano cluster tra checkpoint successivi
+                print("\n  Checkpoint | Totale ticker | Cambi vs precedente")
+                print("  " + "-"*48)
+                _prev_cmap = None
+                for _ci, (_cp_date, _cp_res) in enumerate(_cluster_checkpoints):
+                    _cp_cmap = _cp_res.get('cluster_map', {})
+                    if _prev_cmap is None:
+                        _n_changed = "—"
+                    else:
+                        _shared = set(_cp_cmap) & set(_prev_cmap)
+                        _n_changed = sum(
+                            1 for t in _shared if _cp_cmap[t] != _prev_cmap[t]
+                        )
+                    print(f"  CP {_ci+1} ({_cp_date.date()}) | "
+                          f"{len(_cp_cmap):>13} | {_n_changed}")
+                    _prev_cmap = _cp_cmap
+            else:
+                print("[WARN][EXPANDING CLUSTERS] Nessun checkpoint calcolato — "
+                      "il pool per finestra userà la partizione statica.")
+                _cluster_checkpoints = None
+
+        # ----------------------------------------------------------
         # STEP 2 — Griglie per cluster
         # ----------------------------------------------------------
         print("\n" + "="*55)
@@ -8196,7 +8326,8 @@ def run_wfo_pipeline(
             merged_summary        = merged_summary,
             selected_k            = selected_k,
             min_cluster_size      = min_cluster_size,
-            effective_max_clusters= effective_max_clusters,
+            effective_max_clusters  = effective_max_clusters,
+            cluster_checkpoints     = _cluster_checkpoints,
         ))
 
     else:
@@ -8254,20 +8385,44 @@ def run_wfo_pipeline(
     # merged_summary ha ancora _regime; summary_df_final l'ha già rimossa.
     _per_window_universe = None
     if use_clustering and cluster_result is not None and merged_summary is not None:
-        _cmap    = cluster_result['cluster_map']    # {ticker: cid}
-        _clabels = cluster_result['cluster_labels'] # {cid: label}
+        _cmap_static    = cluster_result['cluster_map']    # {ticker: cid} — partizione finale
+        _clabels_static = cluster_result['cluster_labels'] # {cid: label}
         _risk_off_cols = set(risk_off_data.columns) if risk_off_data is not None else set()
+
+        _use_expanding = (_cluster_checkpoints is not None and len(_cluster_checkpoints) > 0)
 
         _per_window_universe = {}
         print(f"\n[STEP 6] Pool eleggibili per finestra (profile={profile}):")
-        print(f"  [NOTA] cluster_map statico — pool identico per tutte le finestre ON, "
-              f"identico per tutte le finestre OFF.")
+        if _use_expanding:
+            print(f"  [EXPANDING] Partizione per-finestra da checkpoint espandenti "
+                  f"({len(_cluster_checkpoints)} checkpoint).")
+        else:
+            print(f"  [STATIC] cluster_map statico — pool identico per tutte le finestre ON, "
+                  f"identico per tutte le finestre OFF.")
         for _win, _row in merged_summary.iterrows():
             _regime_val  = int(_row.get('_regime', 1))
             _pool_labels = _build_cluster_pool_labels(profile, _regime_val)
-            _pool_tickers = {t for t, cid in _cmap.items()
-                             if _clabels.get(cid) in _pool_labels}
-            _present_labels = {_clabels.get(cid) for t, cid in _cmap.items()
+
+            # Partizione per-finestra (expanding) o statica (legacy)
+            if _use_expanding:
+                try:
+                    _win_start_str = str(_win).split("→")[0].strip()
+                    _win_start     = pd.Timestamp(_win_start_str)
+                    _cp_res        = _cluster_partition_for_window(_win_start, _cluster_checkpoints)
+                    _cmap_win    = _cp_res['cluster_map']
+                    _clabels_win = _cp_res['cluster_labels']
+                except Exception as _e_cp:
+                    print(f"[WARN] expanding_clusters: parse fallito per window={str(_win)!r} "
+                          f"({_e_cp}) — fallback a partizione statica per questa finestra.")
+                    _cmap_win    = _cmap_static
+                    _clabels_win = _clabels_static
+            else:
+                _cmap_win    = _cmap_static
+                _clabels_win = _clabels_static
+
+            _pool_tickers = {t for t, cid in _cmap_win.items()
+                             if _clabels_win.get(cid) in _pool_labels}
+            _present_labels = {_clabels_win.get(cid) for t, cid in _cmap_win.items()
                                if t in _pool_tickers} - {None}
             _missing_labels = _pool_labels - _present_labels
             if not _pool_tickers:
@@ -12632,6 +12787,60 @@ def _diagnose_ofc(ofc_report_std: dict, ofc_report_cluster) -> tuple:
     return std_txt, clu_txt
 
 
+# ---------------------------------------------------------------------------
+# Bande di indecisione per confronti numerici fra varianti.
+# Differenze inferiori a *_TIE non sono operativamente distinguibili
+# (rumore campionario, non superiorità strutturale).
+_SHARPE_MARGIN_TIE   = 0.03   # diff Sharpe < 0.03: zona di indecisione → home advantage
+_SHARPE_MARGIN_CLEAR = 0.07   # diff Sharpe ≥ 0.07: superiorità netta
+_MAXDD_MARGIN_TIE    = 0.005  # diff MaxDD < 0.5pp: zona di indecisione → home advantage
+_MAXDD_MARGIN_CLEAR  = 0.020  # diff MaxDD ≥ 2pp: protezione downside significativamente diversa
+# ---------------------------------------------------------------------------
+
+
+def _comparison_zone(diff: float | None, margin_low: float, margin_high: float) -> str:
+    """Classifica |diff| in 'tie' | 'borderline' | 'clear'."""
+    if diff is None:
+        return 'tie'
+    if abs(diff) < margin_low:
+        return 'tie'
+    if abs(diff) < margin_high:
+        return 'borderline'
+    return 'clear'
+
+
+def _metric_reason_text(
+    zone             : str,
+    winner_val       : float | None,
+    loser_val        : float | None,
+    fmt_winner       : str,
+    fmt_loser        : str,
+    metric_name      : str,
+    higher_is_better : bool,
+    home_label       : str,
+    home_reason      : str = "struttura e protezione downside",
+) -> str:
+    """
+    Costruisce una stringa di motivazione per un confronto metrico.
+    Guardrail: se winner_val non batte realmente loser_val in un
+    contesto non-tie, sopprime i numeri e logga [ERROR].
+    """
+    if zone == 'tie':
+        return (f"metriche sostanzialmente equivalenti "
+                f"({metric_name}: {fmt_winner} vs {fmt_loser}), "
+                f"si preferisce <b>{home_label}</b> per {home_reason}")
+    if winner_val is not None and loser_val is not None:
+        is_coherent = (winner_val > loser_val) if higher_is_better else (winner_val < loser_val)
+        if not is_coherent:
+            print(f"[ERROR] _metric_reason_text: verdetto implica '{metric_name}' "
+                  f"winner={fmt_winner} vs loser={fmt_loser} ma la direzione "
+                  f"è invertita — frase numerica soppressa.")
+            return f"metriche composite ({metric_name}: confronto numerico non coerente con verdetto)"
+    qualifier = "lievemente " if zone == 'borderline' else ""
+    direction = "superiore"   if higher_is_better    else "inferiore"
+    return f"{metric_name} {qualifier}{direction} ({fmt_winner} vs {fmt_loser})"
+
+
 def _select_path_by_profile(
     profile: str,
     sharpe_std: float | None,
@@ -12645,10 +12854,12 @@ def _select_path_by_profile(
     """
     Sceglie 'std' o 'cluster' quando entrambi i path sono PROMOTED.
 
-    satellite: preferisce Sharpe più alto, soglia 0.05.
-               Se (sharpe_std - sharpe_cluster) > 0.05 → 'std', altrimenti 'cluster'.
+    satellite: preferisce Sharpe più alto con banda di indecisione.
+               Se |diff| < _SHARPE_MARGIN_TIE → home advantage 'cluster'.
+               Altrimenti vince chi ha Sharpe maggiore.
 
     core:      preferisce il path con MaxDD assoluto più basso (capital preservation).
+               Banda _MAXDD_MARGIN_TIE: zona di indecisione → home advantage 'cluster'.
                Eccezione: se il CAGR del path preferito < CAGR benchmark,
                sceglie l'altro path (capital preservation senza beat-benchmark è inutile).
 
@@ -12656,24 +12867,175 @@ def _select_path_by_profile(
     """
     if profile == "satellite":
         if sharpe_std is not None and sharpe_cluster is not None:
-            if (sharpe_std - sharpe_cluster) > 0.05:
+            _diff = sharpe_std - sharpe_cluster
+            _zone = _comparison_zone(_diff, _SHARPE_MARGIN_TIE, _SHARPE_MARGIN_CLEAR)
+            if _zone != 'tie' and _diff > 0:
                 return 'std'
         return 'cluster'
     else:  # core
         if maxdd_std is not None and maxdd_cluster is not None:
-            if maxdd_cluster < maxdd_std:
-                # cluster ha MaxDD migliore
+            _diff_dd = maxdd_std - maxdd_cluster   # positivo se cluster migliore (MaxDD più basso)
+            _zone_dd = _comparison_zone(_diff_dd, _MAXDD_MARGIN_TIE, _MAXDD_MARGIN_CLEAR)
+            if _zone_dd == 'tie':
+                _preferred = 'cluster'           # zona indecisione: home advantage = cluster
+            elif _diff_dd > 0:
+                _preferred = 'cluster'           # cluster ha MaxDD inferiore
+            else:
+                _preferred = 'std'               # std ha MaxDD inferiore
+            if _preferred == 'cluster':
                 if (cagr_cluster is not None and cagr_benchmark is not None
                         and cagr_cluster < cagr_benchmark):
-                    return 'std'   # eccezione: CAGR cluster sotto benchmark
+                    return 'std'
                 return 'cluster'
             else:
-                # std ha MaxDD migliore (o pari)
                 if (cagr_std is not None and cagr_benchmark is not None
                         and cagr_std < cagr_benchmark):
-                    return 'cluster'  # eccezione: CAGR std sotto benchmark
+                    return 'cluster'
                 return 'std'
         return 'cluster'  # fallback se MaxDD non disponibile
+
+
+# ---------------------------------------------------------------------------
+# Sistema di rating ponderato a 4 varianti (CAGR/Sharpe/Sortino/MaxDD).
+# Sostituisce il confronto a soglia/banda per la raccomandazione finale in §7.
+# Pesi separati per profilo — modificabili qui senza toccare la logica.
+_RATING_WEIGHTS = {
+    # satellite: alpha-seeking — Sortino (tail-ratio) e CAGR primari
+    'satellite': {'cagr': 0.25, 'sharpe': 0.15, 'sortino': 0.35, 'maxdd': 0.25},
+    # core: capital-preservation — MaxDD dominante
+    'core':      {'cagr': 0.10, 'sharpe': 0.15, 'sortino': 0.25, 'maxdd': 0.50},
+}
+
+# Etichette leggibili per le 4 chiavi di metrics_comparison
+_VARIANT_LABELS = {
+    'cluster_riskoff': 'Cluster — Risk ON/OFF',
+    'cluster_base':    'Cluster — Base',
+    'std_riskoff':     'Standard — Risk ON/OFF',
+    'std_base':        'Standard — Base',
+}
+# ---------------------------------------------------------------------------
+
+
+def _gradient_color(value) -> object:
+    """
+    Mappa un valore normalizzato 0-1 su un colore ReportLab (rosso → giallo → verde).
+    Palette pastello per garantire leggibilità del testo nero in ogni punto.
+      0.0 → #F4CCCA  (rosso pastello)
+      0.5 → #FFF2CC  (giallo pastello)
+      1.0 → #C6EFCE  (verde pastello)
+    Interpola linearmente su [0, 0.5] e [0.5, 1]. None/NaN → #E0E0E0 (grigio neutro).
+    """
+    try:
+        v = float(value)
+        if v != v:   # NaN
+            raise ValueError
+    except (TypeError, ValueError):
+        from reportlab.lib import colors as _rlc
+        return _rlc.HexColor('#E0E0E0')
+
+    v = max(0.0, min(1.0, v))
+
+    # colori pastello RGB 0-255
+    _RED = (244, 204, 202)   # #F4CCCA
+    _YEL = (255, 242, 204)   # #FFF2CC
+    _GRN = (198, 239, 206)   # #C6EFCE
+
+    if v <= 0.5:
+        t = v / 0.5
+        r = int(_RED[0] + t * (_YEL[0] - _RED[0]))
+        g = int(_RED[1] + t * (_YEL[1] - _RED[1]))
+        b = int(_RED[2] + t * (_YEL[2] - _RED[2]))
+    else:
+        t = (v - 0.5) / 0.5
+        r = int(_YEL[0] + t * (_GRN[0] - _YEL[0]))
+        g = int(_YEL[1] + t * (_GRN[1] - _YEL[1]))
+        b = int(_YEL[2] + t * (_GRN[2] - _YEL[2]))
+
+    from reportlab.lib import colors as _rlc
+    return _rlc.Color(r / 255, g / 255, b / 255)
+
+
+def _pf_metric(pf, metric: str) -> float | None:
+    """Estrae una metrica da un oggetto vbt.Portfolio. Ritorna None se non disponibile."""
+    if pf is None:
+        return None
+    try:
+        if metric == 'cagr':    return float(pf.annualized_return())
+        if metric == 'sharpe':  return float(pf.sharpe_ratio())
+        if metric == 'maxdd':   return abs(float(pf.max_drawdown()))
+        if metric == 'sortino': return _compute_sortino(pf.value())
+    except Exception:
+        return None
+    return None
+
+
+def _rate_variants(
+    metrics_comparison : dict,
+    profile            : str,
+    eligible_keys      : list,
+) -> dict:
+    """
+    Rating ponderato (CAGR/Sharpe/Sortino/MaxDD) sulle sole varianti eleggibili.
+
+    Normalizzazione min-max tra le varianti eleggibili (MaxDD invertita:
+    drawdown minore → punteggio più alto). Se range = 0 per una metrica
+    o il dato manca, punteggio neutro 0.5 per quella metrica.
+
+    Returns
+    -------
+    dict con chiavi:
+        'scores'     : {key: float}               punteggio pesato 0-1
+        'breakdown'  : {key: {metric: float}}     punteggi normalizzati
+        'raw'        : {key: {metric: float|None}} valori originali
+        'weights'    : {metric: float}            pesi usati
+        'winner'     : str | None                 chiave del vincitore
+    """
+    weights = _RATING_WEIGHTS.get(profile, _RATING_WEIGHTS['satellite'])
+
+    # Estrai valori grezzi
+    raw = {
+        key: {m: _pf_metric(metrics_comparison.get(key), m)
+              for m in ('cagr', 'sharpe', 'sortino', 'maxdd')}
+        for key in eligible_keys
+    }
+
+    # Normalizza per metrica
+    breakdown = {key: {} for key in eligible_keys}
+    for metric in ('cagr', 'sharpe', 'sortino', 'maxdd'):
+        vals = {k: raw[k][metric] for k in eligible_keys
+                if raw[k][metric] is not None and not (raw[k][metric] != raw[k][metric])}
+        if not vals:
+            for key in eligible_keys:
+                breakdown[key][metric] = 0.5
+            continue
+        lo, hi = min(vals.values()), max(vals.values())
+        for key in eligible_keys:
+            v = raw[key].get(metric)
+            if v is None or v != v:             # None o NaN → neutro
+                breakdown[key][metric] = 0.5
+            elif hi == lo:                      # range zero → neutro
+                breakdown[key][metric] = 0.5
+            elif metric == 'maxdd':             # MaxDD invertito
+                breakdown[key][metric] = 1.0 - (v - lo) / (hi - lo)
+            else:
+                breakdown[key][metric] = (v - lo) / (hi - lo)
+
+    # Score pesato
+    scores = {
+        key: round(sum(weights.get(m, 0.0) * breakdown[key].get(m, 0.5)
+                       for m in ('cagr', 'sharpe', 'sortino', 'maxdd')), 4)
+        for key in eligible_keys
+    }
+    winner = max(scores, key=scores.get) if scores else None
+
+    return {
+        'scores':          scores,
+        'breakdown':       breakdown,
+        'raw':             raw,
+        'weights':         weights,
+        'eligible_keys':   eligible_keys,
+        'winner':          winner,
+    }
 
 
 def _recommended_path(
@@ -13144,95 +13506,114 @@ def _build_verdict_text(
     # B-005: traccia quale profile è "il riferimento" per la caveat No-skill
     skill_profile_for_caveat = skill_profile
 
+    _rating_result = None   # valorizzato nei CASI A/B/C, None in CASO D
+
     if promoted_cluster and not promoted_std:
-        # CASO A — Solo Cluster PROMOTED
-        cagr_cl = _fmt('cluster_riskoff', 'cagr')
-        sh_cl   = _fmt('cluster_riskoff', 'sharpe')
-        dd_cl   = _fmt('cluster_riskoff', 'maxdd')
-        cagr_bm = _fmt('benchmark', 'cagr')
-        sh_bm   = _fmt('benchmark', 'sharpe')
-        dd_bm   = _fmt('benchmark', 'maxdd')
+        # CASO A — Solo Cluster PROMOTED: rating su 2 varianti del path Cluster
+        _rating = _rate_variants(
+            metrics_comparison = metrics_comparison,
+            profile            = profile,
+            eligible_keys      = ['cluster_riskoff', 'cluster_base'],
+        )
+        _rating_result = _rating
+        _wk   = _rating['winner'] or 'cluster_riskoff'
+        _wlbl = _VARIANT_LABELS.get(_wk, _wk)
+        _wsc  = _rating['scores'].get(_wk, 0.0)
+        _wbd  = _rating['breakdown'].get(_wk, {})
+        _wt   = _rating['weights']
+        _wt_s = (f"CAGR {_wt['cagr']:.0%} · Sharpe {_wt['sharpe']:.0%} · "
+                 f"Sortino {_wt['sortino']:.0%} · MaxDD {_wt['maxdd']:.0%}")
+        _bd_s = (f"CAGR: {_wbd.get('cagr',0):.2f}, Sharpe: {_wbd.get('sharpe',0):.2f}, "
+                 f"Sortino: {_wbd.get('sortino',0):.2f}, MaxDD: {_wbd.get('maxdd',0):.2f}")
+        cagr_w, sh_w, dd_w = _fmt(_wk, 'cagr'), _fmt(_wk, 'sharpe'), _fmt(_wk, 'maxdd')
+        cagr_bm, sh_bm, dd_bm = _fmt('benchmark','cagr'), _fmt('benchmark','sharpe'), _fmt('benchmark','maxdd')
         rec = (
-            f"<b>Raccomandazione tecnica:</b> il path <b>Cluster — Risk ON/OFF</b> supera "
-            f"l'Overfitting Check (<b>OFC PROMOTED</b>, {n_pass_cluster}/4 segnali) e mostra "
-            f"metriche significativamente superiori al benchmark: CAGR {cagr_cl} vs {cagr_bm}, "
-            f"Sharpe {sh_cl} vs {sh_bm}, MaxDD {dd_cl} vs {dd_bm}. "
+            f"<b>Raccomandazione tecnica:</b> il path <b>Cluster</b> supera l'Overfitting Check "
+            f"(<b>OFC PROMOTED</b>, {n_pass_cluster}/4 segnali). "
+            f"Il rating ponderato (profilo <b>{profile}</b> — pesi: {_wt_s}) "
+            f"seleziona <b>{_wlbl}</b> come variante raccomandata "
+            f"(score {_wsc:.3f} — {_bd_s}). "
+            f"Metriche vs benchmark: CAGR {cagr_w} vs {cagr_bm}, "
+            f"Sharpe {sh_w} vs {sh_bm}, MaxDD {dd_w} vs {dd_bm}. "
             f"Il path è candidabile al deploy operativo con profilo <b>{profile}</b>."
         )
         s3_report = (ofc_report_cluster or {}).get('signals', {}).get('S3_bootstrap', {})
-        # B-005: caveat valutata sul path Cluster
         if skill_profile_cluster is not None:
             skill_profile_for_caveat = skill_profile_cluster
 
     elif promoted_std and not promoted_cluster:
-        # CASO B — Solo Standard PROMOTED  (path raccomandato = Std, profile = skill_profile)
-        cagr_st = _fmt('std_riskoff', 'cagr')
-        sh_st   = _fmt('std_riskoff', 'sharpe')
-        dd_st   = _fmt('std_riskoff', 'maxdd')
-        cagr_bm = _fmt('benchmark', 'cagr')
-        sh_bm   = _fmt('benchmark', 'sharpe')
-        dd_bm   = _fmt('benchmark', 'maxdd')
+        # CASO B — Solo Standard PROMOTED: rating su 2 varianti del path Standard
+        _rating = _rate_variants(
+            metrics_comparison = metrics_comparison,
+            profile            = profile,
+            eligible_keys      = ['std_riskoff', 'std_base'],
+        )
+        _rating_result = _rating
+        _wk   = _rating['winner'] or 'std_riskoff'
+        _wlbl = _VARIANT_LABELS.get(_wk, _wk)
+        _wsc  = _rating['scores'].get(_wk, 0.0)
+        _wbd  = _rating['breakdown'].get(_wk, {})
+        _wt   = _rating['weights']
+        _wt_s = (f"CAGR {_wt['cagr']:.0%} · Sharpe {_wt['sharpe']:.0%} · "
+                 f"Sortino {_wt['sortino']:.0%} · MaxDD {_wt['maxdd']:.0%}")
+        _bd_s = (f"CAGR: {_wbd.get('cagr',0):.2f}, Sharpe: {_wbd.get('sharpe',0):.2f}, "
+                 f"Sortino: {_wbd.get('sortino',0):.2f}, MaxDD: {_wbd.get('maxdd',0):.2f}")
+        cagr_w, sh_w, dd_w = _fmt(_wk, 'cagr'), _fmt(_wk, 'sharpe'), _fmt(_wk, 'maxdd')
+        cagr_bm, sh_bm, dd_bm = _fmt('benchmark','cagr'), _fmt('benchmark','sharpe'), _fmt('benchmark','maxdd')
         rec = (
-            f"<b>Raccomandazione tecnica:</b> il path <b>Standard — Risk ON/OFF</b> supera "
-            f"l'Overfitting Check (<b>OFC PROMOTED</b>, {n_pass_std}/4 segnali) e mostra "
-            f"metriche significativamente superiori al benchmark: CAGR {cagr_st} vs {cagr_bm}, "
-            f"Sharpe {sh_st} vs {sh_bm}, MaxDD {dd_st} vs {dd_bm}. "
+            f"<b>Raccomandazione tecnica:</b> il path <b>Standard</b> supera l'Overfitting Check "
+            f"(<b>OFC PROMOTED</b>, {n_pass_std}/4 segnali). "
+            f"Il rating ponderato (profilo <b>{profile}</b> — pesi: {_wt_s}) "
+            f"seleziona <b>{_wlbl}</b> come variante raccomandata "
+            f"(score {_wsc:.3f} — {_bd_s}). "
+            f"Metriche vs benchmark: CAGR {cagr_w} vs {cagr_bm}, "
+            f"Sharpe {sh_w} vs {sh_bm}, MaxDD {dd_w} vs {dd_bm}. "
             f"Il path è candidabile al deploy operativo con profilo <b>{profile}</b>."
         )
         s3_report = (ofc_report_std or {}).get('signals', {}).get('S3_bootstrap', {})
         # skill_profile_for_caveat resta = skill_profile (Standard)
 
     elif promoted_std and promoted_cluster:
-        # CASO C — Entrambi PROMOTED: selezione profile-aware via _select_path_by_profile
-        _chosen = _select_path_by_profile(
-            profile        = profile,
-            sharpe_std     = _sharpe_val('std_riskoff'),
-            sharpe_cluster = _sharpe_val('cluster_riskoff'),
-            maxdd_std      = _maxdd_val('std_riskoff'),
-            maxdd_cluster  = _maxdd_val('cluster_riskoff'),
-            cagr_std       = _cagr_val('std_riskoff'),
-            cagr_cluster   = _cagr_val('cluster_riskoff'),
-            cagr_benchmark = _cagr_val('benchmark'),
+        # CASO C — Entrambi PROMOTED: rating su tutte e 4 le varianti
+        _rating = _rate_variants(
+            metrics_comparison = metrics_comparison,
+            profile            = profile,
+            eligible_keys      = ['cluster_riskoff', 'cluster_base',
+                                  'std_riskoff',     'std_base'],
         )
-        if _chosen == 'std':
-            pref_path   = 'Standard — Risk ON/OFF'
-            pref_key    = 'std_riskoff'
-            pref_n      = n_pass_std
-            if profile == "satellite":
-                pref_reason = f"Sharpe superiore ({_fmt('std_riskoff','sharpe')} vs {_fmt('cluster_riskoff','sharpe')})"
-            else:
-                pref_reason = f"MaxDD inferiore ({_fmt('std_riskoff','maxdd')} vs {_fmt('cluster_riskoff','maxdd')})"
-            s3_report = (ofc_report_std or {}).get('signals', {}).get('S3_bootstrap', {})
-            # skill_profile_for_caveat resta = skill_profile (Standard)
-        else:
-            pref_path   = 'Cluster — Risk ON/OFF'
-            pref_key    = 'cluster_riskoff'
-            pref_n      = n_pass_cluster
-            if profile == "satellite":
-                sh_std_v = _sharpe_val('std_riskoff')
-                sh_clu_v = _sharpe_val('cluster_riskoff')
-                if sh_std_v is not None and sh_clu_v is not None:
-                    pref_reason = f"Sharpe superiore ({_fmt('cluster_riskoff','sharpe')} vs {_fmt('std_riskoff','sharpe')})"
-                else:
-                    pref_reason = "CAGR e stabilità complessivi superiori"
-            else:
-                pref_reason = f"MaxDD inferiore ({_fmt('cluster_riskoff','maxdd')} vs {_fmt('std_riskoff','maxdd')})"
+        _rating_result = _rating
+        _wk   = _rating['winner'] or 'cluster_riskoff'
+        _wlbl = _VARIANT_LABELS.get(_wk, _wk)
+        _wsc  = _rating['scores'].get(_wk, 0.0)
+        _wbd  = _rating['breakdown'].get(_wk, {})
+        _wt   = _rating['weights']
+        _wt_s = (f"CAGR {_wt['cagr']:.0%} · Sharpe {_wt['sharpe']:.0%} · "
+                 f"Sortino {_wt['sortino']:.0%} · MaxDD {_wt['maxdd']:.0%}")
+        _bd_s = (f"CAGR: {_wbd.get('cagr',0):.2f}, Sharpe: {_wbd.get('sharpe',0):.2f}, "
+                 f"Sortino: {_wbd.get('sortino',0):.2f}, MaxDD: {_wbd.get('maxdd',0):.2f}")
+        cagr_w, sh_w, dd_w = _fmt(_wk, 'cagr'), _fmt(_wk, 'sharpe'), _fmt(_wk, 'maxdd')
+        cagr_bm, sh_bm, dd_bm = _fmt('benchmark','cagr'), _fmt('benchmark','sharpe'), _fmt('benchmark','maxdd')
+        # OFC n_pass per il path del winner
+        _winner_n = n_pass_cluster if _wk.startswith('cluster') else n_pass_std
+        _winner_path = 'Cluster' if _wk.startswith('cluster') else 'Standard'
+        rec = (
+            "<b>Raccomandazione tecnica:</b> entrambi i path superano l'Overfitting Check "
+            f"(Standard {n_pass_std}/4, Cluster {n_pass_cluster}/4 segnali). "
+            f"Il rating ponderato a 4 varianti (profilo <b>{profile}</b> — pesi: {_wt_s}) "
+            f"seleziona <b>{_wlbl}</b> come variante raccomandata "
+            f"(score {_wsc:.3f} — {_bd_s}). "
+            f"Metriche vs benchmark: CAGR {cagr_w} vs {cagr_bm}, "
+            f"Sharpe {sh_w} vs {sh_bm}, MaxDD {dd_w} vs {dd_bm}. "
+            f"OFC path {_winner_path}: PROMOTED {_winner_n}/4. "
+            f"Il path è candidabile al deploy operativo con profilo <b>{profile}</b>."
+        )
+        # s3_report e skill_profile dal path del winner
+        if _wk.startswith('cluster'):
             s3_report = (ofc_report_cluster or {}).get('signals', {}).get('S3_bootstrap', {})
             if skill_profile_cluster is not None:
                 skill_profile_for_caveat = skill_profile_cluster
-        cagr_p  = _fmt(pref_key, 'cagr')
-        sh_p    = _fmt(pref_key, 'sharpe')
-        dd_p    = _fmt(pref_key, 'maxdd')
-        cagr_bm = _fmt('benchmark', 'cagr')
-        sh_bm   = _fmt('benchmark', 'sharpe')
-        dd_bm   = _fmt('benchmark', 'maxdd')
-        rec = (
-            "<b>Raccomandazione tecnica:</b> entrambi i path superano l'Overfitting Check. "
-            f"Si raccomanda il path <b>{pref_path}</b> ({pref_reason}): "
-            f"CAGR {cagr_p} vs {cagr_bm}, Sharpe {sh_p} vs {sh_bm}, MaxDD {dd_p} vs {dd_bm}. "
-            f"OFC PROMOTED con {pref_n}/4 segnali. "
-            f"Il path è candidabile al deploy operativo con profilo <b>{profile}</b>."
-        )
+        else:
+            s3_report = (ofc_report_std or {}).get('signals', {}).get('S3_bootstrap', {})
 
     else:
         # CASO D — Nessuno PROMOTED (logica invariata)
@@ -13310,8 +13691,8 @@ def _build_verdict_text(
         "di cambio di regime macroeconomico, degrado della stabilità dei parametri o "
         "variazione significativa dell'universo di investimento."
     )
-    return rec + "<br/><br/>" + "<br/>".join(caveats)
-    
+    return rec + "<br/><br/>" + "<br/>".join(caveats), _rating_result
+
 def _build_verdict_text_compact(
     *,
     alt_path_label: str,                # 'Standard' o 'Cluster'
@@ -13382,6 +13763,7 @@ def generate_relazione_tecnica(
     ci_results: dict | None = None,
     mc_skill_cluster: dict | None = None,
     mc_ci_cluster=None,
+    survivorship_bias_universe: bool = False,
 ) -> _Path_doc:
     
     '''
@@ -13648,6 +14030,41 @@ def generate_relazione_tecnica(
     id_t.setStyle(TableStyle(_ts_base()))
     story += [id_t, Spacer(1, 5 * mm)]
 
+    # Disclosure survivorship bias (solo per universi dinamici da indice)
+    if survivorship_bias_universe:
+        _sb_lines = [
+            "<b>Nota metodologica — Survivorship Bias.</b> "
+            "L'universo di analisi è risolto sulla <b>composizione attuale dell'indice</b> "
+            "e applicato retroattivamente sull'intero storico. "
+            "Le metriche di backtest (CAGR, Sharpe, MaxDD) sono pertanto soggette a "
+            "<b>survivorship bias</b> e probabilmente sovrastimate rispetto a un'esecuzione "
+            "realmente condotta nel tempo, in quanto escludono i titoli che sono usciti "
+            "dall'indice per delisting, fusione o sottoperformance. "
+            "Per questo motivo il portafoglio è validato esclusivamente per "
+            "<b>profilo satellite</b> e non deve essere utilizzato per decisioni "
+            "di allocazione strategica (profilo core)."
+        ]
+        if profile != "satellite":
+            _sb_lines.append(
+                f"<b>Attenzione:</b> profilo richiesto '<b>{profile}</b>' in presenza di "
+                "survivorship bias — sconsigliato. I risultati potrebbero non riflettere "
+                "la reale capacità difensiva del portafoglio."
+            )
+        _sb_style = ParagraphStyle(
+            '_rt_sb',
+            parent   = st_body,
+            backColor= rl_colors.HexColor('#FFF8DC'),
+            borderPadding = (6, 6, 6, 6),
+            borderColor   = rl_colors.HexColor('#C8A000'),
+            borderWidth   = 1,
+            borderRadius  = 3,
+            spaceBefore   = 4,
+            spaceAfter    = 6,
+        )
+        for _sb_line in _sb_lines:
+            story.append(Paragraph(_sb_line, _sb_style))
+        story.append(Spacer(1, 3 * mm))
+
     # Sezione 2: Configurazione WFO
     story.append(Paragraph("2. Configurazione WFO", st_section))
     wfo_data = [
@@ -13739,26 +14156,14 @@ def generate_relazione_tecnica(
     #     "nell'ultima riga. La variante <b>Cluster — Risk ON/OFF</b> (evidenziata) "
     #     "è quella candidata al deploy operativo.", st_body))
 
-    # Bug #2 fix: frase introduttiva §3 dinamica come §7
-    _rec = _recommended_path(ofc_report_std, ofc_report_cluster,
-                             metrics_comparison=metrics_comparison, profile=profile)
-    if _rec == 'cluster':
-        _rec_label = "<b>Cluster — Risk ON/OFF</b>"
-    elif _rec == 'std':
-        _rec_label = "<b>Standard — Risk ON/OFF</b>"
-    else:
-        _rec_label = None
-    
-    if _rec_label is not None:
-        _rec_phrase = f"La variante {_rec_label} (evidenziata) è quella candidata al deploy operativo."
-    else:
-        _rec_phrase = "Nessuna variante supera l'Overfitting Check (vedi §7)."
-    
+    # §3 — tabella puramente informativa (nessun highlight, nessuna "raccomandazione" di variante)
+    # Solo le varianti Risk ON/OFF passano per OFC/MC (§4–§7); Base è mostrata solo a confronto.
     story.append(Paragraph(
         f"Confronto delle quattro varianti del motore (Standard vs Cluster, ognuna con e senza "
-        f"Risk ON/OFF) sul periodo comune. Il benchmark {benchmark} è riportato "
-        f"nell'ultima riga. {_rec_phrase}", st_body))
-
+        f"Risk ON/OFF) sul periodo comune. Il benchmark <b>{benchmark}</b> è riportato "
+        "nell'ultima riga. Le metriche mostrate sono puramente storiche; "
+        "solo le varianti Risk ON/OFF sono sottoposte a validazione OFC e Monte Carlo (§4–§7).",
+        st_body))
 
     m_hdr  = [Paragraph('Portafoglio', st_cell_hdr),
               Paragraph('Cum Return', st_cell_hdrc),
@@ -13766,7 +14171,7 @@ def generate_relazione_tecnica(
               Paragraph('Sharpe', st_cell_hdrc),
               Paragraph('MaxDD', st_cell_hdrc)]
     m_rows = [m_hdr,
-        [Paragraph('<b>Cluster — Risk ON/OFF</b>', st_cell_bold),
+        ['Cluster — Risk ON/OFF',
          _m('cluster_riskoff','cum'), _m('cluster_riskoff','cagr'),
          _m('cluster_riskoff','sharpe'), _m('cluster_riskoff','maxdd')],
         ['Cluster — Base',
@@ -13782,27 +14187,12 @@ def generate_relazione_tecnica(
          _m('benchmark','cum'), _m('benchmark','cagr'),
          _m('benchmark','sharpe'), _m('benchmark','maxdd')],
     ]
-    # Evidenzia la riga del path raccomandato (nessuna se nessuno promosso)
-    _highlight_row = 1 if _rec == 'cluster' else (3 if _rec == 'std' else None)
     m_ts = _ts_base() + [('ALIGN', (1, 0), (-1, -1), 'CENTER')]
-    if _highlight_row is not None:
-        m_ts += [
-            ('BACKGROUND', (0, _highlight_row), (-1, _highlight_row), rl_colors.HexColor('#D5EAF5')),
-            ('FONTNAME',   (0, _highlight_row), (-1, _highlight_row), 'Helvetica-Bold'),
-        ]
     m_t = Table(m_rows, colWidths=[55 * mm, 28 * mm, 25 * mm, 25 * mm, 25 * mm])
     m_t.setStyle(TableStyle(m_ts))
     story += [m_t, Spacer(1, 3 * mm)]
-    if _rec == 'cluster':
-        _fig4_caption = ('Fig. 4 — Equity cumulativa comparativa. '
-                         'Cluster — Risk ON/OFF (evidenziata) è la variante candidata al deploy.')
-    elif _rec == 'std':
-        _fig4_caption = ('Fig. 4 — Equity cumulativa comparativa. '
-                         'Standard — Risk ON/OFF (evidenziata) è la variante candidata al deploy.')
-    else:
-        _fig4_caption = ('Fig. 4 — Equity cumulativa comparativa. '
-                         'Le quattro varianti sono mostrate a confronto (nessuna ha superato l\'OFC).')
-    story.extend(_img('equity_comparison.png', caption=_fig4_caption))
+    story.extend(_img('equity_comparison.png',
+        caption='Fig. 4 — Equity cumulativa comparativa delle quattro varianti del motore e del benchmark.'))
 
     # Sezione 4: OFC
     story.append(Paragraph("4. Overfitting Check (OFC)", st_section))
@@ -14172,7 +14562,7 @@ def generate_relazione_tecnica(
     #     skill_profile=skill_profile,
     #     wfo_config={**wfo_config, 'profile': profile},
     # )
-    _verdict_text = _build_verdict_text(
+    _verdict_text, _rating_result = _build_verdict_text(
         ofc_report_std        = ofc_report_std,
         ofc_report_cluster    = ofc_report_cluster,
         metrics_comparison    = metrics_comparison,
@@ -14194,6 +14584,67 @@ def generate_relazione_tecnica(
     ]))
     story.append(_verdict_box)
     story.append(Spacer(1, 4 * mm))
+
+    # Rating table — mostrata solo nei CASI A/B/C (CASO D → _rating_result è None)
+    if _rating_result is not None:
+        _rk_keys   = _rating_result.get('eligible_keys', [])
+        _rk_scores = _rating_result.get('scores', {})
+        _rk_bkdn   = _rating_result.get('breakdown', {})
+        _rk_winner = _rating_result.get('winner')
+        _rk_wt     = _rating_result.get('weights', {})
+        _rat_hdr = [
+            Paragraph('<b>Variante</b>', st_cell_hdr),
+            Paragraph('<b>Score</b>', st_cell_hdrc),
+            Paragraph(f'<b>CAGR</b><br/><font size="7">{_rk_wt.get("cagr",0):.0%}</font>', st_cell_hdrc),
+            Paragraph(f'<b>Sharpe</b><br/><font size="7">{_rk_wt.get("sharpe",0):.0%}</font>', st_cell_hdrc),
+            Paragraph(f'<b>Sortino</b><br/><font size="7">{_rk_wt.get("sortino",0):.0%}</font>', st_cell_hdrc),
+            Paragraph(f'<b>MaxDD</b><br/><font size="7">{_rk_wt.get("maxdd",0):.0%}</font>', st_cell_hdrc),
+        ]
+        _rat_rows = [_rat_hdr]
+        for _rkey in _rk_keys:
+            _rlbl  = _VARIANT_LABELS.get(_rkey, _rkey)
+            _rsc   = _rk_scores.get(_rkey, 0.0)
+            _rbd   = _rk_bkdn.get(_rkey, {})
+            _is_w  = (_rkey == _rk_winner)
+            _rlbl_p = Paragraph(f'<b>{_rlbl}</b>' if _is_w else _rlbl, st_cell_bold if _is_w else st_cell)
+            _rat_rows.append([
+                _rlbl_p,
+                Paragraph(f'<b>{_rsc:.3f}</b>' if _is_w else f'{_rsc:.3f}', st_cell_ctr),
+                Paragraph(f'{_rbd.get("cagr",0):.2f}',    st_cell_ctr),
+                Paragraph(f'{_rbd.get("sharpe",0):.2f}',  st_cell_ctr),
+                Paragraph(f'{_rbd.get("sortino",0):.2f}', st_cell_ctr),
+                Paragraph(f'{_rbd.get("maxdd",0):.2f}',   st_cell_ctr),
+            ])
+        _cw_rat = [CONTENT_W * 0.38, CONTENT_W * 0.12,
+                   CONTENT_W * 0.125, CONTENT_W * 0.125,
+                   CONTENT_W * 0.125, CONTENT_W * 0.125]
+        _rat_ts = _ts_base() + [
+            ('ALIGN', (1, 0), (-1, -1), 'CENTER'),
+        ]
+        # Colonna 0 (Variante) — sfondo neutro per tutte le righe dati
+        for _ri in range(1, len(_rk_keys) + 1):
+            _rat_ts.append(('BACKGROUND', (0, _ri), (0, _ri),
+                            rl_colors.HexColor('#F5F5F5')))
+        # Colonne 1-5 — gradiente per-cella basato sul valore normalizzato 0-1
+        _rat_col_order = ['score', 'cagr', 'sharpe', 'sortino', 'maxdd']
+        for _ri, _rkey in enumerate(_rk_keys, start=1):
+            _rsc  = _rk_scores.get(_rkey, 0.0)
+            _rbd  = _rk_bkdn.get(_rkey, {})
+            _vals = [_rsc,
+                     _rbd.get('cagr',    None),
+                     _rbd.get('sharpe',  None),
+                     _rbd.get('sortino', None),
+                     _rbd.get('maxdd',   None)]
+            for _ci, _v in enumerate(_vals, start=1):
+                _rat_ts.append(('BACKGROUND', (_ci, _ri), (_ci, _ri),
+                                _gradient_color(_v)))
+        _rat_tbl = Table(_rat_rows, colWidths=_cw_rat)
+        _rat_tbl.setStyle(TableStyle(_rat_ts))
+        story.append(Paragraph(
+            'Tab. R — Rating ponderato delle varianti (score normalizzato 0–1 per metrica).',
+            st_caption))
+        story.append(_rat_tbl)
+        story.append(Spacer(1, 4 * mm))
     
     # B-005: secondo verdict box compatto per path alternativo
     rec_path = _recommended_path(ofc_report_std, ofc_report_cluster,
@@ -14322,6 +14773,10 @@ def run_r_portfolio_analysis(
     risk_off_tickers    = portfolio_cfg.get("risk_off_tickers", _default_risk_off_tickers)
     init_cash           = portfolio_cfg.get("init_cash", 100_000)
     asset_type          = portfolio_cfg.get("asset_type", "stock")
+
+    # Flag calcolato PRIMA della risoluzione Wikipedia, quando tickers è ancora stringa.
+    # True = universo dinamico da indice → survivorship bias presente.
+    survivorship_bias_universe: bool = isinstance(tickers, str)
 
     tickers = (
         extract_tickers_from_wikipedia(tickers, exclude=["GOOG"], rename={"BRK.B": "BRK-B"})
@@ -14637,25 +15092,26 @@ def run_r_portfolio_analysis(
     # (sopra), mentre il PDF dipende da generate_pdf (flag --pdf di iq r-analyze).
     if generate_pdf:
         generate_relazione_tecnica(
-            portfolio_title       = portfolio_title,
-            year                  = year,
-            profile               = profile,
-            benchmark             = benchmark_title,
-            period                = (str(pipeline_start_date), _today_iso),
-            universe_size         = len(tickers),
-            wfo_config            = _wfo_config,
-            cluster_result        = _cluster_result,
-            metrics_comparison    = _metrics_comparison,
-            ofc_report_std        = ofc_report_std,
-            ofc_report_cluster    = ofc_report_cluster,
-            mc_skill              = skill_results,
-            mc_ci                 = ci_summary_df,
-            skill_profile         = skill_profile_std,
-            skill_profile_cluster = skill_profile_cluster,
-            plots_dir             = str(plots_dir),
-            output_path           = str(_pdf_path),
-            mc_skill_cluster      = skill_results_cluster,
-            mc_ci_cluster         = ci_summary_df_cluster,
+            portfolio_title              = portfolio_title,
+            year                         = year,
+            profile                      = profile,
+            benchmark                    = benchmark_title,
+            period                       = (str(pipeline_start_date), _today_iso),
+            universe_size                = len(tickers),
+            wfo_config                   = _wfo_config,
+            cluster_result               = _cluster_result,
+            metrics_comparison           = _metrics_comparison,
+            ofc_report_std               = ofc_report_std,
+            ofc_report_cluster           = ofc_report_cluster,
+            mc_skill                     = skill_results,
+            mc_ci                        = ci_summary_df,
+            skill_profile                = skill_profile_std,
+            skill_profile_cluster        = skill_profile_cluster,
+            plots_dir                    = str(plots_dir),
+            output_path                  = str(_pdf_path),
+            mc_skill_cluster             = skill_results_cluster,
+            mc_ci_cluster                = ci_summary_df_cluster,
+            survivorship_bias_universe   = survivorship_bias_universe,
         )
     else:
         _pdf_path = None
