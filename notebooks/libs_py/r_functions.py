@@ -13747,7 +13747,7 @@ def _build_verdict_text_compact(
     sp_str = f", Skill Profile <b>{skill_profile_alt}</b>" if skill_profile_alt else ""
     
     txt = (
-        f"<b>Path alternativo · {alt_path_label} — Risk ON/OFF</b>: "
+        f"<b>Path alternativo · {alt_path_label}</b>: "
         f"{ofc_str}{sp_str}. "
         f"CAGR {cagr_a} vs {cagr_b}, Sharpe {sh_a} vs {sh_b}, MaxDD {dd_a} vs {dd_b}."
     )
@@ -14218,24 +14218,25 @@ def generate_relazione_tecnica(
             _s3_mdf = _s3_mdf.rename(index={'Benchmark': f'Benchmark ({benchmark})'})
 
     # --- Definizione colonne (nome_df, header_abbr, lower_is_better) ---
+    # Abbreviazioni senza spazi interni per evitare wrap su A4 a 11 colonne
     _S3_COLS = [
-        ("Cumulative Return (%)",     "Cum Ret%",  False),
-        ("Annualized Return (%)",     "Ann Ret%",  False),
-        ("CAGR (%)",                  "CAGR%",     False),
-        ("Annualized Volatility (%)", "Ann Vol%",  True),
-        ("Sharpe Ratio",              "Sharpe",    False),
-        ("Sortino Ratio",             "Sortino",   False),
-        ("Max Drawdown (%)",          "MaxDD%",    True),
-        ("Calmar Ratio",              "Calmar",    False),
-        ("Win Rate (%)",              "Win%",      False),
-        ("Avg Daily Return (%)",      "Avg Day%",  False),
+        ("Cumulative Return (%)",     "CumRet%",  False),
+        ("Annualized Return (%)",     "AnnRet%",  False),
+        ("CAGR (%)",                  "CAGR%",    False),
+        ("Annualized Volatility (%)", "AnnVol%",  True),
+        ("Sharpe Ratio",              "Sharpe",   False),
+        ("Sortino Ratio",             "Sortino",  False),
+        ("Max Drawdown (%)",          "MaxDD%",   True),
+        ("Calmar Ratio",              "Calmar",   False),
+        ("Win Rate (%)",              "Win%",     False),
+        ("Avg Daily Return (%)",      "AvgDay%",  False),
     ]
     # Stili ridotti per densità (11 colonne su A4)
     _st_s3hl = _st('_rt_s3hl', fontSize=7,   textColor=C_WHITE, fontName='Helvetica-Bold')
     _st_s3h  = _st('_rt_s3h',  fontSize=7,   textColor=C_WHITE, fontName='Helvetica-Bold',
                    alignment=TA_CENTER)
-    _st_s3c  = _st('_rt_s3c',  fontSize=7.5, textColor=C_TEXT,  alignment=TA_CENTER)
-    _st_s3l  = _st('_rt_s3l',  fontSize=7.5, textColor=C_TEXT)
+    _st_s3c  = _st('_rt_s3c',  fontSize=7,   textColor=C_TEXT,  alignment=TA_CENTER)
+    _st_s3l  = _st('_rt_s3l',  fontSize=7,   textColor=C_TEXT)
 
     # Header
     _s3_hdr = [Paragraph('Portafoglio', _st_s3hl)]
@@ -14251,14 +14252,18 @@ def generate_relazione_tecnica(
             if _s3v is None or (isinstance(_s3v, float) and _s3v != _s3v):
                 _s3row.append(Paragraph('N/A', _st_s3c))
             else:
-                _s3row.append(Paragraph(f'{float(_s3v):.2f}', _st_s3c))
+                _s3row.append(Paragraph(f'{float(_s3v):.1f}', _st_s3c))
         _s3_rows.append(_s3row)
 
-    # Larghezze colonne: label 44mm + 10 colonne metriche equiripartite
-    _s3_cw = [44 * mm] + [(CONTENT_W - 44 * mm) / 10] * 10
+    # Larghezze colonne: label 38mm + 10 colonne metriche equiripartite (13.2mm)
+    _s3_cw = [38 * mm] + [(CONTENT_W - 38 * mm) / 10] * 10
 
-    # TableStyle: base + gradiente per-cella sulle colonne metriche
-    _s3_ts = _ts_base() + [('ALIGN', (1, 0), (-1, -1), 'CENTER')]
+    # TableStyle: base + padding ridotto sulle colonne metriche + gradiente per-cella
+    _s3_ts = _ts_base() + [
+        ('ALIGN',        (1, 0), (-1, -1), 'CENTER'),
+        ('LEFTPADDING',  (1, 0), (-1, -1), 2),   # 2pt vs 6pt default — evita wrap header/valori
+        ('RIGHTPADDING', (1, 0), (-1, -1), 2),
+    ]
     if not _s3_mdf.empty:
         for _s3ci, (_s3cf, _, _s3inv) in enumerate(_S3_COLS, start=1):
             if _s3cf not in _s3_mdf.columns:
@@ -14742,29 +14747,25 @@ def generate_relazione_tecnica(
         story.append(_rat_tbl)
         story.append(Spacer(1, 4 * mm))
     
-    # B-005: secondo verdict box compatto per path alternativo
-    rec_path = _recommended_path(ofc_report_std, ofc_report_cluster,
-                                metrics_comparison=metrics_comparison, profile=profile)
-    if rec_path == 'cluster':
-        # box compatto descrive Standard
-        _alt_text = _build_verdict_text_compact(
-            alt_path_label    = 'Standard',
-            ofc_report_alt    = ofc_report_std,
-            metrics_comparison= metrics_comparison,
-            metrics_key       = 'std_riskoff',
-            skill_profile_alt = skill_profile,
-        )
-    elif rec_path == 'std':
-        # box compatto descrive Cluster
-        _alt_text = _build_verdict_text_compact(
-            alt_path_label    = 'Cluster',
-            ofc_report_alt    = ofc_report_cluster,
-            metrics_comparison= metrics_comparison,
-            metrics_key       = 'cluster_riskoff',
-            skill_profile_alt = skill_profile_cluster,
-        )
-    else:
-        _alt_text = None
+    # B-005: secondo verdict box — usa il secondo classificato di _rate_variants (non coppia fissa)
+    _alt_text = None
+    if _rating_result is not None:
+        _rk_scores_all = _rating_result.get('scores', {})
+        _rk_sorted_all = sorted(_rk_scores_all.items(), key=lambda x: x[1], reverse=True)
+        if len(_rk_sorted_all) >= 2:
+            _runner_key = _rk_sorted_all[1][0]
+            _runner_ofc  = (ofc_report_cluster if _runner_key.startswith('cluster')
+                            else ofc_report_std)
+            _runner_sp   = (skill_profile_cluster if _runner_key.startswith('cluster')
+                            else skill_profile)
+            _runner_lbl  = _VARIANT_LABELS.get(_runner_key, _runner_key)
+            _alt_text = _build_verdict_text_compact(
+                alt_path_label    = _runner_lbl,
+                ofc_report_alt    = _runner_ofc,
+                metrics_comparison= metrics_comparison,
+                metrics_key       = _runner_key,
+                skill_profile_alt = _runner_sp,
+            )
     
     if _alt_text is not None:
         _alt_box = Table(
