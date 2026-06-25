@@ -2847,8 +2847,9 @@ def analyze_portfolio_metrics(
     ascending: bool = False,
     plot_radar: bool = False,
     radar_metrics: Union[str, List[str]] = "all",
-    highlight_best: bool = True
-) -> pd.DataFrame:
+    highlight_best: bool = True,
+    apply_gradient: bool = True,
+) -> "Union[pd.DataFrame, pd.io.formats.style.Styler]":
     """
     Calcola e confronta le metriche di performance di uno o più portafogli
     a partire da serie di rendimenti cumulativi (base 1.0).
@@ -2888,7 +2889,14 @@ def analyze_portfolio_metrics(
     """
     def compute_metrics_from_cum(cum_series: pd.Series) -> Dict[str, float]:
         """Calcola le metriche partendo da una serie di rendimenti cumulativi (>=1)."""
-        # rets = cum_series.pct_change().dropna()
+        cum_series = cum_series.dropna()
+        if cum_series.empty or len(cum_series) < 2:
+            return {col: np.nan for col in [
+                "Cumulative Return (%)", "Annualized Return (%)", "CAGR (%)",
+                "Annualized Volatility (%)", "Sharpe Ratio", "Sortino Ratio",
+                "Max Drawdown (%)", "Calmar Ratio", "Win Rate (%)",
+                "Avg Daily Return (%)", "Median Daily Return (%)"
+            ]}
         rets = cum_series.pct_change(fill_method=None).dropna()
         if rets.empty or len(rets) < 2:
             return {col: np.nan for col in [
@@ -2976,16 +2984,6 @@ def analyze_portfolio_metrics(
     if sort_by in metrics_df.columns:
         metrics_df = metrics_df.sort_values(by=sort_by, ascending=ascending)
 
-    if highlight_best:
-        styled = metrics_df.style
-        for col in metrics_df.select_dtypes(include=[np.number]).columns:
-            reverse = col in ["Annualized Volatility (%)", "Max Drawdown (%)"]
-            styled = styled.background_gradient(
-                subset=[col],
-                cmap="RdYlGn_r" if reverse else "RdYlGn",
-                low=0, high=0, axis=0
-            )
-
     # -----------------------------------------------------------------
     # Radar chart opzionale
     # -----------------------------------------------------------------
@@ -3034,6 +3032,19 @@ def analyze_portfolio_metrics(
             showlegend=True
         )
         fig.show()
+
+    if apply_gradient:
+        # apply_gradient ha priorità su highlight_best se entrambi True
+        _num_cols = list(metrics_df.select_dtypes(include=[np.number]).columns)
+        _lower_better = [c for c in _num_cols
+                         if c in ("Annualized Volatility (%)", "Max Drawdown (%)")]
+        _higher_better = [c for c in _num_cols if c not in _lower_better]
+        styled = metrics_df.style.format(precision=2)
+        if _higher_better:
+            styled = styled.background_gradient(cmap='RdYlGn', subset=_higher_better, axis=0)
+        if _lower_better:
+            styled = styled.background_gradient(cmap='RdYlGn_r', subset=_lower_better, axis=0)
+        return styled
 
     return metrics_df.round(2)
 
@@ -8589,7 +8600,8 @@ def compare_wfo_pipelines(
     end_date        : str  = None,
     save_plots      : bool = False,
     plots_dir              = None,    # str | Path | None
-) -> pd.DataFrame:
+    apply_gradient  : bool = True,
+) -> "Union[pd.DataFrame, pd.io.formats.style.Styler]":
     """
     Confronta i 4 portafogli prodotti da due run di run_wfo_pipeline
     (Standard e Clustered, ciascuno con/senza Risk ON/OFF).
@@ -8792,6 +8804,7 @@ def compare_wfo_pipelines(
         plot_radar       = plot_radar,
         radar_metrics    = "all",
         highlight_best   = True,
+        apply_gradient   = apply_gradient,
     )
 
     return metrics_df
