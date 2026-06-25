@@ -14169,40 +14169,123 @@ def generate_relazione_tecnica(
     #     "nell'ultima riga. La variante <b>Cluster — Risk ON/OFF</b> (evidenziata) "
     #     "è quella candidata al deploy operativo.", st_body))
 
-    # §3 — tabella puramente informativa (nessun highlight, nessuna "raccomandazione" di variante)
-    # Solo le varianti Risk ON/OFF passano per OFC/MC (§4–§7); Base è mostrata solo a confronto.
+    # §3 — tabella a 10 colonne via analyze_portfolio_metrics (coerente con JN/compare_wfo_pipelines)
     story.append(Paragraph(
         f"Confronto delle quattro varianti del motore (Standard vs Cluster, ognuna con e senza "
         f"Risk ON/OFF) sul periodo comune. Il benchmark <b>{benchmark}</b> è riportato "
-        "nell'ultima riga. Le metriche mostrate sono puramente storiche; "
-        "solo le varianti Risk ON/OFF sono sottoposte a validazione OFC e Monte Carlo (§4–§7).",
+        "nell'ultima riga. Le metriche sono prodotte dalla stessa funzione usata in sviluppo "
+        "(JN §5c); solo le varianti Risk ON/OFF sono sottoposte a validazione OFC e Monte Carlo (§4–§7).",
         st_body))
 
-    m_hdr  = [Paragraph('Portafoglio', st_cell_hdr),
-              Paragraph('Cum Return', st_cell_hdrc),
-              Paragraph('CAGR', st_cell_hdrc),
-              Paragraph('Sharpe', st_cell_hdrc),
-              Paragraph('MaxDD', st_cell_hdrc)]
-    m_rows = [m_hdr,
-        ['Cluster — Risk ON/OFF',
-         _m('cluster_riskoff','cum'), _m('cluster_riskoff','cagr'),
-         _m('cluster_riskoff','sharpe'), _m('cluster_riskoff','maxdd')],
-        ['Cluster — Base',
-         _m('cluster_base','cum'), _m('cluster_base','cagr'),
-         _m('cluster_base','sharpe'), _m('cluster_base','maxdd')],
-        ['Standard — Risk ON/OFF',
-         _m('std_riskoff','cum'), _m('std_riskoff','cagr'),
-         _m('std_riskoff','sharpe'), _m('std_riskoff','maxdd')],
-        ['Standard — Base',
-         _m('std_base','cum'), _m('std_base','cagr'),
-         _m('std_base','sharpe'), _m('std_base','maxdd')],
-        [f'Benchmark ({benchmark})',
-         _m('benchmark','cum'), _m('benchmark','cagr'),
-         _m('benchmark','sharpe'), _m('benchmark','maxdd')],
+    # --- Costruisci port_cumrets (base 1.0) dalle serie equity dei portfolio ---
+    _s3_key_labels = [
+        ('cluster_riskoff', 'Cluster — Risk ON/OFF'),
+        ('cluster_base',    'Cluster — Base'),
+        ('std_riskoff',     'Standard — Risk ON/OFF'),
+        ('std_base',        'Standard — Base'),
     ]
-    m_ts = _ts_base() + [('ALIGN', (1, 0), (-1, -1), 'CENTER')]
-    m_t = Table(m_rows, colWidths=[55 * mm, 28 * mm, 25 * mm, 25 * mm, 25 * mm])
-    m_t.setStyle(TableStyle(m_ts))
+    _s3_cum = {}
+    for _s3k, _s3lbl in _s3_key_labels:
+        _s3pf = metrics_comparison.get(_s3k)
+        if _s3pf is not None:
+            try:
+                _s3cr = _s3pf.cumulative_returns() + 1
+                _s3_cum[_s3lbl] = _s3cr.squeeze() if hasattr(_s3cr, 'squeeze') else _s3cr
+            except Exception:
+                pass
+    _s3_bm_series = None
+    _s3pf_bm = metrics_comparison.get('benchmark')
+    if _s3pf_bm is not None:
+        try:
+            _s3bm_cr = _s3pf_bm.cumulative_returns() + 1
+            _s3_bm_series = _s3bm_cr.squeeze() if hasattr(_s3bm_cr, 'squeeze') else _s3bm_cr
+        except Exception:
+            pass
+
+    _s3_port_df = pd.DataFrame(_s3_cum) if _s3_cum else pd.DataFrame()
+    _s3_mdf = pd.DataFrame()
+    if not _s3_port_df.empty:
+        _s3_mdf = analyze_portfolio_metrics(
+            port_cumrets     = _s3_port_df,
+            benchmark_cumret = _s3_bm_series,
+            freq             = "D",
+            sort_by          = "__none__",   # mantieni ordine inserimento
+            ascending        = False,
+            plot_radar       = False,
+            apply_gradient   = False,
+        )
+        if 'Benchmark' in _s3_mdf.index:
+            _s3_mdf = _s3_mdf.rename(index={'Benchmark': f'Benchmark ({benchmark})'})
+
+    # --- Definizione colonne (nome_df, header_abbr, lower_is_better) ---
+    _S3_COLS = [
+        ("Cumulative Return (%)",     "Cum Ret%",  False),
+        ("Annualized Return (%)",     "Ann Ret%",  False),
+        ("CAGR (%)",                  "CAGR%",     False),
+        ("Annualized Volatility (%)", "Ann Vol%",  True),
+        ("Sharpe Ratio",              "Sharpe",    False),
+        ("Sortino Ratio",             "Sortino",   False),
+        ("Max Drawdown (%)",          "MaxDD%",    True),
+        ("Calmar Ratio",              "Calmar",    False),
+        ("Win Rate (%)",              "Win%",      False),
+        ("Avg Daily Return (%)",      "Avg Day%",  False),
+    ]
+    # Stili ridotti per densità (11 colonne su A4)
+    _st_s3hl = _st('_rt_s3hl', fontSize=7,   textColor=C_WHITE, fontName='Helvetica-Bold')
+    _st_s3h  = _st('_rt_s3h',  fontSize=7,   textColor=C_WHITE, fontName='Helvetica-Bold',
+                   alignment=TA_CENTER)
+    _st_s3c  = _st('_rt_s3c',  fontSize=7.5, textColor=C_TEXT,  alignment=TA_CENTER)
+    _st_s3l  = _st('_rt_s3l',  fontSize=7.5, textColor=C_TEXT)
+
+    # Header
+    _s3_hdr = [Paragraph('Portafoglio', _st_s3hl)]
+    for _, _s3abbr, _ in _S3_COLS:
+        _s3_hdr.append(Paragraph(_s3abbr, _st_s3h))
+
+    # Righe dati
+    _s3_rows = [_s3_hdr]
+    for _s3idx in (_s3_mdf.index if not _s3_mdf.empty else []):
+        _s3row = [Paragraph(str(_s3idx), _st_s3l)]
+        for _s3cf, _, _ in _S3_COLS:
+            _s3v = _s3_mdf.loc[_s3idx, _s3cf] if _s3cf in _s3_mdf.columns else None
+            if _s3v is None or (isinstance(_s3v, float) and _s3v != _s3v):
+                _s3row.append(Paragraph('N/A', _st_s3c))
+            else:
+                _s3row.append(Paragraph(f'{float(_s3v):.2f}', _st_s3c))
+        _s3_rows.append(_s3row)
+
+    # Larghezze colonne: label 44mm + 10 colonne metriche equiripartite
+    _s3_cw = [44 * mm] + [(CONTENT_W - 44 * mm) / 10] * 10
+
+    # TableStyle: base + gradiente per-cella sulle colonne metriche
+    _s3_ts = _ts_base() + [('ALIGN', (1, 0), (-1, -1), 'CENTER')]
+    if not _s3_mdf.empty:
+        for _s3ci, (_s3cf, _, _s3inv) in enumerate(_S3_COLS, start=1):
+            if _s3cf not in _s3_mdf.columns:
+                continue
+            # valori validi per questa colonna → min-max
+            _s3valid = {_idx: float(_s3_mdf.loc[_idx, _s3cf])
+                        for _idx in _s3_mdf.index
+                        if pd.notna(_s3_mdf.loc[_idx, _s3cf])}
+            if not _s3valid:
+                continue
+            _s3lo = min(_s3valid.values())
+            _s3hi = max(_s3valid.values())
+            for _s3ri, _s3idx in enumerate(_s3_mdf.index, start=1):
+                _s3v = _s3valid.get(_s3idx)
+                if _s3v is None:
+                    _s3norm = None
+                elif _s3hi > _s3lo:
+                    _s3norm = (_s3v - _s3lo) / (_s3hi - _s3lo)
+                    if _s3inv:
+                        _s3norm = 1.0 - _s3norm
+                else:
+                    _s3norm = 0.5
+                _s3_ts.append(('BACKGROUND', (_s3ci, _s3ri), (_s3ci, _s3ri),
+                               _gradient_color(_s3norm)))
+
+    m_t = Table(_s3_rows, colWidths=_s3_cw)
+    m_t.setStyle(TableStyle(_s3_ts))
     story += [m_t, Spacer(1, 3 * mm)]
     story.extend(_img('equity_comparison.png',
         caption='Fig. 4 — Equity cumulativa comparativa delle quattro varianti del motore e del benchmark.'))
