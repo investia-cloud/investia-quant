@@ -486,7 +486,7 @@ def report(ptf, all_portfolios, rotational, trading, recipient, start_date, end_
 @click.option("--universe", default=None,
               help="CSV con colonna 'ticker' — universo ad hoc")
 @click.option("--output-dir", default=None,
-              help="Directory output PDF + PNG (default: outputs/reports/<nome>/<data>/)")
+              help="Directory output PDF + PNG (default: outputs/r_analysis/<nome>/<timestamp>/)")
 @click.option("--profile", default="satellite",
               type=click.Choice(["satellite", "core"]),
               help="Profilo OFC: satellite (default) o core")
@@ -550,10 +550,8 @@ def r_analyze(ptf, universe, output_dir, profile, year, start_date, gen_pdf, ver
 
     # Risolvi output_dir
     if output_dir is None:
-        import datetime
-        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        today = datetime.date.today().isoformat()
-        output_dir = os.path.join(root, "outputs", "reports", ptf_name, today)
+        _get_dir = ns.get("get_analysis_output_dir")
+        output_dir = str(_get_dir("r_analysis", ptf_name=ptf_name))
 
     click.echo(f"[iq r-analyze] Portafoglio: {portfolio_obj.get('Title', ptf_name)}")
     click.echo(f"[iq r-analyze] Output dir:  {output_dir}")
@@ -600,7 +598,7 @@ def r_analyze(ptf, universe, output_dir, profile, year, start_date, gen_pdf, ver
 @click.option("--ptf", default=None,
     help="Nome K-portfolio (es. us_trading_2026) — estrae tickers automaticamente")
 @click.option("--output-dir", default=None,
-    help="Directory output (default: outputs/k_analysis/<data>/)")
+    help="Directory output (default: outputs/k_analysis/<timestamp>/)")
 @click.option("--start-date", default="2015-01-01", show_default=True,
     help="Inizio storico download")
 @click.option("--end-date", default=None, help="Fine storico (default: oggi)")
@@ -676,11 +674,8 @@ def k_analyze(strategies, tickers, ptf, output_dir, start_date, end_date,
     else:
         print(f"Panel: {len(s)} strategie × {len(t)} ticker")
 
-    from datetime import datetime as _dt
-    out_dir = output_dir or str(
-        Path(__file__).parent.parent / "outputs" / "k_analysis" /
-        _dt.now().strftime("%Y%m%d_%H%M%S")
-    )
+    _get_dir = ns.get("get_analysis_output_dir")
+    out_dir = output_dir or str(_get_dir("k_analysis"))
     import importlib.util, sys as _sys
     lib = Path(__file__).parent.parent / "notebooks" / "libs_py" / "k_functions.py"
     spec = importlib.util.spec_from_file_location("k_functions", lib)
@@ -730,7 +725,7 @@ def k_analyze(strategies, tickers, ptf, output_dir, start_date, end_date,
 @click.option("--ptf", default=None,
     help="Nome Lazy portfolio, oppure 'all' per tutti i PTF nel registry")
 @click.option("--output-dir", default=None,
-    help="Directory output (default: outputs/lazy_analysis/<data>/)")
+    help="Directory output (default: outputs/l_analysis/<timestamp>/)")
 @click.option("--start-date", default="2016-01-01", show_default=True,
     help="Inizio storico backtest")
 @click.option("--end-date", default=None, help="Fine storico (default: oggi)")
@@ -793,11 +788,8 @@ def l_analyze(ptf, output_dir, start_date, end_date, benchmark,
     if verbose:
         print(f"Lazy-analyze: {len(ptf_names)} PTF -> {ptf_names}")
 
-    from datetime import datetime as _dt
-    out_dir = output_dir or str(
-        Path(__file__).parent.parent / "outputs" / "lazy_analysis" /
-        _dt.now().strftime("%Y%m%d_%H%M%S")
-    )
+    _get_dir = ns.get("get_analysis_output_dir")
+    out_dir = output_dir or str(_get_dir("l_analysis"))
 
     run_lazy_batch_analysis_fn = ns.get("run_lazy_batch_analysis")
     if run_lazy_batch_analysis_fn is None:

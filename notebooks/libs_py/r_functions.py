@@ -7174,7 +7174,7 @@ def analyze_and_cluster_universe(
                 f"(Sharpe={sharpe_by_cluster[cid]:.2f})"
             )
 
-    if plot:
+    if plot or (save_plots and plots_dir is not None):
         palette = ['#1D9E75', '#378ADD', '#BA7517', '#9F77DD', '#D85A30']
 
         fig, axes = plt.subplots(1, 2, figsize=(16, 5))
@@ -7244,7 +7244,10 @@ def analyze_and_cluster_universe(
                     bbox_inches=_extent_padded,
                 )
 
-        plt.show()
+        if plot:
+            plt.show()
+        else:
+            plt.close(fig)
 
     return dict(
         cluster_map       = cluster_map,
@@ -7980,6 +7983,9 @@ def run_wfo_pipeline(
     force_next_year_params: bool = True,
     param_grid       : dict  = None,
 
+    # Audit trail
+    wfo_audit_path_base      = None,   # str | Path | None — se fornito, salva audit CSV con suffisso .std_raw.csv / .cluster_raw.csv
+
     # Parametri clustering
     use_clustering   : bool  = True,
     n_clusters       : int   = 3,
@@ -8384,6 +8390,31 @@ def run_wfo_pipeline(
         ))
 
     results['summary_df'] = summary_df_final
+
+    if wfo_audit_path_base is not None:
+        _audit_suffix = "cluster_raw" if use_clustering else "std_raw"
+        _audit_path   = f"{wfo_audit_path_base}.{_audit_suffix}.csv"
+        save_rotational_wfo_summary(
+            summary_df             = summary_df_final,
+            start_date             = start_date,
+            end_date               = end_date,
+            file_path              = _audit_path,
+            param_grid             = param_grid,
+            metric                 = metric,
+            ratio                  = ratio,
+            force_next_year_params = force_next_year_params,
+            extra_meta             = {
+                "audit_only":    True,
+                "use_clustering": use_clustering,
+                "note": (
+                    "calcolo grezzo — NON usato dal runtime; il file "
+                    "runtime e' salvato separatamente dopo la decisione "
+                    "manuale (JN §8)"
+                ),
+            },
+        )
+        print(f"[run_wfo_pipeline] Audit trail salvato "
+              f"({'Cluster' if use_clustering else 'Standard'}): {_audit_path}")
 
     # ----------------------------------------------------------
     # STEP 6 — Portafogli
@@ -10298,6 +10329,10 @@ def run_mc_confidence_intervals_rotational(
                 )[0]
                 _fig_s.update_layout(xaxis=dict(rangeselector=dict(visible=False)))
                 _fig_s.write_image(str(_Path(plots_dir) / fname))
+        _mc_plot_ci_summary(
+            ci_results, {'pf_rot': equity_actual, 'pf_rot_base': equity_base},
+            save_path=str(_Path(plots_dir) / 'mc_ci.png'),
+        )
 
     # ── SRI / MRM PRIIPs Cat. 3 ─────────────────────────────────────────────
     _init_cash_val  = float(pf_rot.init_cash)
@@ -10503,6 +10538,15 @@ def run_mc_skill_tests_rotational(
         _save_ss = (str(_Path(plots_dir) / 'mc_skill_summary.png')
                     if save_plots and plots_dir is not None else None)
         _mc_plot_skill_summary(skill_results, save_path=_save_ss).show()
+    elif save_plots and plots_dir is not None:
+        from pathlib import Path as _Path
+        for key, res in skill_results.items():
+            if res is None or key not in _skill_filenames:
+                continue
+            _mc_plot_skill_test(test_labels[key], res, equity_actual,
+                                save_path=str(_Path(plots_dir) / _skill_filenames[key]))
+        _mc_plot_skill_summary(skill_results,
+                               save_path=str(_Path(plots_dir) / 'mc_skill_summary.png'))
 
     return skill_results, skill_summary_df
 
@@ -14983,6 +15027,7 @@ def run_r_portfolio_analysis(
         force_next_year_params = force_next_year_params,
         use_clustering         = False,
         param_grid             = reduced_grid,
+        wfo_audit_path_base    = str(output_dir / f"{portfolio_title}_{year}"),
         portfolio_title        = portfolio_title,
         benchmark_title        = benchmark_title,
         init_cash              = init_cash,
@@ -15001,18 +15046,6 @@ def run_r_portfolio_analysis(
     summary_df_std   = results_std["summary_df"]
     sel_tickers_std      = results_std["sel_tickers"]
     sel_tickers_std_base = results_std["sel_tickers_base"]
-
-    save_rotational_wfo_summary(
-        summary_df             = summary_df_std,
-        start_date             = start_date,
-        end_date               = end_date,
-        file_path              = wfo_file_save,
-        param_grid             = reduced_grid,
-        metric                 = metric,
-        ratio                  = ratio,
-        force_next_year_params = force_next_year_params,
-        extra_meta             = None,
-    )
 
     # 6. WFO CLUSTER
     results_cluster = run_wfo_pipeline(
@@ -15036,6 +15069,7 @@ def run_r_portfolio_analysis(
         lookback_days      = 504,
         n_top_min          = 2,
         param_grid         = full_grid,
+        wfo_audit_path_base = str(output_dir / f"{portfolio_title}_{year}"),
         portfolio_title    = portfolio_title,
         benchmark_title    = benchmark_title,
         init_cash          = init_cash,
@@ -15208,6 +15242,7 @@ def run_r_portfolio_analysis(
             output_path                  = str(_pdf_path),
             mc_skill_cluster             = skill_results_cluster,
             mc_ci_cluster                = ci_summary_df_cluster,
+            ci_results                   = ci_results,
             survivorship_bias_universe   = survivorship_bias_universe,
         )
     else:
