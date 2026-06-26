@@ -751,7 +751,7 @@ def l_analyze(ptf, output_dir, start_date, end_date, benchmark,
     """Pipeline Lazy portfolio: frontiera + backtest + stability + MC A/B + DSR.
 
     Batch (--ptf all) o singolo. Con --pdf genera la relazione tecnica per
-    ogni PTF in outputs/lazy_reports/<ptf>_relazione_tecnica.pdf.
+    ogni PTF in outputs/l_analysis/<timestamp>/<ptf>_relazione_tecnica.pdf.
     """
     import warnings
     warnings.filterwarnings("ignore", category=RuntimeWarning)
@@ -843,9 +843,8 @@ def l_analyze(ptf, output_dir, start_date, end_date, benchmark,
         if generate_relazione_tecnica_lazy is None:
             raise click.ClickException(
                 "generate_relazione_tecnica_lazy non trovata in mc_functions.py.")
-        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        reports_dir = os.path.join(root, "outputs", "lazy_reports")
-        os.makedirs(reports_dir, exist_ok=True)
+        from datetime import datetime as _dt
+        os.makedirs(out_dir, exist_ok=True)
 
         for ptf_name, rich in details.items():
             try:
@@ -871,7 +870,7 @@ def l_analyze(ptf, output_dir, start_date, end_date, benchmark,
                         if verbose:
                             print(f"[WARN] proiezione capitale {ptf_name} fallita: {_pe}")
 
-                out_pdf = os.path.join(reports_dir, f"{ptf_name}_relazione_tecnica.pdf")
+                out_pdf = os.path.join(out_dir, f"{ptf_name}_relazione_tecnica.pdf")
                 generate_relazione_tecnica_lazy(
                     portfolio_title=ptf_name,
                     asset_allocation=asset_allocation,
