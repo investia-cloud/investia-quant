@@ -6,6 +6,7 @@ Entry point: iq run / iq report / iq r-analyze / iq l-analyze / iq k-analyze / i
 import sys
 import os
 import datetime
+import shutil
 from pathlib import Path
 import click
 
@@ -947,6 +948,63 @@ def k_agent(max_per_run, pdf_path, llm_provider, model, verbose):
         _agent.run_agent_from_pdf(pdf_path)
     else:
         _agent.run_agent()
+
+
+# ---------------------------------------------------------------------------
+# iq promote
+# ---------------------------------------------------------------------------
+
+@app.command("promote", epilog=(
+    "\b\nEsempi:\n"
+    "  iq promote --ptf alpha_nasdaq100 --year 2026\n"
+    "  iq promote --ptf alpha_nasdaq100 --year 2026 --force\n"
+))
+@click.option("--ptf", required=True, help="Nome portafoglio R (slug, es. alpha_nasdaq100)")
+@click.option("--year", default=None, type=int, help="Anno (default: anno corrente)")
+@click.option("--force", is_flag=True, default=False, help="Sovrascrive il file runtime se già esistente")
+def promote(ptf, year, force):
+    """Copia il file WFO deciso (JN §8) da dev a runtime per il deploy."""
+    ns = _load_all_libs()
+
+    portfolio_obj, kind = _resolve_portfolio(ptf, ns)
+    if kind != "R":
+        raise click.ClickException(
+            f"iq promote supporta solo R-portfolio. '{ptf}' è un {kind}-portfolio."
+        )
+
+    portfolio_title = portfolio_obj.get("Title", ptf)
+    if year is None:
+        year = datetime.datetime.now().year
+
+    dev_dir  = Path(ns.get("_TSLAB_DEV_R_WFO_RESULTS_DIR",  "../../outputs/WFO_R_DEV_RESULTS"))
+    run_dir  = Path(ns.get("_TSLAB_RUNTIME_R_WFO_RESULTS_DIR", "../../inputs/WFO_R_RUN_RESULTS"))
+    filename = f"{portfolio_title}_{year}.wfo_summary.csv"
+    src      = dev_dir / filename
+    dst      = run_dir / filename
+
+    if not src.exists():
+        raise click.ClickException(
+            f"File sorgente non trovato:\n  {src}\n"
+            "Esegui prima il JN §8 per produrre il file WFO."
+        )
+
+    # Riepilogo pre-copia
+    src_stat = src.stat()
+    click.echo(f"[iq promote] Portafoglio : {portfolio_title} ({year})")
+    click.echo(f"[iq promote] Origine     : {src}")
+    click.echo(f"[iq promote] Destinazione: {dst}")
+    click.echo(f"[iq promote] Dimensione  : {src_stat.st_size} byte  |  Modificato: "
+               f"{datetime.datetime.fromtimestamp(src_stat.st_mtime).strftime('%Y-%m-%d %H:%M:%S')}")
+
+    if dst.exists() and not force:
+        raise click.ClickException(
+            f"Il file runtime esiste già:\n  {dst}\n"
+            "Usa --force per sovrascriverlo (es. dopo una revisione intra-anno)."
+        )
+
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dst)
+    click.echo(f"[iq promote] Copiato: {src} -> {dst}")
 
 
 # ---------------------------------------------------------------------------
