@@ -174,7 +174,30 @@ def _resolve_recipient(mail_args, ptf_recipients: list) -> list:
     # deduplicazione mantenendo ordine
     seen = set()
     return [x for x in result if not (x in seen or seen.add(x))]
-    
+
+
+def _expand_ptf_names(ptf_str: str, registry: dict):
+    """
+    Espande una stringa --ptf in una lista di nomi portafoglio.
+    Supporta: singolo nome, lista separata da spazi, pattern glob (*, ?, []).
+    Ritorna (names: list[str], errors: list[str]).
+    """
+    import fnmatch
+    tokens = ptf_str.split()
+    seen = {}
+    errors = []
+    for token in tokens:
+        if any(c in token for c in '*?['):
+            matches = [name for name in registry if fnmatch.fnmatch(name, token)]
+            if not matches:
+                errors.append(f"Pattern '{token}' non ha trovato nessun Lazy portfolio corrispondente.")
+            for m in matches:
+                seen[m] = None
+        else:
+            seen[token] = None
+    return list(seen.keys()), errors
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -781,10 +804,14 @@ def l_analyze(ptf, output_dir, start_date, end_date, benchmark,
         if verbose:
             click.echo(f"[iq l-analyze] --ptf all userà solo categoria 'lazy_': {len(ptf_names)} PTF.")
     else:
-        portfolio_obj, kind = _resolve_portfolio(ptf, ns)
-        if kind != "L":
-            raise click.ClickException(f"'{ptf}' non è un Lazy portfolio (kind={kind}).")
-        ptf_names = [ptf]
+        _lazy_reg_for_glob = ns.get("L_PORTFOLIO_LAZY") or l_registry
+        ptf_names, _glob_errors = _expand_ptf_names(ptf, _lazy_reg_for_glob)
+        if _glob_errors:
+            raise click.ClickException("\n".join(_glob_errors))
+        for _name in ptf_names:
+            _obj, _kind = _resolve_portfolio(_name, ns)
+            if _kind != "L":
+                raise click.ClickException(f"'{_name}' non è un Lazy portfolio (kind={_kind}).")
 
     if verbose:
         print(f"Lazy-analyze: {len(ptf_names)} PTF -> {ptf_names}")
