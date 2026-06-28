@@ -247,7 +247,7 @@ il path Cluster **non viene rimosso dal codice**. Resta disponibile
 per chi volesse eseguirlo consapevolmente, ma:
 - non è eseguito di default (vedi item 0.d-ter, flag CLI in arrivo)
 - la relazione tecnica/PTF card/stampa decisione ora gestiscono
-  correttamente il caso "Cluster non eseguito" (vedi 0.d-bis-fix sotto)
+  correttamente il caso "Cluster non eseguito" (vedi 0.d-quater sotto)
   invece di mostrare dati fuorvianti
 
 **Principio per il futuro, confermato e invariato**: qualsiasi
@@ -259,7 +259,7 @@ validità statistica della misura stessa.
 
 ---
 
-**0.d-bis-fix Relazione tecnica, PTF card, stampa decisione — fallback fuorvianti su Cluster=None** · filiera R · ✅ RISOLTO 28/06 sera
+**0.d-quater Relazione tecnica, PTF card, stampa decisione — fallback fuorvianti su Cluster=None** · filiera R · ✅ RISOLTO 28/06 sera
 
 Scoperto generando un PDF reale (Germany Plan) con Cluster non
 eseguito: tre funzioni (`generate_relazione_tecnica`,
@@ -288,14 +288,13 @@ da incollare in `r_functions.py` (non ancora applicato/commesso).
 
 ---
 
-**0.d-ter Flag CLI per disabilitare Cluster di default** · filiera R · in corso
+**0.d-ter Flag CLI per disabilitare Cluster di default** · filiera R · ✅ RISOLTO 28/06 sera
 
-`iq r-analyze` esegue oggi sempre entrambi i path (Standard + Cluster)
-incondizionatamente, senza possibilità di saltare Cluster. Da
-implementare: flag `--cluster` (default `False`) — di default esegue
-solo Standard; se passato esplicitamente, comportamento odierno
-(esegue entrambi). Prompt Code preparato il 28/06 sera, non ancora
-lanciato/verificato.
+`run_r_portfolio_analysis` ora accetta `run_cluster: bool = False` —
+di default esegue solo il path Standard, saltando interamente la
+pipeline Cluster (WFO, download dati specifici, OFC, MC). `iq r-analyze`
+esegue Cluster solo se richiesto esplicitamente. Committato e pushato
+in `main` (28/06 sera).
 
 
 
