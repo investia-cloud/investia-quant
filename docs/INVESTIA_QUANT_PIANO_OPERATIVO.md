@@ -207,74 +207,97 @@ un commit quando si torna da un `checkout` precedente.
 
 ### Priorità MASSIMA
 
-**0.d Path Cluster — accantonato, gap architetturale runtime non risolvibile con patch** · filiera R · ⚠️ decisione architetturale 28/06
+**0.d Path Cluster — diagnosi precisa: look-ahead nella selezione, non solo gap di persistenza** · filiera R · ⚠️ aggiornato 28/06 sera
 
-**Scoperta, in ordine cronologico (sessione 28/06):**
+**Aggiornamento rispetto alla prima diagnosi (28/06 pomeriggio):** la
+causa profonda del path Cluster non è "solo" un problema di
+persistenza/runtime — è un **look-ahead metodologico nella selezione
+stessa**, identificato analizzando le performance anomale (CAGR
+19.8%, Sharpe 0.97, Cluster–Risk ON/OFF) emerse da un run reale.
 
-1. Tentando di estendere il fix Risk ON/OFF anche al path Cluster, si è
-   scoperto che `r_run_portfolio` **non distingue mai Standard da
-   Cluster** — non riceve `deployed_path`, non lo legge da nessuna
-   parte operativa. `deployed_path` è solo metadata documentale nel
-   notebook (mai letto a runtime prima di questa sessione).
+**Diagnosi precisa**: `merge_cluster_summary_dfs` decide, per ogni
+finestra storica, quale gruppo (label cluster, es. HIGH_MOMENTUM vs
+AVOID) è "vincente" confrontando il `TestScore` — cioè il punteggio
+**Out-of-Sample della finestra stessa**. Una WFO disciplinata seleziona
+i parametri guardando solo l'In-Sample (TrainScore); qui invece la
+selezione del gruppo usa il risultato del test che dovrebbe solo
+*misurare*, non *scegliere*. È un leakage a livello meta: si riporta
+come "skill del clustering" il fatto che, scelto a posteriori il
+migliore tra N sotto-universi, quello batte la media — vero quasi per
+costruzione. Coerente con l'evidenza già raccolta in relazione tecnica:
+Skill Profile "No-skill" ai test Monte Carlo Block B anche quando
+CAGR/Sharpe Cluster erano superiori — i test di permutazione non
+trovano skill perché il vantaggio non viene dalla rotazione, viene
+dalla selezione retrospettiva del sotto-universo.
 
-2. Il runtime esegue sempre lo stesso meccanismo per qualunque path:
-   legge `summary_df` (parametri scalari: `n_top`, `rebalance_frequency`,
-   ecc.) e seleziona da `stocks_data` = **universo pieno scaricato
-   fresco**, via `collect_wfo_selections`/`run_rotational_engine`. Mai
-   un filtro/pool cluster-specifico.
+**Tentativo di refactor (rimozione completa del codice Cluster) —
+ANNULLATO il 28/06 sera**: si è tentato di rimuovere interamente il
+path Cluster da `run_wfo_pipeline`/`run_r_portfolio_analysis` (branch
+`refactor/remove-cluster-path`). Il tentativo ha causato una catena di
+incidenti operativi (3 funzioni generali del motore — `resolve_n_top`,
+`run_wfo_pipeline` stessa, `apply_risk_off_overlay` — cancellate per
+errore insieme al blocco Cluster, perché fisicamente intercalate nello
+stesso range di righe; notebook con autosave del browser che ha
+vanificato più `git restore`) — **branch annullato**, si è tornati a
+`main` con il path Cluster **ancora presente e funzionante nel
+codice**.
 
-3. Per il path Cluster, l'analisi costruisce invece un **pool eleggibile
-   per finestra**, dipendente da profilo×regime (redesign 22/06: satellite
-   pesca da AVOID∪HIGH_MOMENTUM, core mai AVOID) — la label dominante per
-   ogni finestra storica è scelta confrontando il `TestScore`
-   (risultato di backtest) tra le label ammesse
-   (`merge_cluster_summary_dfs`).
+**Decisione operativa attuale (diversa da quella di metà giornata)**:
+il path Cluster **non viene rimosso dal codice**. Resta disponibile
+per chi volesse eseguirlo consapevolmente, ma:
+- non è eseguito di default (vedi item 0.d-ter, flag CLI in arrivo)
+- la relazione tecnica/PTF card/stampa decisione ora gestiscono
+  correttamente il caso "Cluster non eseguito" (vedi 0.d-bis-fix sotto)
+  invece di mostrare dati fuorvianti
 
-4. **Punto critico**: questo meccanismo di scelta è intrinsecamente
-   **retrospettivo** — usa un risultato che esiste solo perché il
-   backtest conosce già l'esito di quella finestra storica. Non ha una
-   traduzione "live" ovvia: a runtime, per il periodo corrente, non
-   esiste un `TestScore` futuro da confrontare.
+**Principio per il futuro, confermato e invariato**: qualsiasi
+redesign futuro (Cluster v2, o altre varianti WFO) deve produrre un
+artefatto runtime-applicabile per costruzione E non usare mai, nella
+selezione, un dato che esiste solo a posteriori (TestScore o
+equivalente) — non solo per ragioni di eseguibilità a runtime, ma per
+validità statistica della misura stessa.
 
-5. Inoltre, anche solo a livello di persistenza: il pool/universo per
-   finestra (`universe` per cluster, righe 7461/7484 di
-   `run_clustered_wfo`) è tenuto **solo in memoria** durante l'analisi,
-   mai scritto nel summary CSV. `save_rotational_wfo_summary` salva
-   **sempre e solo `summary_df_std`** (path Standard), anche quando il
-   path scelto in §7/§8 è Cluster — confermato da audit (sessione 28/06,
-   branch `audit/r-cluster-runtime-verification`).
+---
 
-**Conseguenza pratica**: qualunque PTF deployato con `path=CLUSTER`
-(Base o, in futuro, Risk ON/OFF) applicherebbe a runtime parametri
-calibrati su un pool ristretto (es. `n_top=3` su 8 titoli HIGH_MOMENTUM)
-a un universo molto più ampio — selezione strutturalmente diversa da
-quella validata e promossa in analisi. Disallineamento completamente
-silenzioso: zero errori, zero warning.
+**0.d-bis-fix Relazione tecnica, PTF card, stampa decisione — fallback fuorvianti su Cluster=None** · filiera R · ✅ RISOLTO 28/06 sera
 
-**Fattore mitigante confermato**: nessun PTF Cluster è oggi deployato
-in produzione (releases/2026.1) con clienti reali — nessun danno
-attuale, il problema è stato trovato prima del deploy, in fase di
-certificazione per il 2027.
+Scoperto generando un PDF reale (Germany Plan) con Cluster non
+eseguito: tre funzioni (`generate_relazione_tecnica`,
+`generate_ptf_card_md`, `print_final_decision`) avevano fallback
+impliciti che **copiavano i valori del path Standard** quando i
+corrispondenti dati Cluster erano `None` — risultato: sezioni "Path
+Cluster" nella relazione tecnica mostravano tabelle MC Skill Tests e
+Confidence Intervals **identiche, alla cifra decimale**, a quelle
+Standard, sotto etichetta Cluster — fuorviante, sembrava una
+validazione indipendente quando era una copia. Causa: pattern
+`else: usa_valore_standard` ripetuto in tre punti indipendenti invece
+di propagare `None` → "N/A".
 
-**Decisione architetturale (Luca, 28/06)**: il path Cluster **non si
-patcha ulteriormente**. È accantonato. Causa profonda: progettato
-guardando solo a backtest/analisi (Sharpe, CAGR, OFC), senza requisito
-di eseguibilità a runtime imposto a priori.
+Risolto in tutte e tre le funzioni: ogni sezione/riga/cella relativa a
+Cluster mostra ora "N/A" in modo coerente quando il dato è `None`, mai
+un valore copiato da Standard, mai una cella vuota (anche questo
+verificato: la cella "OFC Verdict" mostrava vuoto invece di N/A,
+corretto separatamente). Verificato su PDF reale rigenerato — §3 testo
+intro, §4.b, §5.a.2, §5.b.2, §7, stampa a schermo: tutti coerenti.
 
-**Principio per il futuro, vincolante per qualsiasi nuova variante WFO**:
-ogni path (Cluster v2 o altro) deve produrre in analisi un artefatto
-**runtime-applicabile per costruzione** — non solo parametri scalari,
-ma anche l'eventuale universo/pool risolto — senza richiedere
-ricalcoli che dipendono da informazione futura (es. TestScore
-storico) o da stato vivo solo dentro il loop WFO. Risk ON/OFF resta
-ortogonale: overlay univoco (concat ticker difensivi), applicabile a
-qualunque path una volta che l'universo è risolto in modo
-runtime-applicabile — nessuna logica path-specifica dentro l'overlay
-stesso.
+**Nota collaterale**: `compare_wfo_pipelines` (funzione di confronto
+usata in sviluppo JN §5c) richiedeva `results_cluster` come parametro
+obbligatorio — patchato per renderlo opzionale (default `None`), con
+omissione pulita di tabelle/plot Cluster quando assente. File pronto,
+da incollare in `r_functions.py` (non ancora applicato/commesso).
 
-**Non bloccante** per Risk ON/OFF + Standard (item 0, risolto
-indipendentemente). **Da fare, non ora**: design session dedicata per
-Cluster v2, quando/se serve evolvere oltre Standard.
+---
+
+**0.d-ter Flag CLI per disabilitare Cluster di default** · filiera R · in corso
+
+`iq r-analyze` esegue oggi sempre entrambi i path (Standard + Cluster)
+incondizionatamente, senza possibilità di saltare Cluster. Da
+implementare: flag `--cluster` (default `False`) — di default esegue
+solo Standard; se passato esplicitamente, comportamento odierno
+(esegue entrambi). Prompt Code preparato il 28/06 sera, non ancora
+lanciato/verificato.
+
+
 
 ---
 
@@ -322,7 +345,88 @@ Tutti i 10 PTF usano lo stesso default (`XEON.MI`, `IBTS.MI`,
 (`alpha_sp100`, `alpha_nasdaq100`). Calendario/liquidità non verificati
 per coerenza con l'orario di esecuzione di `iq run`.
 
-### Priorità alta
+### Architettura di estensione del motore rotazionale — due punti di aggancio (28/06)
+
+Principio emerso ridisegnando il filtro Cluster per il 2027 (vedi 0.d):
+il motore di rotazione (`run_rotational_engine`/`walk_forward_rotational`,
+ora semplicemente **WFO**, senza più distinzione Standard/Cluster come
+due pipeline parallele) resta **unico e immutato**. Ogni evoluzione
+futura si aggancia in uno solo di due punti, entrambi runtime-sicuri per
+costruzione:
+
+**Punto 1 — Filtri di pre-selezione (a monte della WFO, sull'universo)**
+Restringono *chi* è candidato, non toccano il motore. Calcolati una
+volta all'anno con dati disponibili fino a quel momento (mai
+informazione futura), producono una lista di ticker, persistita nel
+summary — il runtime la legge, nessun ricalcolo. Esempio: il filtro
+Cluster ridisegnato (0.d). Altri esempi plausibili stesso pattern:
+liquidità, settore, qualità fondamentale, ESG.
+
+**Punto 2 — Nuovi criteri di rotazione (dentro la WFO, nel ranking/
+selezione)**
+Nuovi `EngineParams` (come oggi `momentum_weight`, `use_acceleration`,
+`filter_ema`) — già runtime-sound per costruzione attuale: ogni nuovo
+parametro del motore, se segue la convenzione esistente
+(`EngineParams.from_dict`, colonna nel summary, default coerente), è
+letto a runtime senza lavoro aggiuntivo. Coerente con l'item 5
+"Potenziamento Block B" (fonti di skill alternative al momentum) già
+presente nel piano.
+
+**Perché conta**: il problema del Cluster nasceva dal mescolare le due
+categorie nella stessa pipeline (filtro d'universo + logica di
+selezione dinamica per-finestra, codificata insieme). Separandole, il
+motore resta semplice qualunque cosa si aggiunga dopo — nessuna nuova
+pipeline parallela, solo nuovi filtri a monte o nuovi parametri dentro
+lo stesso motore.
+
+---
+
+### In corso — Design 2027
+
+**0.d-bis Filtro Cluster ridisegnato come pre-selezione d'universo annuale** · filiera R · design 28/06, da implementare per release 2027
+
+Sostituisce il vecchio path Cluster (accantonato, vedi sopra) con un
+filtro a monte della WFO standard, secondo il principio "Punto 1" sopra:
+
+```
+1. CALCOLO FILTRO (una volta/anno, su dati fino a oggi)
+   pool = analyze_and_cluster_universe(universo_pieno, lookback_days=504)
+        + compute_market_regime(...)
+   → lista ticker eleggibili per l'anno (no PTF senza filtro: pool = universo pieno)
+
+2. WFO (motore unico, sempre walk_forward_rotational, nessuna variante)
+   gira su `pool` — nessuna logica path-aware nel motore
+
+3. SALVATAGGIO — pool persistito nel summary (non più solo in memoria)
+
+4. RUNTIME (iq run) — legge summary_df + pool, scarica dati solo per
+   pool, selezione runtime = selezione validata per costruzione
+```
+
+Elimina entrambi i difetti del path Cluster vecchio: nessun confronto
+`TestScore` retrospettivo (il pool usa regime corrente, non performance
+storica per-finestra), pool sempre persistito (non più solo
+`summary_df_std`).
+
+**Da fare prima dell'implementazione**: la validazione storica
+(Sharpe/CAGR/Skill Profile, es. Alpha Nasdaq100 26.5%→46.1% CAGR,
+0.97→1.46 Sharpe) era su un motore diverso (`TestScore` per finestra)
+— va rifatta da capo con questa nuova definizione di pool, non
+assunta valida. Nessuna garanzia che i numeri reggano identici, anche
+se il principio di fondo (separare titoli per comportamento) resta
+plausibile.
+
+**Step 0 (priorità immediata, prima del design 2027)**: epurazione del
+codice — rimuovere il vecchio path Cluster (pipeline parallela,
+`use_clustering=True`, `merge_cluster_summary_dfs`, selezione dominante
+per-finestra via TestScore) lasciando solo la WFO standard (rinominata
+semplicemente **WFO**, non più "path Standard" in opposizione a
+Cluster). Verificare che la WFO unica funzioni identica a se stessa
+prima e dopo la rimozione (nessuna regressione). Il filtro Cluster
+ridisegnato (0.d-bis) si aggiungerà SOPRA questa base pulita, non sopra
+il codice vecchio.
+
+
 
 **0.c Generazione narrativa della relazione tecnica via LLM** · filiera R · proposta di redesign, da valutare con calma
 
@@ -458,7 +562,20 @@ i path + gestire la ricostruzione di `compare_wfo_pipelines`).
   commit non mergiati in main (incluso lavoro su k-agent, l-analyze,
   accesso remoto Adriana). Da mappare e integrare con calma, non in
   fretta — causa dell'incidente di commit-sul-branch-sbagliato del
-  28/06.
+  28/06. Contiene anche `get_analysis_output_dir` (recuperata
+  singolarmente il 28/06) e probabilmente altro lavoro di
+  normalizzazione path ancora da valutare.
+- **Lezione operativa (28/06)**: l'autosave di Jupyter può sovrascrivere
+  un file appena ripulito con `git restore` se il kernel/la tab del
+  notebook restano aperti — prima di un `git restore` su un `.ipynb`,
+  chiudere/fare shutdown del kernel; verificare con `git status` dopo,
+  non assumere che il restore abbia tenuto.
+- **Lezione operativa (28/06)**: rimuovere codice "per intervallo di
+  righe" (range di un diff/refactor ampio) rischia di cancellare
+  funzioni generali fisicamente intercalate con quelle da rimuovere,
+  anche se logicamente indipendenti — verificare sempre per confine di
+  funzione, non per range di righe, specialmente su file con funzioni
+  storicamente intrecciate (es. `r_functions.py`).
 
 ---
 

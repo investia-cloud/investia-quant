@@ -526,8 +526,10 @@ def report(ptf, all_portfolios, rotational, trading, recipient, start_date, end_
               help="Inizio storico download (default: 2015-01-01)")
 @click.option("--pdf", "gen_pdf", is_flag=True, default=False,
               help="Genera la relazione tecnica PDF (default: solo pipeline, niente PDF)")
+@click.option("--cluster", "run_cluster", is_flag=True, default=False,
+              help="Esegui anche il path WFO Cluster (default: solo Standard)")
 @click.option("--verbose", is_flag=True, default=False, help="Output verboso")
-def r_analyze(ptf, universe, output_dir, profile, year, start_date, gen_pdf, verbose):
+def r_analyze(ptf, universe, output_dir, profile, year, start_date, gen_pdf, run_cluster, verbose):
     """Pipeline R-portfolio: WFO + OFC + MC. Solo R-portfolio.
 
     Esegue sempre la pipeline di calcolo e la card .md; la relazione
@@ -589,6 +591,7 @@ def r_analyze(ptf, universe, output_dir, profile, year, start_date, gen_pdf, ver
     click.echo(f"[iq r-analyze] Output dir:  {output_dir}")
     click.echo(f"[iq r-analyze] Profile:     {profile}")
     click.echo(f"[iq r-analyze] PDF:         {'sì' if gen_pdf else 'no (usa --pdf per generarlo)'}")
+    click.echo(f"[iq r-analyze] Cluster:     {'sì' if run_cluster else 'no (usa --cluster per eseguirlo)'}")
     click.echo(f"[iq r-analyze] Avvio pipeline (WFO + OFC + MC)...")
 
     try:
@@ -601,12 +604,14 @@ def r_analyze(ptf, universe, output_dir, profile, year, start_date, gen_pdf, ver
             profile       = profile,
             verbose       = verbose,
             generate_pdf  = gen_pdf,
+            run_cluster   = run_cluster,
         )
         click.echo(f"[iq r-analyze] Completato.")
         click.echo(f"  PDF:           {result['pdf'] if result['pdf'] else '(non generato — usa --pdf)'}")
         click.echo(f"  Plots dir:     {result['plots_dir']}")
         click.echo(f"  OFC Standard:  {'PROMOTED' if result['ofc_std'] else 'REJECTED'}")
-        click.echo(f"  OFC Cluster:   {'PROMOTED' if result['ofc_cluster'] else 'REJECTED'}")
+        _ofc_cl = result['ofc_cluster']
+        click.echo(f"  OFC Cluster:   {'PROMOTED' if _ofc_cl else 'REJECTED' if _ofc_cl is not None else 'N/A (non eseguito)'}")
         click.echo(f"  Skill Std:     {result['skill_profile_std']}")
         click.echo(f"  Skill Cluster: {result['skill_profile_cluster']}")
     except Exception as exc:

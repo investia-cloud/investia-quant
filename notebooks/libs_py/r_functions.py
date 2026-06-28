@@ -14903,6 +14903,7 @@ def run_r_portfolio_analysis(
     profile: str = "satellite",
     verbose: bool = False,
     generate_pdf: bool = True,
+    run_cluster: bool = False,
 ) -> dict:
     """
     Esegue la pipeline completa R-portfolio in modalità headless.
@@ -15099,48 +15100,57 @@ def run_r_portfolio_analysis(
         extra_meta             = None,
     )
 
-    # 6. WFO CLUSTER
-    results_cluster = run_wfo_pipeline(
-        stocks_data_raw    = stocks_data_raw,
-        stocks_data        = stocks_data,
-        benchmark_data     = benchmark_data,
-        benchmark_data_raw = benchmark_data_raw,
-        tickers            = tickers,
-        risk_off_data      = risk_off_data,
-        ratio              = ratio,
-        metric             = metric,
-        start_date         = pipeline_start_date,
-        end_date           = end_date,
-        cores              = cores,
-        verbose            = verbose,
-        force_next_year_params = force_next_year_params,
-        use_clustering     = True,
-        adaptive_k         = True,
-        adaptive_k_method  = "hybrid",
-        n_clusters         = 5,
-        lookback_days      = 504,
-        n_top_min          = 2,
-        param_grid         = full_grid,
-        portfolio_title    = portfolio_title,
-        benchmark_title    = benchmark_title,
-        init_cash          = init_cash,
-        risk_on_off        = True,
-        plot               = False,
-        save_plots         = True,
-        plots_dir          = plots_dir,
-        profile            = profile,
-        asset_type         = asset_type,
-    )
-    pf_rot_cluster       = results_cluster["pf_rot"]
-    pf_rot_cluster_base  = results_cluster["pf_rot_base"]
-    if pf_rot_cluster is None:
-        print(f"[WARN] pf_rot (Risk ON/OFF) è None per Cluster — uso pf_rot_base. "
-              f"risk_off_tickers configurati: {risk_off_tickers}")
-        pf_rot_cluster = pf_rot_cluster_base
-    regime_cluster       = results_cluster["regime"]
-    summary_df_cluster   = results_cluster["summary_df"]
-    sel_tickers_cluster      = results_cluster["sel_tickers"]
-    sel_tickers_cluster_base = results_cluster["sel_tickers_base"]
+    # 6. WFO CLUSTER (solo se run_cluster=True)
+    if run_cluster:
+        results_cluster = run_wfo_pipeline(
+            stocks_data_raw    = stocks_data_raw,
+            stocks_data        = stocks_data,
+            benchmark_data     = benchmark_data,
+            benchmark_data_raw = benchmark_data_raw,
+            tickers            = tickers,
+            risk_off_data      = risk_off_data,
+            ratio              = ratio,
+            metric             = metric,
+            start_date         = pipeline_start_date,
+            end_date           = end_date,
+            cores              = cores,
+            verbose            = verbose,
+            force_next_year_params = force_next_year_params,
+            use_clustering     = True,
+            adaptive_k         = True,
+            adaptive_k_method  = "hybrid",
+            n_clusters         = 5,
+            lookback_days      = 504,
+            n_top_min          = 2,
+            param_grid         = full_grid,
+            portfolio_title    = portfolio_title,
+            benchmark_title    = benchmark_title,
+            init_cash          = init_cash,
+            risk_on_off        = True,
+            plot               = False,
+            save_plots         = True,
+            plots_dir          = plots_dir,
+            profile            = profile,
+            asset_type         = asset_type,
+        )
+        pf_rot_cluster       = results_cluster["pf_rot"]
+        pf_rot_cluster_base  = results_cluster["pf_rot_base"]
+        if pf_rot_cluster is None:
+            print(f"[WARN] pf_rot (Risk ON/OFF) è None per Cluster — uso pf_rot_base. "
+                  f"risk_off_tickers configurati: {risk_off_tickers}")
+            pf_rot_cluster = pf_rot_cluster_base
+        regime_cluster       = results_cluster["regime"]
+        summary_df_cluster   = results_cluster["summary_df"]
+        sel_tickers_cluster      = results_cluster["sel_tickers"]
+        sel_tickers_cluster_base = results_cluster["sel_tickers_base"]
+    else:
+        results_cluster          = None
+        pf_rot_cluster           = None
+        pf_rot_cluster_base      = None
+        regime_cluster           = None
+        summary_df_cluster       = None
+        sel_tickers_cluster      = None
+        sel_tickers_cluster_base = None
 
     # 7. COMPARE
     metrics_df = compare_wfo_pipelines(
@@ -15171,20 +15181,24 @@ def run_r_portfolio_analysis(
     with open(ofc_report_std_path, "w") as f:
         json.dump(ofc_report_std, f, default=str, indent=2)
 
-    # 9. OFC CLUSTER
-    ofc_passed_cluster, ofc_report_cluster = overfitting_check_rotational(
-        wfo_summary      = summary_df_cluster,
-        stocks_data      = stocks_data,
-        benchmark_data   = benchmark_data,
-        param_grid       = full_grid,
-        profile          = profile,
-        n_total_trials   = n_full_trials,
-        seed             = 42,
-        verbose          = verbose,
-    )
-    ofc_report_cluster_path = output_dir / f"{portfolio_title}_{year}_ofc_cluster.json"
-    with open(ofc_report_cluster_path, "w") as f:
-        json.dump(ofc_report_cluster, f, default=str, indent=2)
+    # 9. OFC CLUSTER (solo se run_cluster=True)
+    if run_cluster:
+        ofc_passed_cluster, ofc_report_cluster = overfitting_check_rotational(
+            wfo_summary      = summary_df_cluster,
+            stocks_data      = stocks_data,
+            benchmark_data   = benchmark_data,
+            param_grid       = full_grid,
+            profile          = profile,
+            n_total_trials   = n_full_trials,
+            seed             = 42,
+            verbose          = verbose,
+        )
+        ofc_report_cluster_path = output_dir / f"{portfolio_title}_{year}_ofc_cluster.json"
+        with open(ofc_report_cluster_path, "w") as f:
+            json.dump(ofc_report_cluster, f, default=str, indent=2)
+    else:
+        ofc_passed_cluster = None
+        ofc_report_cluster = None
 
     # 10. MONTE CARLO
     mc_kwargs = dict(
@@ -15210,15 +15224,20 @@ def run_r_portfolio_analysis(
         plots_dir        = plots_dir_std,
         **mc_kwargs,
     )
-    ci_results_cluster, ci_summary_df_cluster, skill_results_cluster, skill_summary_df_cluster = run_all_mc_methods_rotational(
-        pf_rot           = pf_rot_cluster,
-        pf_rot_base      = pf_rot_cluster_base,
-        regime           = regime_cluster,
-        sel_tickers      = sel_tickers_cluster,
-        sel_tickers_base = sel_tickers_cluster_base,
-        plots_dir        = plots_dir_cluster,
-        **mc_kwargs,
-    )
+    if run_cluster:
+        ci_results_cluster, ci_summary_df_cluster, skill_results_cluster, skill_summary_df_cluster = run_all_mc_methods_rotational(
+            pf_rot           = pf_rot_cluster,
+            pf_rot_base      = pf_rot_cluster_base,
+            regime           = regime_cluster,
+            sel_tickers      = sel_tickers_cluster,
+            sel_tickers_base = sel_tickers_cluster_base,
+            plots_dir        = plots_dir_cluster,
+            **mc_kwargs,
+        )
+    else:
+        ci_results_cluster     = None
+        ci_summary_df_cluster  = None
+        skill_results_cluster  = None
 
     # 11. DECISIONE
     skill_profile_std, skill_profile_cluster = compute_skill_profile(
@@ -15234,14 +15253,14 @@ def run_r_portfolio_analysis(
         "n_full_trials":    n_full_trials,
         "n_reduced_trials": n_reduced_trials,
         "wfo_file_save":    wfo_file_save,
-        "use_clustering":   True,
+        "use_clustering":   run_cluster,
         "n_bootstrap_ofc":  1000,
         "n_bootstrap_mc":   1000,
     }
     _cluster_result = results_cluster.get("cluster_result") if results_cluster else None
     _metrics_comparison = {
-        "cluster_riskoff": results_cluster.get("pf_rot"),
-        "cluster_base":    results_cluster.get("pf_rot_base"),
+        "cluster_riskoff": results_cluster.get("pf_rot")      if results_cluster else None,
+        "cluster_base":    results_cluster.get("pf_rot_base") if results_cluster else None,
         "std_riskoff":     results_std.get("pf_rot"),
         "std_base":        results_std.get("pf_rot_base"),
         "benchmark":       results_std.get("pf_benchmark") or results_std.get("pf_benchmark_base"),
