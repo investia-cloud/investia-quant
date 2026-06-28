@@ -1372,6 +1372,25 @@ def load_wfo_summary(file_path: str) -> pd.DataFrame:
         comment="#",
     )
     return df
+
+
+def read_wfo_metadata(file_path: str) -> dict:
+    """
+    Legge i campi extra_meta dall'header commentato scritto da
+    save_rotational_wfo_summary() (linee '# key = value').
+    Ritorna un dict str→str con i valori grezzi (non interpretati).
+    """
+    meta = {}
+    with open(file_path, "r", encoding="utf-8") as f:
+        for line in f:
+            if not line.startswith("#"):
+                break
+            line = line[1:].strip()
+            if "=" in line and not line.startswith("==="):
+                key, _, val = line.partition("=")
+                meta[key.strip()] = val.strip()
+    return meta
+
 # =============================================================================
 # PUNTO 3: PRE-CALCOLO VOLATILITY MULTI-WINDOW
 # =============================================================================
@@ -3469,7 +3488,44 @@ def r_run_portfolio(
 
     # --- Carica summary WFO ---
     summary_df=load_wfo_summary(wfo_file_save)
-    
+
+    # --- Leggi metadata (deployed_path, deployed_variant) dall'header del CSV ---
+    _wfo_meta         = read_wfo_metadata(wfo_file_save)
+    _deployed_variant = _wfo_meta.get("deployed_variant", "BASE").strip().upper()
+    _deployed_path    = _wfo_meta.get("deployed_path", "STANDARD").strip().upper()
+
+    # --- Overlay Risk ON/OFF (solo path STANDARD) ---
+    if _deployed_variant == "RISK_ON_OFF":
+        if _deployed_path != "STANDARD":
+            print(
+                f"[ERROR] Risk ON/OFF supportato solo per path STANDARD nel runtime — "
+                f"PTF: {portfolio_title}, path: {_deployed_path}. "
+                "Path Cluster accantonato, vedi piano operativo item 0.d."
+            )
+            return {
+                "dry_run": False,
+                "portfolio": portfolio_title,
+                "error": (
+                    f"RISK_ON_OFF non supportato per path {_deployed_path} "
+                    f"nel runtime (PTF: {portfolio_title})"
+                ),
+            }
+        from k_tickers import risk_off_tickers as _default_risk_off_tickers
+        _risk_off_tickers = portfolio.get("risk_off_tickers", _default_risk_off_tickers)
+        risk_off_data = download_data(
+            _risk_off_tickers,
+            download_start_date,
+            end_date,
+            show_progress=show_progress,
+            auto_adjust=False,
+        )
+        stocks_data = apply_risk_off_overlay(stocks_data, risk_off_data, verbose=verbose)
+        if verbose:
+            print(
+                f"[INFO] Risk ON/OFF overlay applicato: "
+                f"{list(risk_off_data.columns)}"
+            )
+
     # --- Selezioni tickers dal summary ---
     sel_tickers = collect_selections_from_summary(
         summary_df=summary_df,
@@ -7518,6 +7574,32 @@ def compute_market_regime(
     return regime
 
 
+def apply_risk_off_overlay(
+    stocks_data: pd.DataFrame,
+    risk_off_data: pd.DataFrame,
+    verbose: bool = False,
+) -> pd.DataFrame:
+    """
+    Allarga l'universo principale aggiungendo i ticker difensivi di risk_off_data.
+    Duplicati già presenti in stocks_data vengono rimossi prima del concat.
+    Condivisa tra run_wfo_pipeline (analisi) e r_run_portfolio (runtime).
+    """
+    duplicate_cols = stocks_data.columns.intersection(risk_off_data.columns)
+    if len(duplicate_cols) > 0 and verbose:
+        print(
+            f"[WARN] Rimossi da risk_off_data ticker già presenti "
+            f"in stocks_data: {list(duplicate_cols)}"
+        )
+    risk_off_clean = risk_off_data.drop(columns=duplicate_cols, errors='ignore')
+    oos_data = pd.concat([stocks_data, risk_off_clean], axis=1)
+    if oos_data.columns.duplicated().any():
+        dup_cols = oos_data.columns[oos_data.columns.duplicated()].tolist()
+        raise ValueError(
+            f"Duplicate columns in oos_data after concat: {dup_cols}"
+        )
+    return oos_data
+
+
 def aggregate_cluster_portfolios(
     wfo_results    : dict,
     stocks_data    : pd.DataFrame,
@@ -8458,28 +8540,7 @@ def run_wfo_pipeline(
     if risk_on_off and risk_off_data is not None:
         print("\n▶ Portafoglio CON Risk ON/OFF...")
 
-        # Evita duplicati tra universo principale e asset risk-off
-        duplicate_risk_off_cols = stocks_data.columns.intersection(risk_off_data.columns)
-
-        if len(duplicate_risk_off_cols) > 0 and verbose:
-            print(
-                f"[WARN] Rimossi da risk_off_data ticker già presenti "
-                f"in stocks_data: {list(duplicate_risk_off_cols)}"
-            )
-
-        risk_off_clean = risk_off_data.drop(
-            columns=duplicate_risk_off_cols,
-            errors='ignore'
-        )
-
-        oos_data = pd.concat([stocks_data, risk_off_clean], axis=1)
-
-        # Guardia difensiva finale
-        if oos_data.columns.duplicated().any():
-            dup_cols = oos_data.columns[oos_data.columns.duplicated()].tolist()
-            raise ValueError(
-                f"Duplicate columns in oos_data after concat: {dup_cols}"
-            )
+        oos_data = apply_risk_off_overlay(stocks_data, risk_off_data, verbose=verbose)
 
         mode_label = "Clustered" if use_clustering else "Standard"
 
