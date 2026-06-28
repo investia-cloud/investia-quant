@@ -296,6 +296,17 @@ pipeline Cluster (WFO, download dati specifici, OFC, MC). `iq r-analyze`
 esegue Cluster solo se richiesto esplicitamente. Committato e pushato
 in `main` (28/06 sera).
 
+**Nota per quando 0.d-bis (filtro Cluster v2) arriva in Fase 3
+(validazione storica) o oltre**: rinominare il flag CLI attuale da
+`--cluster` a `--cluster-legacy`, per evitare ambiguità tra il vecchio
+meccanismo (look-ahead noto, solo per studio/confronto, mai per
+certificazione) e il nuovo filtro v2 (pre-selezione d'universo
+annuale, senza look-ahead). Riservare `--cluster` per il filtro v2
+quando pronto — non riusare lo stesso nome per due logiche diverse,
+per non confondere risultati storici già generati con quel flag.
+Nessuna azione richiesta ora: rinominare solo quando si arriva
+effettivamente a implementare la Fase 3 di 0.d-bis.
+
 
 
 ---
