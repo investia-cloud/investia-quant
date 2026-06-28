@@ -8648,11 +8648,9 @@ def run_wfo_pipeline(
 
     return results
     
-
-
 def compare_wfo_pipelines(
     results_std     : dict,
-    results_cluster : dict,
+    results_cluster : dict = None,
     portfolio_title : str  = "Portfolio",
     benchmark_title : str  = "Benchmark",
     plot_radar      : bool = True,
@@ -8664,18 +8662,24 @@ def compare_wfo_pipelines(
     apply_gradient  : bool = True,
 ) -> "Union[pd.DataFrame, pd.io.formats.style.Styler]":
     """
-    Confronta i 4 portafogli prodotti da due run di run_wfo_pipeline
-    (Standard e Clustered, ciascuno con/senza Risk ON/OFF).
+    Confronta i portafogli prodotti da una o due run di run_wfo_pipeline
+    (Standard, ed eventualmente Clustered, ciascuno con/senza Risk ON/OFF).
+
+    Se results_cluster è None, il confronto si limita ai 2 portafogli
+    Standard (con/senza Risk ON/OFF) + benchmark — nessun riferimento al
+    Cluster viene generato (né in tabella, né nei plot).
 
     Genera:
-    1. Grafico lineare dei rendimenti cumulativi (4 portafogli + benchmark).
+    1. Grafico lineare dei rendimenti cumulativi (portafogli disponibili + benchmark).
     2. Tabella comparativa delle metriche con heatmap (via analyze_portfolio_metrics).
     3. Radar chart normalizzato su range assoluti (se plot_radar=True).
 
     Parameters
     ----------
-    results_std     : dict  Risultato di run_wfo_pipeline(use_clustering=False).
-    results_cluster : dict  Risultato di run_wfo_pipeline(use_clustering=True).
+    results_std     : dict        Risultato di run_wfo_pipeline (Standard).
+    results_cluster : dict | None Risultato di run_wfo_pipeline (Cluster),
+                                   se disponibile. Default None: il
+                                   confronto Cluster viene omesso.
     portfolio_title : str   Titolo base usato nelle etichette.
     benchmark_title : str   Etichetta del benchmark.
     plot_radar      : bool  Se True genera il radar chart.
@@ -8711,8 +8715,9 @@ def compare_wfo_pipelines(
 
     _add(results_std.get('pf_rot'),          lbl['std_on'])
     _add(results_std.get('pf_rot_base'),     lbl['std_base'])
-    _add(results_cluster.get('pf_rot'),      lbl['cl_on'])
-    _add(results_cluster.get('pf_rot_base'), lbl['cl_base'])
+    if results_cluster is not None:
+        _add(results_cluster.get('pf_rot'),      lbl['cl_on'])
+        _add(results_cluster.get('pf_rot_base'), lbl['cl_base'])
 
     if not cumrets:
         print("Nessun portafoglio disponibile per il confronto.")
@@ -8722,8 +8727,8 @@ def compare_wfo_pipelines(
     pf_bm = (
         results_std.get('pf_benchmark') or
         results_std.get('pf_benchmark_base') or
-        results_cluster.get('pf_benchmark') or
-        results_cluster.get('pf_benchmark_base')
+        (results_cluster.get('pf_benchmark') if results_cluster is not None else None) or
+        (results_cluster.get('pf_benchmark_base') if results_cluster is not None else None)
     )
     bm_cumret = None
     if pf_bm is not None:
@@ -8811,7 +8816,7 @@ def compare_wfo_pipelines(
         from pathlib import Path as _P
         _pd = _P(str(plots_dir))
         _pd.mkdir(parents=True, exist_ok=True)
-        # equity_comparison.png — tutti i path (fig già costruita sopra)
+        # equity_comparison.png — tutti i path disponibili (fig già costruita sopra)
         fig.write_image(str(_pd / 'equity_comparison.png'))
         # equity_std.png — solo percorsi Standard
         _std_cols = [c for c in port_cumrets.columns
@@ -8831,24 +8836,25 @@ def compare_wfo_pipelines(
                                    height=400, width=900, template='plotly_white',
                                    hovermode='x unified')
             _fig_std.write_image(str(_pd / 'equity_std.png'))
-        # equity_cluster.png — solo percorsi Cluster (condizionale)
-        _cl_cols = [c for c in port_cumrets.columns
-                    if c in (lbl.get('cl_on',''), lbl.get('cl_base',''))]
-        if _cl_cols:
-            _fig_cl = go.Figure()
-            for _c in _cl_cols:
-                _fig_cl.add_trace(go.Scatter(
-                    x=port_cumrets.index, y=port_cumrets[_c], name=_c, mode='lines',
-                    line=dict(color=COLORS.get(_c,'#333'), dash=DASH.get(_c,'solid'), width=WIDTH.get(_c,2))))
-            if bm_cumret is not None:
-                _ba = bm_cumret.reindex(port_cumrets.index, method='ffill')
-                _fig_cl.add_trace(go.Scatter(
-                    x=_ba.index, y=_ba.values, name=benchmark_title, mode='lines',
-                    line=dict(color=COLORS[benchmark_title], dash=DASH[benchmark_title], width=WIDTH[benchmark_title])))
-            _fig_cl.update_layout(title=f"Rendimenti cumulativi \u2013 Cluster \u2013 {portfolio_title}",
-                                   height=400, width=900, template='plotly_white',
-                                   hovermode='x unified')
-            _fig_cl.write_image(str(_pd / 'equity_cluster.png'))
+        # equity_cluster.png — solo se results_cluster è stato passato
+        if results_cluster is not None:
+            _cl_cols = [c for c in port_cumrets.columns
+                        if c in (lbl.get('cl_on',''), lbl.get('cl_base',''))]
+            if _cl_cols:
+                _fig_cl = go.Figure()
+                for _c in _cl_cols:
+                    _fig_cl.add_trace(go.Scatter(
+                        x=port_cumrets.index, y=port_cumrets[_c], name=_c, mode='lines',
+                        line=dict(color=COLORS.get(_c,'#333'), dash=DASH.get(_c,'solid'), width=WIDTH.get(_c,2))))
+                if bm_cumret is not None:
+                    _ba = bm_cumret.reindex(port_cumrets.index, method='ffill')
+                    _fig_cl.add_trace(go.Scatter(
+                        x=_ba.index, y=_ba.values, name=benchmark_title, mode='lines',
+                        line=dict(color=COLORS[benchmark_title], dash=DASH[benchmark_title], width=WIDTH[benchmark_title])))
+                _fig_cl.update_layout(title=f"Rendimenti cumulativi \u2013 Cluster \u2013 {portfolio_title}",
+                                       height=400, width=900, template='plotly_white',
+                                       hovermode='x unified')
+                _fig_cl.write_image(str(_pd / 'equity_cluster.png'))
     if plot:
         fig.show()
 
@@ -12438,6 +12444,7 @@ def print_final_decision(
     # NEW: opzionali per simmetria std/cluster
     mc_skill_cluster: dict | None = None,
     mc_ci_cluster=None,
+    skill_profile_cluster: str | None = None,
 ) -> None:
     
     '''
@@ -12468,21 +12475,19 @@ def print_final_decision(
     except Exception:
         pass
     
-    # NEW: Cluster (fallback a std se non passati → retro-compat)
+    # Cluster — nessun fallback a std quando Cluster non eseguito
     if mc_skill_cluster is not None:
         reshuffle_pval_cl   = mc_skill_cluster.get('rotation_reshuffle', {}).get('p_values', {}).get('CAGR')
         reshuffle_passed_cl = (reshuffle_pval_cl is not None) and (reshuffle_pval_cl < 0.10)
     else:
-        reshuffle_pval_cl, reshuffle_passed_cl = reshuffle_pval, reshuffle_passed
-    
+        reshuffle_pval_cl, reshuffle_passed_cl = None, False
+
     ci_sharpe_p50_cl = None
     if mc_ci_cluster is not None:
         try:
             ci_sharpe_p50_cl = mc_ci_cluster.loc['A1 · IID Bootstrap', 'Sharpe_p50']
         except Exception:
             pass
-    else:
-        ci_sharpe_p50_cl = ci_sharpe_p50
 
     
     _sig_key_map = {
@@ -12515,7 +12520,7 @@ def print_final_decision(
     _rows.append(('MC CI Sharpe p50', _sharpe_str, _sharpe_str_cl))
     
     _rows.append(('OFC Verdict',      _fp(ofc_passed_std), _fp(ofc_passed_cluster)))
-    _rows.append(('Skill profile',    skill_profile, ''))
+    _rows.append(('Skill profile',    skill_profile, skill_profile_cluster or 'N/A'))
 
     _df = pd.DataFrame(_rows, columns=['Signal', 'WFO STANDARD', 'WFO CLUSTER'])
 
@@ -12579,15 +12584,15 @@ def generate_ptf_card_md(
     _timing_pval_str    = f"p={timing_pval:.3f}" if timing_pval is not None else 'N/A'
     _s3_str             = 'Pass' if s3_passed_std else 'Fail'
 
-    # MC Cluster (fallback a std)
+    # MC Cluster — nessun fallback a std quando Cluster non eseguito
     if mc_skill_cluster is not None:
         reshuffle_pval_cl   = mc_skill_cluster.get('rotation_reshuffle', {}).get('p_values', {}).get('CAGR')
         timing_pval_cl      = mc_skill_cluster.get('rebalance_timing', {}).get('p_values', {}).get('CAGR')
         reshuffle_passed_cl = (reshuffle_pval_cl is not None) and (reshuffle_pval_cl < 0.10)
         timing_passed_cl    = (timing_pval_cl is not None) and (timing_pval_cl < 0.10)
     else:
-        reshuffle_pval_cl, timing_pval_cl     = reshuffle_pval, timing_pval
-        reshuffle_passed_cl, timing_passed_cl = reshuffle_passed, timing_passed
+        reshuffle_pval_cl = timing_pval_cl = None
+        reshuffle_passed_cl = timing_passed_cl = False
 
     _reshuffle_pval_str_cl = f"p={reshuffle_pval_cl:.3f}" if reshuffle_pval_cl is not None else 'N/A'
     _timing_pval_str_cl    = f"p={timing_pval_cl:.3f}"    if timing_pval_cl    is not None else 'N/A'
@@ -12609,8 +12614,9 @@ def generate_ptf_card_md(
         except Exception: return 'N/A'
 
     def _ci_cl(row, col):
-        src = mc_ci_cluster if mc_ci_cluster is not None else mc_ci
-        try: return f"{src.loc[row, col]:.3f}"
+        if mc_ci_cluster is None:
+            return 'N/A'
+        try: return f"{mc_ci_cluster.loc[row, col]:.3f}"
         except Exception: return 'N/A'
 
     def _m(key, metric):
@@ -12730,7 +12736,7 @@ def generate_ptf_card_md(
         f"## 7. Decisione Finale\n"
         f"| Dimensione | Standard | Cluster |\n|-----------|---------|----------|\n"
         f"| OFC Verdict | {'PROMOTED' if ofc_passed_std else 'NOT PROMOTED'} | {'PROMOTED' if ofc_passed_cluster else 'NOT PROMOTED' if ofc_passed_cluster is not None else 'N/A'} |\n"
-        f"| Skill Profile | {skill_profile} | {skill_profile} |\n"
+        f"| Skill Profile | {skill_profile} | {'N/A' if mc_skill_cluster is None else skill_profile} |\n"
         f"| CAGR vs Benchmark | {_m('std_riskoff', 'cagr')} vs {_m('benchmark', 'cagr')} | {_m('cluster_riskoff', 'cagr')} vs {_m('benchmark', 'cagr')} |\n"
         f"| Sharpe vs Benchmark | {_m('std_riskoff', 'sharpe')} vs {_m('benchmark', 'sharpe')} | {_m('cluster_riskoff', 'sharpe')} vs {_m('benchmark', 'sharpe')} |\n"
         f"| MaxDD vs Benchmark | {_m('std_riskoff', 'maxdd')} vs {_m('benchmark', 'maxdd')} | {_m('cluster_riskoff', 'maxdd')} vs {_m('benchmark', 'maxdd')} |\n\n"
@@ -14052,18 +14058,19 @@ def generate_relazione_tecnica(
     reshuffle_pass = (reshuffle_pval is not None) and (reshuffle_pval < 0.10)
     timing_pass    = (timing_pval is not None) and (timing_pval < 0.10)
 
-    # Cluster fallback a std se non passati (retro-compat)
     if mc_skill_cluster is not None:
         reshuffle_pval_cl = mc_skill_cluster.get('rotation_reshuffle', {}).get('p_values', {}).get('CAGR')
         timing_pval_cl    = mc_skill_cluster.get('rebalance_timing', {}).get('p_values', {}).get('CAGR')
         reshuffle_pass_cl = (reshuffle_pval_cl is not None) and (reshuffle_pval_cl < 0.10)
         timing_pass_cl    = (timing_pval_cl is not None) and (timing_pval_cl < 0.10)
     else:
-        reshuffle_pval_cl, timing_pval_cl = reshuffle_pval, timing_pval
-        reshuffle_pass_cl, timing_pass_cl = reshuffle_pass, timing_pass
+        reshuffle_pval_cl = timing_pval_cl = None
+        reshuffle_pass_cl = timing_pass_cl = False
 
     def _ci_cl(row, col, pct=True):
-        src = mc_ci_cluster if mc_ci_cluster is not None else mc_ci
+        if mc_ci_cluster is None:
+            return 'N/A'
+        src = mc_ci_cluster
         try:
             v = float(src.loc[row, col])
             return f"{v*100:.1f}%" if pct else f"{v:.3f}"
@@ -14231,12 +14238,21 @@ def generate_relazione_tecnica(
     #     "è quella candidata al deploy operativo.", st_body))
 
     # §3 — tabella a 10 colonne via analyze_portfolio_metrics (coerente con JN/compare_wfo_pipelines)
-    story.append(Paragraph(
-        f"Confronto delle quattro varianti del motore (Standard vs Cluster, ognuna con e senza "
-        f"Risk ON/OFF) sul periodo comune. Il benchmark <b>{benchmark}</b> è riportato "
-        "nell'ultima riga. Le metriche sono prodotte dalla stessa funzione usata in sviluppo "
-        "(JN §5c); solo le varianti Risk ON/OFF sono sottoposte a validazione OFC e Monte Carlo (§4–§7).",
-        st_body))
+    if ofc_report_cluster is not None:
+        _s3_intro = (
+            f"Confronto delle quattro varianti del motore (Standard vs Cluster, ognuna con e senza "
+            f"Risk ON/OFF) sul periodo comune. Il benchmark <b>{benchmark}</b> è riportato "
+            "nell'ultima riga. Le metriche sono prodotte dalla stessa funzione usata in sviluppo "
+            "(JN §5c); solo le varianti Risk ON/OFF sono sottoposte a validazione OFC e Monte Carlo (§4–§7)."
+        )
+    else:
+        _s3_intro = (
+            f"Confronto delle due varianti Standard del motore (con e senza Risk ON/OFF) sul periodo comune. "
+            f"Il benchmark <b>{benchmark}</b> è riportato nell'ultima riga. Le metriche sono prodotte dalla "
+            "stessa funzione usata in sviluppo (JN §5c); solo la variante Risk ON/OFF è sottoposta a "
+            "validazione OFC e Monte Carlo (§4–§7). Il path Cluster non è stato eseguito in questa analisi."
+        )
+    story.append(Paragraph(_s3_intro, st_body))
 
     # --- Costruisci port_cumrets (base 1.0) dalle serie equity dei portfolio ---
     _s3_key_labels = [
@@ -14434,7 +14450,8 @@ def generate_relazione_tecnica(
         story.extend([t, Spacer(1, 5 * mm)])
 
     _ofc_block(_s,        ofc_passed_std,     '4.a — Path Standard')
-    _ofc_block(_sc or {}, ofc_passed_cluster, '4.b — Path Cluster')
+    if ofc_report_cluster is not None:
+        _ofc_block(_sc or {}, ofc_passed_cluster, '4.b — Path Cluster')
 
     from reportlab.platypus import PageBreak as _PB
     story.append(_PB())
@@ -14485,20 +14502,21 @@ def generate_relazione_tecnica(
         caption='Fig. 5c — Path Standard. Skill Tests, p-value per metrica (CAGR, MaxDD, Sharpe, Calmar, Vol, Ulcer). '
                 'Soglie tratteggiate al 5% e 1%'))
 
-    # ── §5.a.2 Path Cluster: tabella + 3 figure ─────────────────────────────
-    _sk_block("5.a.2 — Path Cluster", [
-        ('B1 — Rotation Reshuffle', 'La rotazione batte una selezione casuale dei titoli?', reshuffle_pval_cl, reshuffle_pass_cl),
-        ('B2 — Rebalance Timing',   'Il timing mensile batte date di rebalance casuali?',   timing_pval_cl,    timing_pass_cl),
-    ])
-    story.extend(_img_sub('cluster', 'mc_reshuffle.png',
-        caption='Fig. 6a — Path Cluster. Distribuzione bootstrap del CAGR sotto H0 di rotazione casuale (B1). '
-                'Linea rossa = CAGR effettivo'))
-    story.extend(_img_sub('cluster', 'mc_timing.png',
-        caption='Fig. 6b — Path Cluster. Distribuzione bootstrap del CAGR sotto H0 di rebalance casuale (B2). '
-                'Linea rossa = CAGR effettivo'))
-    story.extend(_img_sub('cluster', 'mc_skill_summary.png',
-        caption='Fig. 6c — Path Cluster. Skill Tests, p-value per metrica (CAGR, MaxDD, Sharpe, Calmar, Vol, Ulcer). '
-                'Soglie tratteggiate al 5% e 1%'))
+    # ── §5.a.2 Path Cluster: tabella + 3 figure — solo se mc_skill_cluster è presente ──
+    if mc_skill_cluster is not None:
+        _sk_block("5.a.2 — Path Cluster", [
+            ('B1 — Rotation Reshuffle', 'La rotazione batte una selezione casuale dei titoli?', reshuffle_pval_cl, reshuffle_pass_cl),
+            ('B2 — Rebalance Timing',   'Il timing mensile batte date di rebalance casuali?',   timing_pval_cl,    timing_pass_cl),
+        ])
+        story.extend(_img_sub('cluster', 'mc_reshuffle.png',
+            caption='Fig. 6a — Path Cluster. Distribuzione bootstrap del CAGR sotto H0 di rotazione casuale (B1). '
+                    'Linea rossa = CAGR effettivo'))
+        story.extend(_img_sub('cluster', 'mc_timing.png',
+            caption='Fig. 6b — Path Cluster. Distribuzione bootstrap del CAGR sotto H0 di rebalance casuale (B2). '
+                    'Linea rossa = CAGR effettivo'))
+        story.extend(_img_sub('cluster', 'mc_skill_summary.png',
+            caption='Fig. 6c — Path Cluster. Skill Tests, p-value per metrica (CAGR, MaxDD, Sharpe, Calmar, Vol, Ulcer). '
+                    'Soglie tratteggiate al 5% e 1%'))
 
     def _ci_block(title, ci_func):
             story.append(Paragraph(title, st_subsec))
@@ -14535,15 +14553,16 @@ def generate_relazione_tecnica(
         caption='Fig. 7c — Path Standard. Confidence Intervals cross-method per CAGR e Max Drawdown. '
                 'Linea rossa tratteggiata = valore Actual del portafoglio'))
 
-    # ── §5.b.2 Path Cluster: tabella + 3 figure ─────────────────────────────
-    _ci_block("5.b.2 — Path Cluster",  _ci_cl)
-    story.extend(_img_sub('cluster', 'mc_ci_fanchart_iid.png',
+    # ── §5.b.2 Path Cluster: tabella + 3 figure — solo se mc_ci_cluster è presente ──
+    if mc_ci_cluster is not None:
+        _ci_block("5.b.2 — Path Cluster",  _ci_cl)
+        story.extend(_img_sub('cluster', 'mc_ci_fanchart_iid.png',
         caption='Fig. 8a — Path Cluster. Fan chart equity A1 \u00b7 IID Bootstrap. '
                 'Banda p5\u2013p95 azzurro, mediana blu, Actual rosso, Benchmark grigio tratteggiato.'))
-    story.extend(_img_sub('cluster', 'mc_ci_fanchart_block.png',
+        story.extend(_img_sub('cluster', 'mc_ci_fanchart_block.png',
         caption='Fig. 8b — Path Cluster. Fan chart equity A2 \u00b7 Block Bootstrap. '
                 'Banda p5\u2013p95 azzurro, mediana blu, Actual rosso, Benchmark grigio tratteggiato.'))
-    story.extend(_img_sub('cluster', 'mc_ci.png',
+        story.extend(_img_sub('cluster', 'mc_ci.png',
         caption='Fig. 8c — Path Cluster. Confidence Intervals cross-method per CAGR e Max Drawdown. '
                 'Linea rossa tratteggiata = valore Actual del portafoglio'))
 
@@ -14689,11 +14708,16 @@ def generate_relazione_tecnica(
     dec_hdr = [Paragraph('Dimensione', st_cell_hdr),
                Paragraph('Standard', st_cell_hdrc),
                Paragraph('Cluster', st_cell_hdrc)]
+    def _vp_or_na(text):
+        # st_verd usa textColor=C_WHITE — visibile solo su sfondo colorato.
+        # Per 'N/A' (nessun background) usa stile neutro per evitare testo bianco su bianco.
+        return _vp(text) if text != 'N/A' else Paragraph('N/A', st_cell_ctr)
+
     dec_rows = [dec_hdr,
-        ['OFC Verdict',     _vp(ofc_std_v),  _vp(ofc_clu_v)],
+        ['OFC Verdict',     _vp(ofc_std_v),  _vp_or_na(ofc_clu_v)],
         # ['Skill Profile',   skill_profile,    skill_profile],
         ['Skill Profile',   skill_profile or 'N/A',
-                            skill_profile_cluster or skill_profile or 'N/A'],   # B-005
+                            skill_profile_cluster or 'N/A'],   # B-005: no fallback su std
         [f'CAGR vs {benchmark}',
          f"{_m('std_riskoff','cagr')} vs {_m('benchmark','cagr')}",
          f"{_m('cluster_riskoff','cagr')} vs {_m('benchmark','cagr')}"],

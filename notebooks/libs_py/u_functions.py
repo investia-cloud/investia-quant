@@ -52,6 +52,39 @@ _TSLAB_RUNTIME_R_WFO_RESULTS_DIR = f"{_TSLAB_INPUNTS_DIR}/WFO_R_RUN_RESULTS"
 _TSLAB_DEV_T_WFO_RESULTS_DIR     = f"{_TSLAB_OUTPUTS_DIR}/WFO_T_DEV_RESULTS"
 _TSLAB_DEV_R_WFO_RESULTS_DIR     = f"{_TSLAB_OUTPUTS_DIR}/WFO_R_DEV_RESULTS"
 
+
+def get_analysis_output_dir(
+    category: str,
+    ptf_name: str = None,
+    timestamp: str = None,
+) -> "Path":
+    """
+    Calcola il path di output canonico per un'analisi CLI o notebook.
+
+    Parameters
+    ----------
+    category  : "r_analysis" | "k_analysis" | "l_analysis"
+    ptf_name  : sottocartella portafoglio (solo R-portfolio la usa)
+    timestamp : stringa timestamp; se None genera datetime.now() con
+                formato "%Y%m%d_%H%M%S"
+
+    Returns
+    -------
+    pathlib.Path — <TSLAB_OUTPUTS_DIR>/<category>[/<ptf_name>]/<timestamp>
+    """
+    from pathlib import Path
+    from datetime import datetime
+    _valid = ("r_analysis", "k_analysis", "l_analysis")
+    if category not in _valid:
+        raise ValueError(f"get_analysis_output_dir: category deve essere uno di {_valid}, ricevuto '{category}'")
+    if timestamp is None:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    base = Path(_TSLAB_OUTPUTS_DIR) / category
+    if ptf_name:
+        base = base / ptf_name
+    return base / timestamp
+
+
 vbt_plot_width = 1100
 
 # ---------------------------------------------------------------------------
