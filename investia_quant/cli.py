@@ -157,7 +157,7 @@ def _resolve_recipient(mail_args, ptf_recipients: list) -> list:
     Shortcut: me → _MAIL_ME, managers → _MAIL_MANAGERS, customers → ptf_recipients da conf.
     """
     if not mail_args:
-        return list(ptf_recipients)
+        return []
     if isinstance(mail_args, str):
         mail_args = (mail_args,)
     result = []
@@ -192,23 +192,23 @@ def app():
     "\b\nEsempi:\n"
     "  iq run --ptf alpha_world --mail me\n"
     "  iq run --rotational --mail managers --mail customers\n"
-    "  iq run --all --no-send --verbose\n"
+    "  iq run --all --verbose\n"
 ))
 @click.option("--ptf", "--portfolio", default=None, help="Nome portafoglio (es. alpha_world, us_trading_2026)")
 @click.option("--all", "--ptf-all", "all_portfolios", is_flag=True, default=False, help="Esegui tutti i portafogli da portfolios.conf")
 @click.option("--rotational", "--ptf-all-r", is_flag=True, default=False, help="Esegui solo portafogli tipo R (rotational)")
 @click.option("--trading", "--ptf-all-k", is_flag=True, default=False, help="Esegui solo portafogli tipo T (trading)")
-@click.option("--recipient", "--mail", "--mailto", multiple=True, default=None, help="Destinatario: email, me, managers, customers")
+@click.option("--recipient", "--mail", "--mailto", multiple=True, default=None, help="Destinatario: email, me, managers, customers (facoltativo — se omesso la pipeline gira ma nessuna mail viene inviata)")
 @click.option("--report-date", default=None, help="Data fine report YYYY-MM-DD (default: oggi)")
 @click.option("--dry-run", is_flag=True, default=False, help="Simula senza inviare email")
 @click.option("--verbose", "-v", is_flag=True, default=False, help="Output verboso")
-@click.option("--no-send", is_flag=True, default=False, help="Non inviare email (solo esegui)")
 @click.option("--wfo-results-dir", default=None, help="Override directory risultati WFO")
-def run(ptf, all_portfolios, rotational, trading, recipient, report_date, dry_run, verbose, no_send, wfo_results_dir):
+def run(ptf, all_portfolios, rotational, trading, recipient, report_date, dry_run, verbose, wfo_results_dir):
     """Esecuzione runtime: genera e invia report segnali (R e K portfolio).
 
     Seleziona un singolo PTF (--ptf) oppure un gruppo (--all/--rotational/--trading)
-    da portfolios.conf e invia i report ai destinatari risolti.
+    da portfolios.conf. Se --mail è omesso la pipeline viene eseguita normalmente
+    ma nessuna email viene inviata.
     """
     select_all = all_portfolios or rotational or trading
     if select_all and ptf:
@@ -239,19 +239,14 @@ def run(ptf, all_portfolios, rotational, trading, recipient, report_date, dry_ru
                 continue
             tasks.append((entry["name"], portfolio_obj, kind, _resolve_recipient(recipient, entry["recipients"])))
 
-    send_report = not no_send and not dry_run
-    sender_email, sender_password = _get_credentials(ns) if send_report else (None, None)
+    send_email = bool(recipient)
+    sender_email, sender_password = _get_credentials(ns) if send_email else (None, None)
 
     ok_count = 0
     err_count = 0
 
     for ptf_name, portfolio_obj, kind, rcpts in tasks:
-        rcpts_str = ", ".join(rcpts) if rcpts else "(nessuno)"
-
-        if send_report and not rcpts:
-            click.echo(f"[iq run] {ptf_name} ({kind}) → SKIP: nessun destinatario.", err=True)
-            err_count += 1
-            continue
+        rcpts_str = ", ".join(rcpts) if rcpts else "(nessuno — pipeline senza invio)"
 
         try:
             if kind == "R":
@@ -259,7 +254,7 @@ def run(ptf, all_portfolios, rotational, trading, recipient, report_date, dry_ru
                 if r_run_portfolio is None:
                     raise click.ClickException("r_run_portfolio non trovata in r_functions.")
                 wfo_dir = wfo_results_dir or ns.get("_TSLAB_RUNTIME_R_WFO_RESULTS_DIR", "../../inputs/WFO_R_RUN_RESULTS")
-                if send_report:
+                if rcpts:
                     for rcpt in rcpts:
                         if verbose:
                             click.echo(f"[iq run] r_run_portfolio → {rcpt}")
@@ -280,14 +275,29 @@ def run(ptf, all_portfolios, rotational, trading, recipient, report_date, dry_ru
                             click.echo(f"[iq run] Output: {out}")
                 else:
                     if verbose:
-                        click.echo(f"[iq run] --no-send attivo: r_run_portfolio NON eseguito ({ptf_name}).")
+                        click.echo(f"[iq run] --mail non specificato: pipeline eseguita senza invio email ({ptf_name}).")
+                    out = r_run_portfolio(
+                        portfolio=portfolio_obj,
+                        report_end_date=report_date,
+                        year=None,
+                        wfo_results_dir=wfo_dir,
+                        sender_email="",
+                        sender_password="",
+                        recipient_email="",
+                        subject=None,
+                        verbose=verbose,
+                        dry_run=dry_run,
+                        debug=verbose,
+                    )
+                    if verbose:
+                        click.echo(f"[iq run] Output: {out}")
 
             elif kind == "K":
                 k_run_portfolio = ns.get("k_run_portfolio")
                 if k_run_portfolio is None:
                     raise click.ClickException("k_run_portfolio non trovata in k_functions.")
                 wfo_dir = wfo_results_dir or ns.get("_TSLAB_RUNTIME_T_WFO_RESULTS_DIR", "../../inputs/WFO_T_RUN_RESULTS")
-                if send_report:
+                if rcpts:
                     for rcpt in rcpts:
                         if verbose:
                             click.echo(f"[iq run] k_run_portfolio → {rcpt}")
@@ -312,7 +322,26 @@ def run(ptf, all_portfolios, rotational, trading, recipient, report_date, dry_ru
                             click.echo(f"[iq run] Output: {out}")
                 else:
                     if verbose:
-                        click.echo(f"[iq run] --no-send attivo: k_run_portfolio NON eseguito ({ptf_name}).")
+                        click.echo(f"[iq run] --mail non specificato: pipeline eseguita senza invio email ({ptf_name}).")
+                    out = k_run_portfolio(
+                        portfolio_cfg=portfolio_obj,
+                        report_end_date=report_date,
+                        verbose=verbose,
+                        wfo_results_dir=wfo_dir,
+                        create_structure=False,
+                        sender_email="",
+                        sender_password="",
+                        recipient_email="",
+                        subject=None,
+                        check_open_trades=False,
+                        check_close_trades=False,
+                        generate_charts=True,
+                        max_attachments_mb=15,
+                        max_attachments_count=10,
+                        attach_mode="signals_only",
+                    )
+                    if verbose:
+                        click.echo(f"[iq run] Output: {out}")
 
             click.echo(f"[iq run] {ptf_name} ({kind}) → {rcpts_str} ✓")
             ok_count += 1
