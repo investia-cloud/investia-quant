@@ -143,11 +143,11 @@ cron irina (locale) ore 03:00         → iq k-analyze --ptf <PTF_DA_DEFINIRE>
 
 ## Lavori in piedi, in ordine di priorità
 
-### Priorità MASSIMA
+### Risolti
 
-**0. Risk ON/OFF non applicato dal runtime di produzione** · filiera R · ⚠️ gap critico
+**0. Risk ON/OFF non applicato dal runtime di produzione** · filiera R · ✅ RISOLTO 28/06
 
-Scoperto e in parte risolto il 19/06, ma resta un pezzo scoperto e ora urgente.
+Scoperto il 19/06, chiuso definitivamente il 28/06.
 
 Cosa è stato risolto il 19/06: `run_r_portfolio_analysis()` (pipeline di
 analisi, usata da `iq r-analyze`) leggeva `risk_off_tickers` da una chiave
@@ -184,6 +184,143 @@ Da fare: progettare come `r_run_portfolio`/`iq run` ottiene
 `risk_off_tickers` (probabilmente da `r_portfolios.py`, stesso posto del
 fix di analisi) e applica l'overlay (stesso overlay "universo allargato"
 già verificato, non serve logica nuova — solo portarla nel runtime).
+
+**Risoluzione (28/06)**: §8 del notebook ora salva anche
+`deployed_variant` ("BASE" | "RISK_ON_OFF") in `extra_meta`;
+`r_run_portfolio` legge il metadata via `read_wfo_metadata` e applica
+`apply_risk_off_overlay` (funzione estratta e condivisa con
+`run_wfo_pipeline`) prima della selezione, solo per path STANDARD. Path
+CLUSTER esplicitamente bloccato con errore parlante (vedi item 0.d).
+Verificato end-to-end due volte su `portfolio_germany_plan`
+(`iq promote` + `iq run -v` →
+`[INFO] Risk ON/OFF overlay applicato: [...]`).
+
+Incidente operativo nella stessa sessione: il fix è stato inizialmente
+committato sul branch sbagliato (`fix/report-path-and-sections-parity`,
+branch vecchio con lavoro non revisionato accumulato da settimane —
+vedi nota tech debt in fondo al documento), poi recuperato con
+cherry-pick mirato (`d05fa14` + `2aa57dd`, incluso il recupero di
+`iq promote`, scoperto mancante solo in fase di verifica finale) su
+branch dedicato e correttamente mergiato in `main`. Nessuna perdita di
+lavoro, ma lezione operativa: verificare sempre `git branch` prima di
+un commit quando si torna da un `checkout` precedente.
+
+### Priorità MASSIMA
+
+**0.d Path Cluster — accantonato, gap architetturale runtime non risolvibile con patch** · filiera R · ⚠️ decisione architetturale 28/06
+
+**Scoperta, in ordine cronologico (sessione 28/06):**
+
+1. Tentando di estendere il fix Risk ON/OFF anche al path Cluster, si è
+   scoperto che `r_run_portfolio` **non distingue mai Standard da
+   Cluster** — non riceve `deployed_path`, non lo legge da nessuna
+   parte operativa. `deployed_path` è solo metadata documentale nel
+   notebook (mai letto a runtime prima di questa sessione).
+
+2. Il runtime esegue sempre lo stesso meccanismo per qualunque path:
+   legge `summary_df` (parametri scalari: `n_top`, `rebalance_frequency`,
+   ecc.) e seleziona da `stocks_data` = **universo pieno scaricato
+   fresco**, via `collect_wfo_selections`/`run_rotational_engine`. Mai
+   un filtro/pool cluster-specifico.
+
+3. Per il path Cluster, l'analisi costruisce invece un **pool eleggibile
+   per finestra**, dipendente da profilo×regime (redesign 22/06: satellite
+   pesca da AVOID∪HIGH_MOMENTUM, core mai AVOID) — la label dominante per
+   ogni finestra storica è scelta confrontando il `TestScore`
+   (risultato di backtest) tra le label ammesse
+   (`merge_cluster_summary_dfs`).
+
+4. **Punto critico**: questo meccanismo di scelta è intrinsecamente
+   **retrospettivo** — usa un risultato che esiste solo perché il
+   backtest conosce già l'esito di quella finestra storica. Non ha una
+   traduzione "live" ovvia: a runtime, per il periodo corrente, non
+   esiste un `TestScore` futuro da confrontare.
+
+5. Inoltre, anche solo a livello di persistenza: il pool/universo per
+   finestra (`universe` per cluster, righe 7461/7484 di
+   `run_clustered_wfo`) è tenuto **solo in memoria** durante l'analisi,
+   mai scritto nel summary CSV. `save_rotational_wfo_summary` salva
+   **sempre e solo `summary_df_std`** (path Standard), anche quando il
+   path scelto in §7/§8 è Cluster — confermato da audit (sessione 28/06,
+   branch `audit/r-cluster-runtime-verification`).
+
+**Conseguenza pratica**: qualunque PTF deployato con `path=CLUSTER`
+(Base o, in futuro, Risk ON/OFF) applicherebbe a runtime parametri
+calibrati su un pool ristretto (es. `n_top=3` su 8 titoli HIGH_MOMENTUM)
+a un universo molto più ampio — selezione strutturalmente diversa da
+quella validata e promossa in analisi. Disallineamento completamente
+silenzioso: zero errori, zero warning.
+
+**Fattore mitigante confermato**: nessun PTF Cluster è oggi deployato
+in produzione (releases/2026.1) con clienti reali — nessun danno
+attuale, il problema è stato trovato prima del deploy, in fase di
+certificazione per il 2027.
+
+**Decisione architetturale (Luca, 28/06)**: il path Cluster **non si
+patcha ulteriormente**. È accantonato. Causa profonda: progettato
+guardando solo a backtest/analisi (Sharpe, CAGR, OFC), senza requisito
+di eseguibilità a runtime imposto a priori.
+
+**Principio per il futuro, vincolante per qualsiasi nuova variante WFO**:
+ogni path (Cluster v2 o altro) deve produrre in analisi un artefatto
+**runtime-applicabile per costruzione** — non solo parametri scalari,
+ma anche l'eventuale universo/pool risolto — senza richiedere
+ricalcoli che dipendono da informazione futura (es. TestScore
+storico) o da stato vivo solo dentro il loop WFO. Risk ON/OFF resta
+ortogonale: overlay univoco (concat ticker difensivi), applicabile a
+qualunque path una volta che l'universo è risolto in modo
+runtime-applicabile — nessuna logica path-specifica dentro l'overlay
+stesso.
+
+**Non bloccante** per Risk ON/OFF + Standard (item 0, risolto
+indipendentemente). **Da fare, non ora**: design session dedicata per
+Cluster v2, quando/se serve evolvere oltre Standard.
+
+---
+
+**Audit completo del motore rotazionale (28/06)** — eseguito per
+contestualizzare il problema Cluster, ha rivelato altri gap minori non
+ancora in questo piano. Aggiunti come item separati: 0.e (deriva
+universo dinamico sp100/nasdaq100), 0.f (parametri motore non nel
+param_grid, rischio futuro), 0.g (nessun guard su file WFO errato/anno
+sbagliato), 0.h (risk_off_tickers identici per tutti i PTF inclusi
+quelli US).
+
+### Priorità media (da audit 28/06)
+
+**0.e Deriva universo dinamico (sp100/nasdaq100)** · filiera R
+
+I parametri WFO sono calibrati in analisi su un universo risolto "oggi"
+da Wikipedia; a runtime `iq run` lo risolve di nuovo, in un momento
+diverso — se la composizione dell'indice cambia tra analisi ed
+esecuzione mensile, l'universo runtime può differire da quello
+validato. Zero errori, zero warning. PTF impattati: `alpha_sp100`,
+`alpha_nasdaq100`.
+
+**0.f Parametri motore (`ema_span`, `volatility_quantile`,
+`min_momentum_threshold`) assenti dal param_grid** · filiera R
+
+Non salvati come colonne CSV — runtime usa default fissi
+(`EngineParams.from_dict`, r_functions.py:184-205) che oggi coincidono
+con quelli di analisi. Nessun gap oggi, ma se questi parametri venissero
+resi variabili in analisi senza aggiornare il lato runtime, la
+divergenza sarebbe silenziosa.
+
+### Priorità bassa (da audit 28/06)
+
+**0.g Nessun guard su TrainScore/file WFO errato** · filiera R
+
+`extract_operational_params_from_summary` valida solo il mismatch di
+anno — un file con anno corretto nell'header ma contenuto/path
+sbagliato passerebbe senza errori.
+
+**0.h risk_off_tickers identici per tutti i PTF, anche quelli US** ·
+filiera R · informativo
+
+Tutti i 10 PTF usano lo stesso default (`XEON.MI`, `IBTS.MI`,
+`XAD5.MI` — ETF europei) come ticker difensivi, inclusi PTF azionari US
+(`alpha_sp100`, `alpha_nasdaq100`). Calendario/liquidità non verificati
+per coerenza con l'orario di esecuzione di `iq run`.
 
 ### Priorità alta
 
@@ -317,6 +454,11 @@ i path + gestire la ricostruzione di `compare_wfo_pipelines`).
 ## Tech debt
 
 - Crontab locale da attivare dopo definizione PTF target
+- `fix/report-path-and-sections-parity`: branch vivo dall'8/06, ~9
+  commit non mergiati in main (incluso lavoro su k-agent, l-analyze,
+  accesso remoto Adriana). Da mappare e integrare con calma, non in
+  fretta — causa dell'incidente di commit-sul-branch-sbagliato del
+  28/06.
 
 ---
 
