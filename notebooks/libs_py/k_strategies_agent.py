@@ -4178,33 +4178,120 @@ def strategy_bb_mcginley(data: pd.DataFrame, params: dict, year: int | None = No
 
 
 # ─────────────────────────────────────
+# Fonte: I Left My Laptop Running for 3 Nights. It Found 51 Trading Strategies While I Slept.
+# URL:   https://medium.com/@Kryptera/i-left-my-laptop-running-for-3-nights-it-found-51-trading-strategies-while-i-slept-c1959667dd95
+# Data:  2026-06-26 02:00
+# ─────────────────────────────────────
+
+############################
+# Strategy bull_cts_nvda
+############################
+
+import pandas as pd
+import numpy as np
+
+
+def ind_bull_cts_nvda_bull_power(df: pd.DataFrame, ema_period: int = 13) -> pd.Series:
+    close = df['Close']
+    ema_arr = np.empty(len(close))
+    close_arr = close.values
+    alpha = 2.0 / (ema_period + 1)
+    ema_arr[0] = close_arr[0]
+    for i in range(1, len(close_arr)):
+        ema_arr[i] = alpha * close_arr[i] + (1 - alpha) * ema_arr[i - 1]
+    ema = pd.Series(ema_arr, index=close.index)
+    bull_power = df['High'] - ema
+    return bull_power
+
+
+def ind_bull_cts_nvda_cts(df: pd.DataFrame, period: int = 20) -> pd.Series:
+    close = df['Close'].values
+    n = len(close)
+    cts = np.full(n, np.nan)
+    for i in range(period, n):
+        diff = np.diff(close[i - period: i + 1])
+        up = diff[diff > 0].sum()
+        down = -diff[diff < 0].sum()
+        total = up + down
+        if total != 0:
+            cts[i] = 100.0 * (up - down) / total
+        else:
+            cts[i] = 0.0
+    return pd.Series(cts, index=df.index)
+
+
+strategy_bull_cts_nvda_param_ranges = {
+    'ema_period_range'    : range(10, 21, 5),
+    'bull_level_range'    : range(0, 1, 1),
+    'cts_period_range'    : range(15, 26, 5),
+    'cts_lower_range'     : range(-60, -39, 10),
+    'bull_shift_range'    : range(3, 8, 2),
+    'cts_shift_range'     : range(3, 8, 2),
+}
+
+
+def strategy_bull_cts_nvda(data: pd.DataFrame, params: dict, year: int | None = None):
+    ema_period  = params.get('ema_period_range')
+    bull_level  = float(params.get('bull_level_range'))
+    cts_period  = params.get('cts_period_range')
+    cts_lower   = float(params.get('cts_lower_range'))
+    bull_shift  = params.get('bull_shift_range')
+    cts_shift   = params.get('cts_shift_range')
+
+    df = data.copy()
+
+    bull_power = ind_bull_cts_nvda_bull_power(df, ema_period=ema_period)
+    cts        = ind_bull_cts_nvda_cts(df, period=cts_period)
+
+    df['Bull_Power'] = bull_power
+    df['CTS']        = cts
+
+    # Entry: Bull Power crosses below level (was >= level, now < level)
+    bp_prev = df['Bull_Power'].shift(bull_shift)
+    entries = (bp_prev >= bull_level) & (df['Bull_Power'] < bull_level)
+
+    # Exit: CTS crosses above lower level (was <= lower, now > lower, after shift)
+    cts_prev = df['CTS'].shift(cts_shift)
+    exits = (cts_prev <= cts_lower) & (df['CTS'] > cts_lower)
+
+    if year is not None:
+        df       = df[df.index.year == int(year)]
+        entries  = entries[entries.index.year == int(year)]
+        exits    = exits[exits.index.year == int(year)]
+
+    shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    shifted_exits   = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    return shifted_entries, shifted_exits
+
+
+# ─────────────────────────────────────
 # Fonte: I Found a RMA ATR Bands Indicator on TradingView — And It Outperformed Buy and Hold on a Single…
 # URL:   https://medium.com/@Kryptera/i-found-a-rma-atr-bands-indicator-on-tradingview-and-it-outperformed-buy-and-hold-on-a-single-b735a434b3ec
-# Data:  2026-06-27 11:23
+# Data:  2026-06-27 02:00
 # ─────────────────────────────────────
 
 ############################
 # Strategy rma_atr_bands
 ############################
 
-import numpy as np
 import pandas as pd
+import numpy as np
 
 
 def ind_rma_atr_bands_rma(series: pd.Series, period: int) -> pd.Series:
-    """Wilder RMA (Running Moving Average) applied to a series."""
+    """Wilder RMA (Running Moving Average) smoothing."""
     alpha = 1.0 / period
     arr = series.values.astype(float)
     out = np.empty(len(arr))
     out[:] = np.nan
-    # find first non-nan
-    start = 0
-    while start < len(arr) and np.isnan(arr[start]):
-        start += 1
-    if start >= len(arr):
+    # Find first valid index
+    first_valid = 0
+    while first_valid < len(arr) and np.isnan(arr[first_valid]):
+        first_valid += 1
+    if first_valid >= len(arr):
         return pd.Series(out, index=series.index)
-    out[start] = arr[start]
-    for i in range(start + 1, len(arr)):
+    out[first_valid] = arr[first_valid]
+    for i in range(first_valid + 1, len(arr)):
         if np.isnan(arr[i]):
             out[i] = out[i - 1]
         else:
@@ -4231,56 +4318,73 @@ def ind_rma_atr_bands_bands(df: pd.DataFrame,
                              upper_mult: float = 0.4,
                              lower_mult: float = 1.6):
     """
-    RMA ATR Bands:
+    Compute RMA ATR Bands.
     - RMA applied to High price
-    - Upper band = rma_high + upper_mult * ATR
-    - Lower band = rma_high - lower_mult * ATR
-    - Trend: flips to +1 when close crosses above upper band,
-             flips to -1 when close drops below lower band
+    - Upper band: rma_high + upper_mult * ATR
+    - Lower band: rma_high - lower_mult * ATR
+    Returns: rma_high, upper_band, lower_band, atr
     """
     rma_high = ind_rma_atr_bands_rma(df['High'], rma_period)
     atr = ind_rma_atr_bands_atr(df, atr_period)
-
     upper_band = rma_high + upper_mult * atr
     lower_band = rma_high - lower_mult * atr
+    return rma_high, upper_band, lower_band, atr
 
+
+def ind_rma_atr_bands_signals(df: pd.DataFrame,
+                               upper_band: pd.Series,
+                               lower_band: pd.Series):
+    """
+    Stateful trend logic:
+    - trend flips to +1 (long entry) when close crosses above upper_band
+    - trend flips to -1 (exit) when close drops below lower_band
+    Returns: long_signals, exit_signals as boolean Series
+    """
     close = df['Close'].values.astype(float)
-    ub = upper_band.values.astype(float)
-    lb = lower_band.values.astype(float)
+    upper = upper_band.values.astype(float)
+    lower = lower_band.values.astype(float)
+    n = len(close)
+    trend = np.zeros(n, dtype=np.int8)
+    long_sig = np.zeros(n, dtype=bool)
+    exit_sig = np.zeros(n, dtype=bool)
 
-    trend = np.zeros(len(close), dtype=int)
-    for i in range(1, len(close)):
-        if close[i] > ub[i]:
-            trend[i] = 1
-        elif close[i] < lb[i]:
-            trend[i] = -1
-        else:
-            trend[i] = trend[i - 1]
+    current_trend = 0
+    for i in range(n):
+        if np.isnan(upper[i]) or np.isnan(lower[i]):
+            trend[i] = current_trend
+            continue
+        if close[i] > upper[i]:
+            if current_trend != 1:
+                long_sig[i] = True
+            current_trend = 1
+        elif close[i] < lower[i]:
+            if current_trend != -1:
+                exit_sig[i] = True
+            current_trend = -1
+        trend[i] = current_trend
 
-    trend_series = pd.Series(trend, index=df.index)
-    long_sig = (trend_series == 1) & (trend_series.shift(1) != 1)
-    exit_sig = (trend_series == -1) & (trend_series.shift(1) != -1)
-
-    return upper_band, lower_band, trend_series, long_sig, exit_sig
+    return (pd.Series(long_sig, index=df.index),
+            pd.Series(exit_sig, index=df.index))
 
 
 strategy_rma_atr_bands_param_ranges = {
-    'rma_period_range': range(10, 25, 7),     # [10, 17, 24]
-    'atr_period_range': range(10, 25, 7),     # [10, 17, 24]
-    'upper_mult_range': range(2, 8, 3),       # [2, 5] -> /10 = [0.2, 0.5]
-    'lower_mult_range': range(10, 22, 6),     # [10, 16] -> /10 = [1.0, 1.6]
+    'rma_period_range': range(10, 25, 7),   # [10, 17, 24] -> 3 values
+    'atr_period_range': range(10, 25, 7),   # [10, 17, 24] -> 3 values
+    'upper_mult_range': range(3, 7, 2),     # [3, 5] -> 2 values (divide by 10)
+    'lower_mult_range': range(12, 22, 5),   # [12, 17] -> 2 values (divide by 10)
 }
+# Total: 3 * 3 * 2 * 2 = 36 combinations — well within limit
 
 
 def strategy_rma_atr_bands(data: pd.DataFrame, params: dict, year: int | None = None):
-    rma_period = params.get('rma_period_range')
-    atr_period = params.get('atr_period_range')
-    upper_mult = params.get('upper_mult_range') / 10.0
-    lower_mult = params.get('lower_mult_range') / 10.0
+    rma_period  = params.get('rma_period_range')
+    atr_period  = params.get('atr_period_range')
+    upper_mult  = params.get('upper_mult_range') / 10.0
+    lower_mult  = params.get('lower_mult_range') / 10.0
 
     df = data.copy()
 
-    upper_band, lower_band, trend_series, long_sig, exit_sig = ind_rma_atr_bands_bands(
+    rma_high, upper_band, lower_band, atr = ind_rma_atr_bands_bands(
         df,
         rma_period=rma_period,
         atr_period=atr_period,
@@ -4288,17 +4392,20 @@ def strategy_rma_atr_bands(data: pd.DataFrame, params: dict, year: int | None = 
         lower_mult=lower_mult
     )
 
-    df['upper_band'] = upper_band
-    df['lower_band'] = lower_band
-    df['trend'] = trend_series
-    df['long_sig'] = long_sig
-    df['exit_sig'] = exit_sig
+    df['RMA_High']   = rma_high
+    df['Upper_Band'] = upper_band
+    df['Lower_Band'] = lower_band
+    df['ATR']        = atr
+
+    long_sig, exit_sig = ind_rma_atr_bands_signals(df, df['Upper_Band'], df['Lower_Band'])
+    df['LongSig'] = long_sig
+    df['ExitSig'] = exit_sig
 
     if year is not None:
         df = df[df.index.year == int(year)]
 
-    entries = df['long_sig']
-    exits = df['exit_sig']
+    entries = df['LongSig']
+    exits   = df['ExitSig']
 
     shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
     shifted_exits   = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
@@ -4306,79 +4413,72 @@ def strategy_rma_atr_bands(data: pd.DataFrame, params: dict, year: int | None = 
 
 
 # ─────────────────────────────────────
-# Fonte: I Left My Laptop Running for 3 Nights. It Found 51 Trading Strategies While I Slept.
-# URL:   https://medium.com/@Kryptera/i-left-my-laptop-running-for-3-nights-it-found-51-trading-strategies-while-i-slept-c1959667dd95
-# Data:  2026-06-27 11:23
+# Fonte: I Left My Desktop App Running Overnight.
+# URL:   https://medium.com/@Kryptera/i-left-my-desktop-app-running-overnight-313832b440b1
+# Data:  2026-06-28 02:00
 # ─────────────────────────────────────
 
 ############################
-# Strategy bull_power_cts
+# Strategy ao_er_amt
 ############################
 
-import pandas as pd
-import numpy as np
+def ind_ao_er_amt_ao(df: pd.DataFrame, short_period: int = 5, long_period: int = 34) -> pd.Series:
+    median_price = (df['High'] + df['Low']) / 2.0
+    sma_short = median_price.rolling(window=short_period, min_periods=1).mean()
+    sma_long  = median_price.rolling(window=long_period,  min_periods=1).mean()
+    ao = sma_short - sma_long
+    return ao
 
 
-def ind_bull_power_cts_bull_power(df: pd.DataFrame, ema_period: int = 13) -> pd.Series:
+def ind_ao_er_amt_ao_falling_consecutive(ao: pd.Series, bars: int = 3) -> pd.Series:
+    cond = (ao < ao.shift(1)).astype(float)
+    result = cond.rolling(bars, min_periods=bars).sum() == bars
+    return result.fillna(False)
+
+
+def ind_ao_er_amt_er(df: pd.DataFrame, period: int = 14) -> pd.Series:
     close = df['Close']
-    ema_arr = close.values.copy().astype(float)
-    alpha = 2.0 / (ema_period + 1)
-    for i in range(1, len(ema_arr)):
-        ema_arr[i] = ema_arr[i - 1] + alpha * (ema_arr[i] - ema_arr[i - 1])
-    ema = pd.Series(ema_arr, index=df.index)
-    bull_power = df['High'] - ema
-    return bull_power
+    change = close.diff(period).abs()
+    volatility = close.diff().abs().rolling(period, min_periods=period).sum()
+    safe_vol = np.where(volatility.values != 0, volatility.values, 1.0)
+    er_vals = np.where(volatility.values != 0, change.values / safe_vol, 0.0)
+    er = pd.Series(er_vals, index=close.index)
+    return er
 
 
-def ind_bull_power_cts_cts(df: pd.DataFrame, period: int = 20) -> pd.Series:
-    close = df['Close'].values.astype(float)
-    n = len(close)
-    cts = np.full(n, np.nan)
-    for i in range(period, n):
-        diff = np.diff(close[i - period: i + 1])
-        up = diff[diff > 0].sum()
-        down = -diff[diff < 0].sum()
-        total = up + down
-        if total != 0:
-            cts[i] = 100.0 * (up - down) / total
-    return pd.Series(cts, index=df.index)
-
-
-strategy_bull_power_cts_param_ranges = {
-    'ema_period_range'      : range(10, 21, 5),
-    'bull_level_range'      : range(0, 1, 1),
-    'cts_period_range'      : range(15, 26, 5),
-    'cts_shift_range'       : range(3, 8, 2),
-    'cts_lower_level_range' : range(-60, -40, 10),
+strategy_ao_er_amt_param_ranges = {
+    'ao_short_range'  : range(3, 8,  2),   # 3 values: [3, 5, 7]
+    'ao_long_range'   : range(24, 40, 8),  # 2 values: [24, 32] ~approx 34
+    'ao_bars_range'   : range(2, 5,  1),   # 3 values: [2, 3, 4]
+    'er_period_range' : range(10, 20, 4),  # 3 values: [10, 14, 18]
+    'er_level_range'  : range(6, 9,  1),   # 3 values: [6, 7, 8]  → divide by 10
 }
 
 
-def strategy_bull_power_cts(data: pd.DataFrame, params: dict, year: int | None = None):
-    ema_period      = params.get('ema_period_range')
-    bull_level      = float(params.get('bull_level_range'))
-    cts_period      = params.get('cts_period_range')
-    cts_shift       = params.get('cts_shift_range')
-    cts_lower_level = float(params.get('cts_lower_level_range'))
+def strategy_ao_er_amt(data: pd.DataFrame, params: dict, year: int | None = None):
+    ao_short = params.get('ao_short_range')
+    ao_long  = params.get('ao_long_range')
+    ao_bars  = params.get('ao_bars_range')
+    er_per   = params.get('er_period_range')
+    er_level = params.get('er_level_range') / 10.0
 
     df = data.copy()
 
-    bull_power = ind_bull_power_cts_bull_power(df, ema_period=ema_period)
-    cts        = ind_bull_power_cts_cts(df, period=cts_period)
+    ao = ind_ao_er_amt_ao(df, short_period=ao_short, long_period=ao_long)
+    ao_falling = ind_ao_er_amt_ao_falling_consecutive(ao, bars=ao_bars)
+    er = ind_ao_er_amt_er(df, period=er_per)
 
-    df['Bull_Power'] = bull_power
-    df['CTS']        = cts
+    df['AO']         = ao
+    df['AO_Falling'] = ao_falling
+    df['ER']         = er
 
     if year is not None:
         df = df[df.index.year == int(year)]
 
-    # Entry: Bull Power crosses below 0 (was >= level, now < level)
-    bull_cross_below = (df['Bull_Power'].shift(1) >= bull_level) & (df['Bull_Power'] < bull_level)
+    entries = df['AO_Falling']
 
-    # Exit: CTS (shifted by cts_shift bars ago) was <= lower_level, now > lower_level
-    cts_cross_above_lower = (df['CTS'].shift(cts_shift) <= cts_lower_level) & (df['CTS'] > cts_lower_level)
-
-    entries = bull_cross_below
-    exits   = cts_cross_above_lower
+    er_trend_up = (df['ER'] > er_level) & (df['Close'] > df['Close'].shift(1))
+    exits = er_trend_up
 
     shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
     shifted_exits   = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
@@ -4386,93 +4486,205 @@ def strategy_bull_power_cts(data: pd.DataFrame, params: dict, year: int | None =
 
 
 # ─────────────────────────────────────
-# Fonte: AES-Keltner Momentum Reversion Strategy
-# URL:   https://medium.com/@Kryptera/aes-keltner-momentum-reversion-strategy-32a4f75b6428
-# Data:  2026-06-27 11:24
+# Fonte: I Built a Hidden Markov Model to Detect Gold Market Regimes — Here’s What the Data Revealed
+# URL:   https://medium.com/@Kryptera/i-built-a-hidden-markov-model-to-detect-gold-market-regimes-heres-what-the-data-revealed-46c84f2ca83d
+# Data:  2026-06-29 02:00
 # ─────────────────────────────────────
 
 ############################
-# Strategy aes_keltner_momentum_reversion
+# Strategy hmm_regime_gold
 ############################
 
-import pandas as pd
 import numpy as np
+import pandas as pd
 
 
-def ind_aes_keltner_momentum_reversion_kc(df: pd.DataFrame,
-                                          kc_period: int = 20,
-                                          kc_multiplier: float = 2.0):
+def ind_hmm_regime_gold_features(df: pd.DataFrame, vol_window: int = 10) -> pd.DataFrame:
     close = df['Close']
     high = df['High']
     low = df['Low']
 
-    tp = (high + low + close) / 3.0
-    kc_mid = tp.ewm(span=kc_period, adjust=False, min_periods=1).mean()
+    log_ret = np.log(close / close.shift(1))
+    returns = close.pct_change()
+    vol = returns.rolling(vol_window, min_periods=1).std()
+    safe_close = np.where(close.values != 0, close.values, 1.0)
+    hl_range = (high.values - low.values) / safe_close
 
-    hl = (high - low).values
-    hpc = np.abs(high.values - close.shift(1).values)
-    lpc = np.abs(low.values - close.shift(1).values)
-    tr = np.maximum(np.maximum(hl, hpc), lpc)
-    tr_series = pd.Series(tr, index=close.index)
-    atr = tr_series.rolling(kc_period, min_periods=1).mean()
-
-    kc_upper = kc_mid + kc_multiplier * atr
-    kc_lower = kc_mid - kc_multiplier * atr
-
-    return kc_mid, kc_upper, kc_lower
+    out = df.copy()
+    out['log_ret'] = log_ret
+    out['returns'] = returns
+    out['vol_rolling'] = vol
+    out['hl_range'] = pd.Series(hl_range, index=df.index)
+    return out
 
 
-def ind_aes_keltner_momentum_reversion_srpr(df: pd.DataFrame,
-                                            srpr_period: int = 14):
-    close = df['Close']
-    srpr = close.rolling(srpr_period, min_periods=1).apply(
-        lambda x: np.sum(x <= x[-1]) / len(x) * 100.0,
-        raw=True
+def ind_hmm_regime_gold_regime(df_feat: pd.DataFrame,
+                                train_window: int = 60,
+                                smooth_window: int = 5) -> pd.Series:
+    """
+    Approximate HMM regime detection using pandas/numpy only.
+    We use a rolling k-means style clustering on 3 features:
+      log_ret, vol_rolling, hl_range
+    States are sorted by mean log_ret: 0=Bearish, 1=Ranging, 2=Bullish
+    Then apply majority-vote smoothing.
+    """
+    log_ret = df_feat['log_ret'].values
+    vol = df_feat['vol_rolling'].values
+    hl = df_feat['hl_range'].values
+    n = len(df_feat)
+
+    raw_states = np.full(n, np.nan)
+
+    for i in range(train_window, n):
+        window_log = log_ret[i - train_window:i]
+        window_vol = vol[i - train_window:i]
+        window_hl = hl[i - train_window:i]
+
+        # Normalize features
+        def safe_norm(arr):
+            mu = np.nanmean(arr)
+            sd = np.nanstd(arr)
+            if sd == 0:
+                return arr - mu
+            return (arr - mu) / sd
+
+        f0 = safe_norm(window_log)
+        f1 = safe_norm(window_vol)
+        f2 = safe_norm(window_hl)
+
+        # Simple k-means with 3 clusters initialized by percentiles
+        # Initialize centroids by percentile splits on log_ret
+        p33 = np.nanpercentile(f0, 33)
+        p67 = np.nanpercentile(f0, 67)
+
+        c0 = np.array([np.nanmean(f0[f0 <= p33]),
+                       np.nanmean(f1[f0 <= p33]),
+                       np.nanmean(f2[f0 <= p33])])
+        mask_mid = (f0 > p33) & (f0 <= p67)
+        c1 = np.array([np.nanmean(f0[mask_mid]) if mask_mid.sum() > 0 else 0.0,
+                       np.nanmean(f1[mask_mid]) if mask_mid.sum() > 0 else 0.0,
+                       np.nanmean(f2[mask_mid]) if mask_mid.sum() > 0 else 0.0])
+        c2 = np.array([np.nanmean(f0[f0 > p67]),
+                       np.nanmean(f1[f0 > p67]),
+                       np.nanmean(f2[f0 > p67])])
+
+        centroids = np.array([c0, c1, c2])
+
+        # Replace NaN centroids
+        for ci in range(3):
+            for fi in range(3):
+                if np.isnan(centroids[ci, fi]):
+                    centroids[ci, fi] = 0.0
+
+        # K-means iterations
+        features_mat = np.column_stack([f0, f1, f2])
+        valid_mask = ~np.any(np.isnan(features_mat), axis=1)
+        features_valid = features_mat[valid_mask]
+
+        for _ in range(10):
+            # Assign
+            dists = np.array([
+                np.sum((features_valid - centroids[k]) ** 2, axis=1)
+                for k in range(3)
+            ])
+            labels = np.argmin(dists, axis=0)
+            # Update
+            new_centroids = np.zeros((3, 3))
+            for k in range(3):
+                mk = labels == k
+                if mk.sum() > 0:
+                    new_centroids[k] = features_valid[mk].mean(axis=0)
+                else:
+                    new_centroids[k] = centroids[k]
+            if np.allclose(centroids, new_centroids, atol=1e-6):
+                break
+            centroids = new_centroids
+
+        # Sort states by mean log_ret of centroid (0=bearish, 1=ranging, 2=bullish)
+        centroid_ret = centroids[:, 0]
+        sort_order = np.argsort(centroid_ret)  # ascending
+        rank_map = np.empty(3, dtype=int)
+        for rank, orig in enumerate(sort_order):
+            rank_map[orig] = rank
+
+        # Current point
+        cur_log = log_ret[i]
+        cur_vol = vol[i]
+        cur_hl = hl[i]
+
+        if np.isnan(cur_log) or np.isnan(cur_vol) or np.isnan(cur_hl):
+            raw_states[i] = np.nan
+            continue
+
+        # Normalize current point using train window stats
+        def norm_val(val, arr):
+            mu = np.nanmean(arr)
+            sd = np.nanstd(arr)
+            if sd == 0:
+                return 0.0
+            return (val - mu) / sd
+
+        cur_f0 = norm_val(cur_log, window_log)
+        cur_f1 = norm_val(cur_vol, window_vol)
+        cur_f2 = norm_val(cur_hl, window_hl)
+        cur_feat = np.array([cur_f0, cur_f1, cur_f2])
+
+        dists_cur = np.array([np.sum((cur_feat - centroids[k]) ** 2) for k in range(3)])
+        assigned = np.argmin(dists_cur)
+        raw_states[i] = rank_map[assigned]
+
+    # Build series
+    regime_raw = pd.Series(raw_states, index=df_feat.index)
+
+    # Majority vote smoothing
+    def majority_vote(x):
+        counts = np.bincount(x[~np.isnan(x)].astype(int), minlength=3)
+        return float(np.argmax(counts))
+
+    regime_smooth = regime_raw.rolling(smooth_window, min_periods=1).apply(
+        lambda x: majority_vote(x), raw=True
     )
-    return srpr
+
+    return regime_smooth
 
 
-strategy_aes_keltner_momentum_reversion_param_ranges = {
-    'kc_period_range'    : range(10, 31, 10),
-    'kc_mult_range'      : range(15, 31, 5),
-    'srpr_period_range'  : range(10, 21, 5),
-    'srpr_level_range'   : range(60, 81, 10),
-    'srpr_xbars_range'   : range(3, 8, 2),
+strategy_hmm_regime_gold_param_ranges = {
+    'train_window_range': range(40, 81, 20),
+    'vol_window_range': range(5, 16, 5),
+    'smooth_window_range': range(3, 10, 3),
 }
 
 
-def strategy_aes_keltner_momentum_reversion(data: pd.DataFrame,
-                                             params: dict,
-                                             year: int | None = None):
-    kc_period   = params.get('kc_period_range')
-    kc_mult     = params.get('kc_mult_range') / 10.0
-    srpr_period = params.get('srpr_period_range')
-    srpr_level  = params.get('srpr_level_range')
-    srpr_xbars  = params.get('srpr_xbars_range')
+def strategy_hmm_regime_gold(data: pd.DataFrame, params: dict, year: int | None = None):
+    train_window = params.get('train_window_range')
+    vol_window = params.get('vol_window_range')
+    smooth_window = params.get('smooth_window_range')
 
     df = data.copy()
 
-    kc_mid, kc_upper, kc_lower = ind_aes_keltner_momentum_reversion_kc(
-        df, kc_period=kc_period, kc_multiplier=kc_mult
-    )
-    srpr = ind_aes_keltner_momentum_reversion_srpr(df, srpr_period=srpr_period)
+    df_feat = ind_hmm_regime_gold_features(df, vol_window=vol_window)
 
-    df['KC_Mid']   = kc_mid
-    df['KC_Upper'] = kc_upper
-    df['KC_Lower'] = kc_lower
-    df['SRPR']     = srpr
+    regime = ind_hmm_regime_gold_regime(
+        df_feat,
+        train_window=train_window,
+        smooth_window=smooth_window
+    )
+
+    df['regime'] = regime
+    df['log_ret'] = df_feat['log_ret']
+    df['vol_rolling'] = df_feat['vol_rolling']
 
     if year is not None:
         df = df[df.index.year == int(year)]
 
-    # Entry: close above lower Keltner band
-    entries = df['Close'] > df['KC_Lower']
+    # Entry: regime switches to Bullish (2)
+    # Exit: regime switches to Bearish (0) or Ranging (1)
+    regime_s = df['regime']
+    prev_regime = regime_s.shift(1)
 
-    # Exit: SRPR below level for x consecutive bars
-    below = (df['SRPR'] < srpr_level).astype(float)
-    exits = below.rolling(srpr_xbars, min_periods=srpr_xbars).sum() == srpr_xbars
-    exits = exits.fillna(False).astype(bool)
+    entries = (regime_s == 2.0) & (prev_regime != 2.0)
+    exits = (regime_s != 2.0) & (prev_regime == 2.0)
 
     shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
-    shifted_exits   = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    shifted_exits = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
     return shifted_entries, shifted_exits
