@@ -15257,3 +15257,1116 @@ def run_r_portfolio_analysis(
         "skill_profile_cluster": skill_profile_cluster,
     }
 
+
+# =============================================================================
+# ─── V2: MULTI-FACTOR RANKING MECHANISM ──────────────────────────────────────
+# Sviluppato in parallelo all'esistente (v1). Nessuna funzione v1 modificata.
+# Suffisso _v2 su tutti i nuovi simboli pubblici.
+# =============================================================================
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Parametri v2
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class ScoreParamsV2:
+    """Parametri scoring multi-fattore v2. Nessun use_acceleration."""
+    momentum_lookback_days:   int   = 126
+    riskparity_lookback_days: int   = 20
+    momentum_weight:          float = 1.0
+    ivol_weight:              float = 0.0
+    sortino_weight:           float = 0.0
+    idio_weight:              float = 0.0
+    ema_span:                 int   = 200
+
+    def __post_init__(self):
+        for name, val in [
+            ("momentum_weight",  self.momentum_weight),
+            ("ivol_weight",      self.ivol_weight),
+            ("sortino_weight",   self.sortino_weight),
+            ("idio_weight",      self.idio_weight),
+        ]:
+            if val < 0.0:
+                raise ValueError(f"ScoreParamsV2: {name}={val} deve essere >= 0")
+        if (self.momentum_weight + self.ivol_weight
+                + self.sortino_weight + self.idio_weight) == 0.0:
+            raise ValueError(
+                "ScoreParamsV2: almeno un peso deve essere > 0 "
+                "(tutti i pesi fattore sono zero)"
+            )
+
+
+@dataclass(frozen=True)
+class EngineParamsV2:
+    """Tutti i parametri del motore rotazionale v2."""
+    score:               ScoreParamsV2  = field(default_factory=ScoreParamsV2)
+    selection:           SelectionParams = field(default_factory=SelectionParams)
+    rebalance_frequency: str             = "ME"
+    init_cash:           float           = 100_000
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "EngineParamsV2":
+        sp = ScoreParamsV2(
+            momentum_lookback_days   = int(d.get("momentum_lookback_days",   126)),
+            riskparity_lookback_days = int(d.get("riskparity_lookback_days",  20)),
+            momentum_weight          = float(d.get("momentum_weight",          1.0)),
+            ivol_weight              = float(d.get("ivol_weight",              0.0)),
+            sortino_weight           = float(d.get("sortino_weight",           0.0)),
+            idio_weight              = float(d.get("idio_weight",              0.0)),
+            ema_span                 = int(d.get("ema_span",                  200)),
+        )
+        selp = SelectionParams(
+            n_top                  = int(d.get("n_top",                  5)),
+            filter_ema             = bool(d.get("filter_ema",             False)),
+            filter_volatility      = bool(d.get("filter_volatility",      False)),
+            filter_min_momentum    = bool(d.get("filter_min_momentum",    False)),
+            volatility_quantile    = float(d.get("volatility_quantile",   0.75)),
+            min_momentum_threshold = float(d.get("min_momentum_threshold", 1.0)),
+        )
+        return cls(
+            score               = sp,
+            selection           = selp,
+            rebalance_frequency = str(d.get("rebalance_frequency", "ME")),
+        )
+
+    def required_warmup_days(self) -> int:
+        max_lb = max(
+            self.score.momentum_lookback_days,
+            self.score.riskparity_lookback_days,
+        )
+        if self.selection.filter_ema:
+            max_lb = max(max_lb, self.score.ema_span)
+        return max(int(max_lb * 1.5) + 30, 60)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Registri v2
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Ogni entry documenta il nome del parametro peso nella griglia.
+# Le funzioni di calcolo sono centralizzate in precompute_signals_v2.
+FACTOR_REGISTRY_V2: dict[str, dict] = {
+    "momentum": {"weight_param": "momentum_weight"},
+    "ivol":     {"weight_param": "ivol_weight"},
+    "sortino":  {"weight_param": "sortino_weight"},
+    "idio":     {"weight_param": "idio_weight"},
+}
+
+# Ogni entry documenta flag e parametri extra usati in apply_filters_v2.
+FILTER_REGISTRY_V2: dict[str, dict] = {
+    "ema":          {"flag_param": "filter_ema",          "extra_params": ["ema_span"]},
+    "volatility":   {"flag_param": "filter_volatility",   "extra_params": ["volatility_quantile"]},
+    "min_momentum": {"flag_param": "filter_min_momentum", "extra_params": ["min_momentum_threshold"]},
+}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Funzioni core v2
+# ─────────────────────────────────────────────────────────────────────────────
+
+def precompute_signals_v2(
+    prices:           pd.DataFrame,
+    returns:          pd.DataFrame,
+    params:           "EngineParamsV2",
+    benchmark_prices: pd.Series | None = None,
+) -> dict[str, pd.DataFrame]:
+    """
+    Precomputa i segnali fattore (valori grezzi, non rankati) per ogni data e ticker.
+
+    Calcola solo i fattori con peso > 0 in params.score.
+    Calcola anche i segnali ausiliari necessari ai filtri attivi.
+
+    Se idio_weight > 0 e benchmark_prices è None → ValueError.
+
+    Ritorna dict {nome_fattore: DataFrame (n_dates × n_tickers)}.
+    Chiavi con prefisso '_' sono ausiliarie (filtri), non fattori di score.
+    """
+    sp     = params.score
+    selp   = params.selection
+    mom_lb = sp.momentum_lookback_days
+    rp_lb  = sp.riskparity_lookback_days
+    signals: dict[str, pd.DataFrame] = {}
+
+    # momentum: prices / prices.shift(mom_lb)
+    if sp.momentum_weight > 0:
+        signals["momentum"] = prices / prices.shift(mom_lb)
+
+    # ivol: 1 / rolling_std(returns, rp_lb)
+    if sp.ivol_weight > 0:
+        vol = returns.rolling(rp_lb, min_periods=1).std(ddof=0)
+        signals["ivol"] = 1.0 / vol.replace(0.0, np.nan)
+
+    # sortino: mean_ret / downside_std su finestra mom_lb; risk-free = 0
+    if sp.sortino_weight > 0:
+        mean_ret     = returns.rolling(mom_lb, min_periods=1).mean()
+        downside_std = returns.where(returns < 0, 0.0).rolling(mom_lb, min_periods=1).std(ddof=0)
+        signals["sortino"] = mean_ret / downside_std.replace(0.0, np.nan)
+
+    # idio: excess price-ratio del ticker rispetto al benchmark, finestra mom_lb
+    if sp.idio_weight > 0:
+        if benchmark_prices is None:
+            raise ValueError(
+                "precompute_signals_v2: idio_weight > 0 ma benchmark_prices=None. "
+                "Passare la serie dei prezzi del benchmark."
+            )
+        bench = benchmark_prices.reindex(prices.index).ffill().bfill()
+        signals["idio"] = (prices / prices.shift(mom_lb)).sub(
+            bench / bench.shift(mom_lb), axis=0
+        )
+
+    # ── Segnali ausiliari per i filtri ────────────────────────────────────────
+
+    # _vol: rolling std grezzo per filter_volatility (se ivol non già calcolato)
+    if selp.filter_volatility and "ivol" not in signals:
+        signals["_vol"] = returns.rolling(rp_lb, min_periods=1).std(ddof=0)
+
+    # _ema: EWM per filter_ema
+    if selp.filter_ema:
+        signals["_ema"] = prices.ewm(span=sp.ema_span, adjust=False, min_periods=1).mean()
+
+    # _momentum_raw: price ratio grezzo per filter_min_momentum (se momentum non già calcolato)
+    if selp.filter_min_momentum and "momentum" not in signals:
+        signals["_momentum_raw"] = prices / prices.shift(mom_lb)
+
+    return signals
+
+
+def compute_combo_score_v2(
+    signals: dict[str, pd.DataFrame],
+    weights: dict[str, float],
+) -> pd.DataFrame:
+    """
+    Combina i segnali fattore in un DataFrame di combo-score.
+
+    Per ogni fattore attivo (w_i > 0):
+        rank_i = signals[i].rank(pct=True, axis=1, na_option='bottom')
+    score = Σ(w_i * rank_i) / Σ(w_i)
+
+    Se Σ(w_i) == 0 → ValueError (combinazione degenere, non ammessa in griglia).
+    """
+    active  = {k: w for k, w in weights.items() if w > 0}
+    total_w = sum(active.values())
+    if total_w == 0.0:
+        raise ValueError(
+            "compute_combo_score_v2: sum(weights) == 0. "
+            "Almeno un fattore deve avere peso > 0."
+        )
+
+    combo: pd.DataFrame | None = None
+    for fname, w in active.items():
+        if fname not in signals:
+            raise KeyError(f"compute_combo_score_v2: fattore '{fname}' non in signals")
+        rank_i = signals[fname].rank(pct=True, axis=1, na_option="bottom")
+        combo  = w * rank_i if combo is None else combo + w * rank_i
+
+    return combo / total_w
+
+
+def apply_filters_v2(
+    prices:       pd.DataFrame,
+    signals:      dict[str, pd.DataFrame],
+    sel_params:   "SelectionParams",
+    score_params: "ScoreParamsV2",
+    date:         pd.Timestamp,
+) -> pd.Series:
+    """
+    Applica i filtri attivi in FILTER_REGISTRY_V2 per una singola data.
+    Itera sul registro dei filtri e applica AND combinato.
+    Ritorna maschera booleana (True = ticker eleggibile).
+    """
+    # maschera base: almeno un segnale non-NaN
+    base_key = next(
+        (k for k in ["momentum", "_momentum_raw", "ivol", "sortino", "idio"]
+         if k in signals),
+        None,
+    )
+    mask = signals[base_key].loc[date].notna() if base_key else pd.Series(True, index=prices.columns)
+
+    # "ema" filter
+    if sel_params.filter_ema:
+        mask = mask & (prices.loc[date] > signals["_ema"].loc[date])
+
+    # "volatility" filter
+    if sel_params.filter_volatility:
+        if "_vol" in signals:
+            vol = signals["_vol"].loc[date]
+        else:
+            # ivol è disponibile; vol = 1/ivol
+            ivol = signals["ivol"].loc[date]
+            vol  = 1.0 / ivol.replace(0.0, np.nan)
+        q    = vol.quantile(sel_params.volatility_quantile)
+        mask = mask & (vol < q)
+
+    # "min_momentum" filter
+    if sel_params.filter_min_momentum:
+        mom_key = "momentum" if "momentum" in signals else "_momentum_raw"
+        mask    = mask & (signals[mom_key].loc[date] > sel_params.min_momentum_threshold)
+
+    return mask
+
+
+def select_top_n_v2(
+    combo_score: pd.Series,
+    mask:        pd.Series,
+    n_top:       int,
+) -> pd.Series:
+    """
+    Applica la maschera e restituisce i top-N per combo_score.
+    Ritorna Series ordinata decrescente (len <= n_top).
+    """
+    masked = combo_score.where(mask)
+    valid  = masked.dropna()
+    if valid.empty:
+        return pd.Series(dtype=float)
+    return valid.nlargest(n_top)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Engine entry-point v2
+# ─────────────────────────────────────────────────────────────────────────────
+
+def run_rotational_engine_v2(
+    prices:           pd.DataFrame,
+    params:           "EngineParamsV2",
+    benchmark_prices: pd.Series | None = None,
+    start_date:       str | pd.Timestamp | None = None,
+    debug:            bool = False,
+) -> "RotationalResult":
+    """
+    Motore rotazionale v2 multi-fattore. Stesso contratto di run_rotational_engine()
+    ma usa precompute_signals_v2 + compute_combo_score_v2 + apply_filters_v2.
+
+    benchmark_prices : pd.Series | None
+        Obbligatorio se params.score.idio_weight > 0.
+    """
+    def _dbg(msg: str):
+        if debug:
+            print(msg)
+
+    prices = prices.dropna(axis=1, how="all").ffill().bfill().copy()
+    prices.index = _norm_dt_index(prices.index)
+    prices = prices.sort_index()
+    trading_idx = prices.index.unique()
+
+    _dbg(f"[ENGINE_V2] freq={params.rebalance_frequency}  "
+         f"prices={trading_idx.min().date()}→{trading_idx.max().date()}  "
+         f"n_assets={prices.shape[1]}")
+
+    rebal_dates = compute_rebal_dates(trading_idx, params.rebalance_frequency)
+    rebal_dates = pd.DatetimeIndex(
+        [d for d in rebal_dates if d in trading_idx]
+    ).sort_values().unique()
+
+    if len(rebal_dates) == 0:
+        _dbg("[ENGINE_V2] WARN: rebal_dates vuoto → pesi a zero (cash)")
+        empty_sel = pd.DataFrame(
+            columns=["tickers", "carried", "n_passed_filters", "universe"],
+            index=pd.DatetimeIndex([], name="rebal_date"),
+        )
+        return RotationalResult(
+            selections  = empty_sel,
+            weights     = pd.DataFrame(0.0, index=trading_idx, columns=prices.columns),
+            rankings    = pd.DataFrame(index=pd.DatetimeIndex([], name="rebal_date"), columns=prices.columns),
+            rebal_dates = rebal_dates,
+            params      = params,
+        )
+
+    returns = prices.pct_change().fillna(0.0)
+    signals = precompute_signals_v2(prices, returns, params, benchmark_prices)
+
+    sp = params.score
+    factor_weights = {
+        "momentum": sp.momentum_weight,
+        "ivol":     sp.ivol_weight,
+        "sortino":  sp.sortino_weight,
+        "idio":     sp.idio_weight,
+    }
+    combo_df  = compute_combo_score_v2(signals, factor_weights)
+    sel_params = params.selection
+
+    sel_records:  list[dict]                       = []
+    rank_records: dict[pd.Timestamp, pd.Series]    = {}
+    prev_top:     list[str] | None                 = None
+
+    for d in rebal_dates:
+        d = pd.Timestamp(d).normalize()
+
+        mask         = apply_filters_v2(prices, signals, sel_params, sp, d)
+        combo_masked = combo_df.loc[d].where(mask)
+        n_passed     = int(mask.sum())
+
+        valid = combo_masked.dropna()
+        if not valid.empty:
+            top_tickers = list(valid.nlargest(sel_params.n_top).index)
+            carried     = False
+        elif prev_top:
+            top_tickers = list(prev_top)
+            carried     = True
+        else:
+            top_tickers = []
+            carried     = False
+
+        sel_records.append({
+            "rebal_date":       d,
+            "tickers":          top_tickers,
+            "carried":          carried,
+            "n_passed_filters": n_passed,
+            "universe":         list(valid.index),
+        })
+        rank_records[d] = combo_masked.sort_values(ascending=False)
+
+        if top_tickers and not carried:
+            prev_top = top_tickers
+
+        if debug:
+            status = "CARRY-FWD" if carried else ("EMPTY    " if not top_tickers else "OK       ")
+            _dbg(f"[ENGINE_V2] {status} | {d.date()} | passed={n_passed} | selected={top_tickers}")
+
+    selections = pd.DataFrame(sel_records).set_index("rebal_date")
+    selections.index.name = "rebal_date"
+
+    rankings = pd.DataFrame(rank_records).T
+    rankings.index.name = "rebal_date"
+
+    weights_matrix = build_weight_matrix(selections, trading_idx)
+    missing_cols   = [c for c in prices.columns if c not in weights_matrix.columns]
+    if missing_cols:
+        weights_matrix = pd.concat(
+            [weights_matrix, pd.DataFrame(0.0, index=weights_matrix.index, columns=missing_cols)],
+            axis=1,
+        )[prices.columns]
+
+    if start_date is not None:
+        start_ts       = pd.Timestamp(start_date).normalize()
+        weights_matrix = weights_matrix.loc[start_ts:]
+
+    _dbg(f"[ENGINE_V2] Done. selections={len(selections)}  "
+         f"carried={selections['carried'].sum()}  "
+         f"empty={(selections['tickers'].apply(len) == 0).sum()}")
+
+    return RotationalResult(
+        selections  = selections,
+        weights     = weights_matrix,
+        rankings    = rankings,
+        rebal_dates = rebal_dates,
+        params      = params,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# VBT entry-point v2
+# ─────────────────────────────────────────────────────────────────────────────
+
+def build_rotational_portfolios_vbt_v2(
+    stocks_data:              pd.DataFrame,
+    benchmark_data:           pd.Series | None = None,
+    # ── frequenza e lookback ─────────────────────────────────────────────────
+    rebalance_frequency:      str   = "ME",
+    momentum_lookback_days:   int   = 126,
+    riskparity_lookback_days: int   = 20,
+    # ── selezione ────────────────────────────────────────────────────────────
+    n_top:                    int   = 5,
+    # ── pesi fattori v2 ──────────────────────────────────────────────────────
+    momentum_weight:          float = 1.0,
+    ivol_weight:              float = 0.0,
+    sortino_weight:           float = 0.0,
+    idio_weight:              float = 0.0,
+    # ── filtri opzionali ─────────────────────────────────────────────────────
+    filter_ema:               bool  = False,
+    filter_volatility:        bool  = False,
+    filter_min_momentum:      bool  = False,
+    ema_span:                 int   = 200,
+    volatility_quantile:      float = 0.75,
+    min_momentum_threshold:   float = 1.0,
+    # ── portafoglio ──────────────────────────────────────────────────────────
+    init_cash:                float = 100_000,
+    start_date:               str | pd.Timestamp | None = None,
+    # ── benchmark ────────────────────────────────────────────────────────────
+    benchmark_prices:         pd.Series | None = None,
+    # ── plot ─────────────────────────────────────────────────────────────────
+    plot:                     bool  = True,
+    portfolio_name:           str   = "Portafoglio rotazionale v2",
+    vbt_plot_width:           int   = 1000,
+    # ── debug ─────────────────────────────────────────────────────────────────
+    debug:                    bool  = False,
+) -> "RotationalVbtResult":
+    """
+    VBT entry-point v2: identico a build_rotational_portfolios_vbt() ma usa
+    il motore multi-fattore v2 (4 fattori, no use_acceleration).
+
+    benchmark_data   : prezzi benchmark per il B&H nel plot/stats.
+    benchmark_prices : prezzi benchmark per il fattore idio (richiesto se idio_weight > 0).
+    """
+    params = EngineParamsV2(
+        score = ScoreParamsV2(
+            momentum_lookback_days   = momentum_lookback_days,
+            riskparity_lookback_days = riskparity_lookback_days,
+            momentum_weight          = momentum_weight,
+            ivol_weight              = ivol_weight,
+            sortino_weight           = sortino_weight,
+            idio_weight              = idio_weight,
+            ema_span                 = ema_span,
+        ),
+        selection = SelectionParams(
+            n_top                  = n_top,
+            filter_ema             = filter_ema,
+            filter_volatility      = filter_volatility,
+            filter_min_momentum    = filter_min_momentum,
+            volatility_quantile    = volatility_quantile,
+            min_momentum_threshold = min_momentum_threshold,
+        ),
+        rebalance_frequency = rebalance_frequency,
+        init_cash           = init_cash,
+    )
+
+    prices = stocks_data.dropna(axis=1, how="all").ffill().bfill().copy()
+    prices.index = pd.to_datetime(prices.index).normalize()
+    prices = prices.sort_index()
+
+    bench_px = None
+    if benchmark_data is not None:
+        bench_px = benchmark_data.copy()
+        bench_px.index = pd.to_datetime(bench_px.index).normalize()
+        bench_px = bench_px.sort_index()
+
+    eng = run_rotational_engine_v2(
+        prices           = prices,
+        params           = params,
+        benchmark_prices = benchmark_prices,
+        start_date       = start_date,
+        debug            = debug,
+    )
+
+    # Allinea pesi all'indice dei prezzi (post start_date se specificato)
+    if start_date is not None:
+        s_ts    = pd.Timestamp(start_date).normalize()
+        prices  = prices.loc[s_ts:]
+        if bench_px is not None:
+            bench_px = bench_px.loc[s_ts:]
+
+    w_rot_sh = eng.weights.reindex(
+        index=prices.index, columns=prices.columns, fill_value=0.0
+    )
+
+    pf_rot = _build_vbt_portfolio(prices, w_rot_sh, init_cash)
+    pf_bh  = _build_vbt_bh(bench_px, prices.index, init_cash) if bench_px is not None else None
+
+    if plot:
+        _plot_results(
+            pf_rot=pf_rot, pf_bh=pf_bh,
+            pf_mom=None, pf_rp=None,
+            init_cash=init_cash,
+            portfolio_name=portfolio_name,
+            width=vbt_plot_width,
+        )
+
+    sel_df = eng.selections.rename(columns={"tickers": "Top_Tickers"}).copy()
+    sel_df.index.name = "RebalanceDate"
+    rank_df = eng.rankings.copy()
+    rank_df.index.name = "RebalanceDate"
+
+    return RotationalVbtResult(
+        pf_rot=pf_rot,
+        pf_bh=pf_bh,
+        selections=sel_df,
+        rankings=rank_df,
+        rebal_dates=eng.rebal_dates,
+        pf_mom=None,
+        pf_rp=None,
+        sel_bottom=None,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Walk-forward v2
+# ─────────────────────────────────────────────────────────────────────────────
+
+def walk_forward_rotational_v2(
+    stocks_data:            pd.DataFrame,
+    benchmark_data:         pd.Series,
+    param_grid:             Dict[str, List[Any]],
+    ratio:                  str = "3:1",
+    metric:                 str = "Sharpe Ratio",
+    verbose:                bool = True,
+    plot:                   bool = False,
+    force_next_year_params: bool = False,
+    start_date:             str | None = None,
+    end_date:               str | None = None,
+    n_jobs:                 int = -1,
+    backend:                str = "loky",
+    debug:                  bool = False,
+    benchmark_prices:       pd.Series | None = None,
+) -> pd.DataFrame:
+    """
+    Walk-Forward Optimization v2 — usa il motore multi-fattore v2.
+
+    Scelta architetturale: funzione parallela a walk_forward_rotational() (non
+    aggiunta di engine_version all'esistente), per non toccare _optimize_window()
+    e garantire la regola "nessuna funzione v1 modificata".
+
+    param_grid usa i pesi v2: momentum_weight, ivol_weight, sortino_weight,
+    idio_weight. Nessun use_acceleration.
+
+    benchmark_prices : pd.Series | None
+        Prezzi benchmark per il fattore idio. Obbligatorio se idio_weight > 0
+        in qualche combo della griglia.
+
+    Performance: _optimize_window_v2 precomputa tutti i rank UNA VOLTA per
+    finestra (non per combo), poi combina in numpy nel loop. Stessa struttura
+    di _optimize_window v1 — overhead atteso comparabile.
+    """
+    import sys
+    import traceback as _tb
+    import os
+
+    try:
+        train_y, test_y = [int(x) for x in ratio.split(":")]
+    except Exception:
+        raise ValueError(f"ratio non valido: '{ratio}'")
+    if train_y <= 0 or test_y <= 0:
+        raise ValueError("train e test devono essere > 0")
+    if stocks_data.empty:
+        raise ValueError("stocks_data è vuoto")
+
+    stocks_data    = stocks_data.sort_index()
+    benchmark_data = benchmark_data.sort_index()
+    data_min = stocks_data.index.min()
+    data_max = stocks_data.index.max()
+
+    a_start = pd.Timestamp(start_date).normalize() if start_date else pd.Timestamp(data_min).normalize()
+    a_end   = (pd.Timestamp(end_date) - pd.Timedelta(days=1)).normalize() if end_date else pd.Timestamp(data_max).normalize()
+
+    if a_end < data_min or a_start > data_max:
+        raise ValueError("Finestra di analisi fuori dal range dati")
+
+    n_jobs_eff = os.cpu_count() if n_jobs == -1 else abs(n_jobs) if n_jobs < -1 else max(1, n_jobs)
+
+    def _vprint(*args, **kw):
+        if verbose or debug:
+            print(*args, **kw)
+            sys.stdout.flush()
+
+    def _dprint(*args, **kw):
+        if debug:
+            print("[DEBUG_V2]", *args, **kw)
+            sys.stdout.flush()
+
+    # ── Buffer e finestre ────────────────────────────────────────────────────
+    def _max_grid(key):
+        vals = [int(v) for v in param_grid.get(key, []) if v is not None and np.isfinite(float(v))]
+        return max(vals) if vals else 0
+
+    max_lb      = max(_max_grid(k) for k in ["momentum_lookback_days", "riskparity_lookback_days", "ema_span"])
+    buffer_days = max(int(max_lb * 2 + 30), 60)
+
+    first_test_y = a_start.year + train_y
+    last_test_y  = a_end.year - (test_y - 1)
+    if first_test_y > last_test_y:
+        raise ValueError(f"Dati insufficienti per ratio={ratio} nel range {a_start.year}→{a_end.year}")
+
+    test_periods = list(range(first_test_y, last_test_y + 1, test_y))
+    if force_next_year_params and test_periods:
+        test_periods.append(test_periods[-1] + test_y)
+
+    n_windows  = len(test_periods)
+    param_keys = list(param_grid.keys())
+    all_combos = list(product(*param_grid.values()))
+    n_combo    = len(all_combos)
+
+    # ── Helper score ─────────────────────────────────────────────────────────
+    def _score(ret: pd.Series) -> dict:
+        ret = ret.dropna()
+        if ret.empty:
+            return {"Sharpe Ratio": np.nan, "CAGR": np.nan, "Calmar": np.nan}
+        ann_r = (1 + ret.mean()) ** 252 - 1
+        ann_v = ret.std(ddof=0) * np.sqrt(252)
+        shrp  = ann_r / ann_v if ann_v and np.isfinite(ann_v) else np.nan
+        cagr  = (1 + ret).prod() ** (252 / max(len(ret), 1)) - 1
+        eq    = (1 + ret).cumprod()
+        dd    = (eq / eq.cummax() - 1).min()
+        cal   = cagr / abs(dd) if dd and np.isfinite(dd) else np.nan
+        return {"Sharpe Ratio": shrp, "CAGR": cagr, "Calmar": cal}
+
+    # ── Core: ottimizzazione singola finestra v2 ──────────────────────────────
+    def _optimize_window_v2(test_start_year: int, show_inner: bool = False):
+        train_start = f"{test_start_year - train_y}-01-01"
+        train_end   = f"{test_start_year - 1}-12-31"
+        test_start  = f"{test_start_year}-01-01"
+        test_end    = f"{test_start_year + test_y - 1}-12-31"
+
+        buf_start = pd.Timestamp(train_start) - pd.Timedelta(days=buffer_days)
+        tr_px     = stocks_data.loc[buf_start:train_end].dropna(axis=1, how='all').ffill().bfill()
+        tr_bench_prices = (
+            benchmark_prices.loc[buf_start:train_end]
+            if benchmark_prices is not None else None
+        )
+
+        if tr_px.empty or stocks_data.loc[train_start:train_end].empty:
+            _vprint(f"  ↳  {test_start}→{test_end}: skip (dati insufficienti)")
+            return None
+
+        rets    = tr_px.pct_change().fillna(0.0)
+        px_arr  = tr_px.values
+
+        # ── Raccoglie lookback distinti ───────────────────────────────────
+        mom_lbs = sorted(set(
+            int(dict(zip(param_keys, c)).get('momentum_lookback_days', 126))
+            for c in all_combos
+        )) if 'momentum_lookback_days' in param_keys else [126]
+
+        rp_lbs = sorted(set(
+            int(dict(zip(param_keys, c)).get('riskparity_lookback_days', 20))
+            for c in all_combos
+        )) if 'riskparity_lookback_days' in param_keys else [20]
+
+        ema_spans_v2 = sorted(set(
+            int(dict(zip(param_keys, c)).get('ema_span', 200))
+            for c in all_combos
+        )) if 'ema_span' in param_keys else []
+
+        # ── Precomputo rank (UNA VOLTA per finestra) ──────────────────────
+        # momentum rank
+        rank_mom_cache: dict[int, np.ndarray] = {}
+        for lb in mom_lbs:
+            rank_mom_cache[lb] = (tr_px / tr_px.shift(lb)).rank(
+                pct=True, axis=1, na_option='bottom'
+            ).values
+
+        # ivol rank + ivol raw (per filter_volatility)
+        rank_ivol_cache: dict[int, np.ndarray] = {}
+        ivol_raw_cache:  dict[int, np.ndarray] = {}
+        for lb in rp_lbs:
+            v   = rets.rolling(lb, min_periods=1).std(ddof=0)
+            iv  = 1.0 / v.replace(0.0, np.nan)
+            rank_ivol_cache[lb] = iv.rank(pct=True, axis=1, na_option='bottom').values
+            ivol_raw_cache[lb]  = iv.values
+
+        # sortino rank
+        rank_sortino_cache: dict[int, np.ndarray] = {}
+        for lb in mom_lbs:
+            mean_ret     = rets.rolling(lb, min_periods=1).mean()
+            downside_std = rets.where(rets < 0, 0.0).rolling(lb, min_periods=1).std(ddof=0)
+            sortino      = mean_ret / downside_std.replace(0.0, np.nan)
+            rank_sortino_cache[lb] = sortino.rank(pct=True, axis=1, na_option='bottom').values
+
+        # idio rank
+        rank_idio_cache: dict[int, np.ndarray] = {}
+        has_idio = any(
+            float(dict(zip(param_keys, c)).get('idio_weight', 0)) > 0
+            for c in all_combos
+        )
+        if has_idio:
+            if tr_bench_prices is None:
+                raise ValueError(
+                    "_optimize_window_v2: idio_weight > 0 in griglia ma benchmark_prices=None"
+                )
+            bench_aligned = tr_bench_prices.reindex(tr_px.index).ffill().bfill()
+            bench_ratio_s = bench_aligned / bench_aligned.shift(1)  # placeholder shift fixed per lb
+            for lb in mom_lbs:
+                bench_ratio = (bench_aligned / bench_aligned.shift(lb)).values.reshape(-1, 1)
+                idio = (tr_px / tr_px.shift(lb)).values - bench_ratio
+                # rank su axis=1 (per data): costruiamo DataFrame temporaneo
+                idio_df = pd.DataFrame(idio, index=tr_px.index, columns=tr_px.columns)
+                rank_idio_cache[lb] = idio_df.rank(
+                    pct=True, axis=1, na_option='bottom'
+                ).values
+
+        # ema
+        ema_cache_v2: dict[int, np.ndarray] = {}
+        for sp in ema_spans_v2:
+            ema_cache_v2[sp] = tr_px.ewm(span=sp, adjust=False, min_periods=1).mean().values
+
+        # momentum raw per filter_min_momentum
+        mom_raw_cache: dict[int, np.ndarray] = {}
+        has_fmom = any(
+            bool(dict(zip(param_keys, c)).get('filter_min_momentum', False))
+            for c in all_combos
+        )
+        if has_fmom:
+            for lb in mom_lbs:
+                mom_raw_cache[lb] = (tr_px / tr_px.shift(lb)).values
+
+        # ── Rebal dates ───────────────────────────────────────────────────
+        tr_idx     = tr_px.loc[train_start:train_end].index
+        rebal_freq = next(
+            (c[param_keys.index('rebalance_frequency')] for c in all_combos
+             if 'rebalance_frequency' in param_keys),
+            'ME'
+        )
+        try:
+            rebal_dates = compute_rebal_dates(tr_idx, str(rebal_freq).upper())
+            rebal_dates = pd.DatetimeIndex([d for d in rebal_dates if d in tr_idx])
+        except Exception:
+            rebal_dates = pd.DatetimeIndex(
+                pd.Series(tr_idx).groupby(tr_idx.to_period('M')).max().values
+            )
+
+        if len(rebal_dates) == 0:
+            return None
+
+        # ── Strutture numpy ───────────────────────────────────────────────
+        rets_np  = rets.values.astype(np.float64)
+        date_pos = {d: i for i, d in enumerate(rets.index)}
+
+        rebal_list = list(rebal_dates)
+        n_rebal    = len(rebal_list)
+
+        period_slices = []
+        for i, d in enumerate(rebal_list):
+            d_next  = rebal_list[i + 1] if i + 1 < n_rebal else rets.index[-1]
+            start_i = date_pos.get(d, 0)
+            end_i   = date_pos.get(d_next, len(rets) - 1) + 1
+            period_slices.append((start_i, end_i))
+
+        rebal_pos_in_full = [date_pos.get(d, 0) for d in rebal_list]
+
+        # ── Grid search ───────────────────────────────────────────────────
+        best_score  = -np.inf
+        best_params = None
+
+        pbar_i = None
+        if show_inner:
+            pbar_i = tqdm(
+                total=n_combo,
+                desc=f"  Grid {test_start_year}",
+                position=1, leave=False,
+                bar_format='{desc}: {percentage:3.0f}%|{bar}|{n_fmt}/{total_fmt} [{elapsed},{rate_fmt}]',
+            )
+
+        for combo in all_combos:
+            params_c = dict(zip(param_keys, combo))
+            try:
+                mom_lb  = int(params_c.get('momentum_lookback_days', 126))
+                rp_lb   = int(params_c.get('riskparity_lookback_days', 20))
+                n_top   = int(params_c.get('n_top', 5))
+                w_mom   = float(params_c.get('momentum_weight', 1.0))
+                w_ivol  = float(params_c.get('ivol_weight', 0.0))
+                w_sor   = float(params_c.get('sortino_weight', 0.0))
+                w_idio  = float(params_c.get('idio_weight', 0.0))
+                total_w = w_mom + w_ivol + w_sor + w_idio
+
+                # combo degenere: skip silenzioso (ValueError in ScoreParamsV2)
+                if total_w == 0.0:
+                    if pbar_i:
+                        pbar_i.update(1)
+                    continue
+
+                f_ema  = bool(params_c.get('filter_ema', False))
+                f_vol  = bool(params_c.get('filter_volatility', False))
+                f_mom  = bool(params_c.get('filter_min_momentum', False))
+                ema_sp = int(params_c.get('ema_span', 200))
+                vol_q  = float(params_c.get('volatility_quantile', 0.75))
+                min_m  = float(params_c.get('min_momentum_threshold', 1.0))
+
+                rm  = rank_mom_cache.get(mom_lb)
+                riv = rank_ivol_cache.get(rp_lb)
+                rs  = rank_sortino_cache.get(mom_lb)
+                if rm is None or riv is None or rs is None:
+                    if pbar_i:
+                        pbar_i.update(1)
+                    continue
+
+                # Combina rank in numpy — zero overhead pandas nel loop
+                combo_score_arr = (w_mom * rm + w_ivol * riv + w_sor * rs)
+                if w_idio > 0:
+                    rid = rank_idio_cache.get(mom_lb)
+                    if rid is not None:
+                        combo_score_arr = combo_score_arr + w_idio * rid
+                combo_score_arr = combo_score_arr / total_w
+
+                ema_arr = ema_cache_v2.get(ema_sp) if f_ema else None
+
+                pf_chunks   = []
+                prev_top_ci = None
+
+                for ri, (start_i, end_i) in zip(rebal_pos_in_full, period_slices):
+                    cs = combo_score_arr[ri].copy()
+
+                    if ema_arr is not None:
+                        cs = np.where(px_arr[ri] > ema_arr[ri], cs, np.nan)
+                    if f_vol:
+                        ivol_row = ivol_raw_cache[rp_lb][ri]
+                        q_thresh = np.nanquantile(ivol_row, 1.0 - vol_q)
+                        cs = np.where(ivol_row >= q_thresh, cs, np.nan)
+                    if f_mom:
+                        raw_mom_arr = mom_raw_cache.get(mom_lb)
+                        if raw_mom_arr is not None:
+                            cs = np.where(raw_mom_arr[ri] > min_m, cs, np.nan)
+
+                    valid_mask = ~np.isnan(cs)
+                    if valid_mask.sum() == 0:
+                        top_ci = prev_top_ci
+                    else:
+                        sorted_idx    = np.argsort(cs[valid_mask])[::-1]
+                        valid_indices = np.where(valid_mask)[0]
+                        top_ci        = valid_indices[sorted_idx[:n_top]]
+                        prev_top_ci   = top_ci
+
+                    if top_ci is None or len(top_ci) == 0:
+                        continue
+
+                    chunk = rets_np[start_i:end_i, :][:, top_ci]
+                    if chunk.size == 0:
+                        continue
+                    pf_chunks.append(chunk.mean(axis=1))
+
+                if not pf_chunks:
+                    if pbar_i:
+                        pbar_i.update(1)
+                    continue
+
+                pf_ret = np.concatenate(pf_chunks)
+                if len(pf_ret) == 0:
+                    if pbar_i:
+                        pbar_i.update(1)
+                    continue
+
+                ann_r = (1.0 + pf_ret.mean()) ** 252 - 1.0
+                ann_v = pf_ret.std(ddof=0) * np.sqrt(252)
+                if metric == "Sharpe Ratio":
+                    sc = ann_r / ann_v if ann_v > 0 and np.isfinite(ann_v) else np.nan
+                elif metric == "CAGR":
+                    sc = float(np.prod(1.0 + pf_ret) ** (252 / max(len(pf_ret), 1)) - 1.0)
+                elif metric == "Calmar":
+                    cagr_v = float(np.prod(1.0 + pf_ret) ** (252 / max(len(pf_ret), 1)) - 1.0)
+                    eq     = np.cumprod(1.0 + pf_ret)
+                    dd     = np.min(eq / np.maximum.accumulate(eq) - 1.0)
+                    sc     = cagr_v / abs(dd) if dd != 0 and np.isfinite(dd) else np.nan
+                else:
+                    sc = np.nan
+
+                _dprint(f"  {params_c}  {metric}={sc:.4f}" if np.isfinite(sc) else f"  {params_c}  {metric}=NaN")
+
+                if np.isfinite(sc) and sc > best_score:
+                    best_score, best_params = sc, params_c
+
+            except Exception as exc:
+                if debug:
+                    print(f"[DEBUG_V2] EXCEPTION combo={params_c}: {exc}")
+                    _tb.print_exc()
+
+            if pbar_i:
+                pbar_i.update(1)
+
+        if pbar_i:
+            pbar_i.close()
+
+        if best_params is None:
+            _dprint(f"NO VALID PARAMS: {train_start}→{train_end}")
+            return None
+
+        _dprint(f"BEST {train_start}→{train_end}: {metric}={best_score:.4f} params={best_params}")
+
+        # ── Test con best_params ──────────────────────────────────────────
+        test_score = np.nan
+        if not stocks_data.loc[test_start:test_end].empty:
+            try:
+                buf_s  = pd.Timestamp(test_start) - pd.Timedelta(days=buffer_days)
+                te_px  = stocks_data.loc[buf_s:test_end]
+                te_bch = benchmark_data.loc[buf_s:test_end]
+                te_bench_px = (
+                    benchmark_prices.loc[buf_s:test_end]
+                    if benchmark_prices is not None else None
+                )
+                pf_te_result = build_rotational_portfolios_vbt_v2(
+                    stocks_data      = te_px,
+                    benchmark_data   = te_bch,
+                    benchmark_prices = te_bench_px,
+                    plot             = plot,
+                    **best_params,
+                )
+                test_score = _score(
+                    pf_te_result.pf_rot.returns().loc[test_start:test_end]
+                ).get(metric, np.nan)
+            except Exception as exc:
+                if debug:
+                    print(f"[DEBUG_V2] TEST exception: {exc}")
+                    _tb.print_exc()
+
+        return {
+            **best_params,
+            "Window":     f"{test_start}→{test_end}",
+            "TrainScore": best_score,
+            "TestScore":  test_score,
+        }
+
+    # ── Header ───────────────────────────────────────────────────────────────
+    _vprint()
+    _vprint("=" * 72)
+    _vprint("WALK-FORWARD OPTIMIZATION V2  (multi-fattore)")
+    _vprint("=" * 72)
+    _vprint(f"  Dati         : {data_min.date()} → {data_max.date()}")
+    _vprint(f"  Analisi      : {a_start.date()} → {a_end.date()}")
+    _vprint(f"  Ratio        : {ratio}  (train={train_y}a, test={test_y}a)")
+    _vprint(f"  Metric       : {metric}")
+    _vprint(f"  Windows      : {n_windows}")
+    _vprint(f"  Combinations : {n_combo:,}")
+    _vprint(f"  Parallel     : {'SEQUENTIAL' if n_jobs == 1 else f'n_jobs={n_jobs} (eff={n_jobs_eff}), backend={backend}'}")
+    _vprint("=" * 72)
+    _vprint()
+
+    # ── Esecuzione ────────────────────────────────────────────────────────────
+    results = []
+    t0_wfo  = time.time()
+
+    if n_jobs == 1:
+        pbar = tqdm(
+            test_periods, desc="WFO V2 Windows", position=0, leave=True,
+            bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]',
+        )
+        for test_year in pbar:
+            t0_w = time.time()
+            pbar.set_description(
+                f"WFO_V2  {test_year - train_y}–{test_year - 1} → "
+                f"{test_year}–{test_year + test_y - 1}"
+            )
+            result    = _optimize_window_v2(test_year, show_inner=True)
+            elapsed_w = time.time() - t0_w
+            if result:
+                results.append(result)
+                _vprint(
+                    f"  ✓  {result['Window']:<28} "
+                    f"Train={result['TrainScore']:+.3f}  "
+                    f"Test={result['TestScore']:+.3f}  ({elapsed_w:.0f}s)"
+                )
+            else:
+                _vprint(f"  ✗  {test_year}: fallita ({elapsed_w:.0f}s)")
+        pbar.close()
+    else:
+        pbar = tqdm(
+            total=n_windows, desc="WFO_V2 Parallel", position=0, leave=True,
+            bar_format=(
+                '{desc}: {percentage:3.0f}%|{bar}| '
+                '{n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]'
+            ),
+        )
+        gen = Parallel(n_jobs=n_jobs, backend=backend, return_as="generator")(
+            delayed(_optimize_window_v2)(y) for y in test_periods
+        )
+        for result in gen:
+            if result:
+                results.append(result)
+                _vprint(
+                    f"  ✓  {result['Window']:<28} "
+                    f"Train={result['TrainScore']:+.3f}  "
+                    f"Test={result['TestScore']:+.3f}"
+                )
+            pbar.update(1)
+        pbar.close()
+
+    elapsed_total = time.time() - t0_wfo
+    _vprint()
+    _vprint(f"WFO_V2 completata: {len(results)}/{n_windows} finestre in {elapsed_total:.0f}s")
+    _vprint("=" * 72)
+
+    if not results:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(results).set_index("Window")
+    cols_order = ["TrainScore", "TestScore"] + [
+        c for c in df.columns if c not in ("TrainScore", "TestScore")
+    ]
+    return df[[c for c in cols_order if c in df.columns]]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Griglie v2
+# ─────────────────────────────────────────────────────────────────────────────
+
+def build_cluster_grids_v2(
+    cluster_labels: dict,
+    cluster_groups: dict,
+    profile:        str = "satellite",
+    asset_type:     str = "stock",
+) -> dict:
+    """
+    Genera le griglie WFO per il motore v2 multi-fattore.
+    Pesi fattore discreti: [0, 0.5, 1.0]. Nessun use_acceleration.
+    Le combo con tutti i pesi a 0 vengono saltate silenziosamente nel loop WFO.
+    """
+    n_top  = resolve_n_top(asset_type, profile)
+    grids  = {}
+    _w     = [0, 0.5, 1.0]
+
+    for cid, label in cluster_labels.items():
+        tickers  = cluster_groups.get(cid, [])
+        n_assets = len(tickers)
+
+        print(f"\nCluster {cid} [{label}] — {n_assets} asset → n_top: {n_top}")
+
+        if label == "HIGH_MOMENTUM":
+            # rebal(1) × mom_lb(3) × rp_lb(2) × n_top(k) × w^4(81) × ema(1) × vol(2) × minmom(1)
+            # = 6k × 81 × 2 = 972k  (k = len(n_top); combo all-zero saltate: 6k × 80 × 2 = 960k effettive)
+            grid = {
+                "rebalance_frequency":     ["ME"],
+                "momentum_lookback_days":  [20, 40, 60],
+                "riskparity_lookback_days":[20, 40],
+                "n_top":                   n_top,
+                "momentum_weight":         _w,
+                "ivol_weight":             _w,
+                "sortino_weight":          _w,
+                "idio_weight":             _w,
+                "filter_ema":              [True],
+                "filter_volatility":       [True, False],
+                "filter_min_momentum":     [True],
+            }
+
+        elif label == "DEFENSIVE":
+            # rebal(2) × mom_lb(3) × rp_lb(2) × n_top(k) × w^4(81) × ema(2) × vol(1) × minmom(2)
+            # = 12k × 81 × 4 = 3888k
+            grid = {
+                "rebalance_frequency":     ["ME", "QE"],
+                "momentum_lookback_days":  [60, 120, 180],
+                "riskparity_lookback_days":[60, 120],
+                "n_top":                   n_top,
+                "momentum_weight":         _w,
+                "ivol_weight":             _w,
+                "sortino_weight":          _w,
+                "idio_weight":             _w,
+                "filter_ema":              [True, False],
+                "filter_volatility":       [True],
+                "filter_min_momentum":     [True, False],
+            }
+
+        elif label == "AVOID":
+            # Griglia ristretta: momentum/sortino dominanti, idio escluso
+            # rebal(1) × mom_lb(2) × rp_lb(2) × n_top(k) × w_mom(2) × w_ivol(2) × w_sor(2) × w_idio(1)
+            # × ema(1) × vol(1) × minmom(1) = 4k × 8 = 32k
+            grid = {
+                "rebalance_frequency":     ["ME"],
+                "momentum_lookback_days":  [60, 120],
+                "riskparity_lookback_days":[60, 120],
+                "n_top":                   n_top,
+                "momentum_weight":         [0.5, 1.0],
+                "ivol_weight":             [0,   0.5],
+                "sortino_weight":          [0,   0.5],
+                "idio_weight":             [0],
+                "filter_ema":              [True],
+                "filter_volatility":       [True],
+                "filter_min_momentum":     [True],
+            }
+
+        else:  # BALANCED
+            # rebal(2) × mom_lb(3) × rp_lb(2) × n_top(k) × w^4(81) × ema(2) × vol(2) × minmom(2)
+            # = 12k × 81 × 8 = 7776k
+            grid = {
+                "rebalance_frequency":     ["ME", "QE"],
+                "momentum_lookback_days":  [40, 60, 120],
+                "riskparity_lookback_days":[40, 60],
+                "n_top":                   n_top,
+                "momentum_weight":         _w,
+                "ivol_weight":             _w,
+                "sortino_weight":          _w,
+                "idio_weight":             _w,
+                "filter_ema":              [True, False],
+                "filter_volatility":       [True, False],
+                "filter_min_momentum":     [True, False],
+            }
+
+        grids[cid] = grid
+        n_comb = int(np.prod([len(v) for v in grid.values()]))
+        print(f"  Combinazioni totali v2: {n_comb:,}  "
+              f"(effettive senza all-zero: ~{n_comb - n_comb // 81:,})")
+
+    return grids
+
