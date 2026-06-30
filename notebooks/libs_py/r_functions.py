@@ -8620,225 +8620,6 @@ def run_wfo_pipeline(
     
 
 
-def compare_wfo_pipelines(
-    results_std     : dict,
-    results_cluster : dict,
-    portfolio_title : str  = "Portfolio",
-    benchmark_title : str  = "Benchmark",
-    plot_radar      : bool = True,
-    plot            : bool = True,
-    start_date      : str  = None,
-    end_date        : str  = None,
-    save_plots      : bool = False,
-    plots_dir              = None,    # str | Path | None
-    apply_gradient  : bool = True,
-) -> "Union[pd.DataFrame, pd.io.formats.style.Styler]":
-    """
-    Confronta i 4 portafogli prodotti da due run di run_wfo_pipeline
-    (Standard e Clustered, ciascuno con/senza Risk ON/OFF).
-
-    Genera:
-    1. Grafico lineare dei rendimenti cumulativi (4 portafogli + benchmark).
-    2. Tabella comparativa delle metriche con heatmap (via analyze_portfolio_metrics).
-    3. Radar chart normalizzato su range assoluti (se plot_radar=True).
-
-    Parameters
-    ----------
-    results_std     : dict  Risultato di run_wfo_pipeline(use_clustering=False).
-    results_cluster : dict  Risultato di run_wfo_pipeline(use_clustering=True).
-    portfolio_title : str   Titolo base usato nelle etichette.
-    benchmark_title : str   Etichetta del benchmark.
-    plot_radar      : bool  Se True genera il radar chart.
-    start_date      : str   Filtro opzionale inizio (es. "2020-01-01").
-    end_date        : str   Filtro opzionale fine   (es. "2024-12-31").
-
-    Returns
-    -------
-    pd.DataFrame  Tabella metriche restituita da analyze_portfolio_metrics.
-    """
-    import plotly.graph_objects as go
-
-    # ------------------------------------------------------------------
-    # Etichette
-    # ------------------------------------------------------------------
-    lbl = {
-        'std_on'   : "Std \u2013 Risk ON/OFF",
-        'std_base' : "Std \u2013 Base",
-        'cl_on'    : "Cluster \u2013 Risk ON/OFF",
-        'cl_base'  : "Cluster \u2013 Base",
-    }
-
-    # ------------------------------------------------------------------
-    # Raccolta rendimenti cumulativi (base 1.0)
-    # ------------------------------------------------------------------
-    cumrets = {}
-
-    def _add(pf, label):
-        if pf is None:
-            return
-        cr = pf.cumulative_returns() + 1
-        cumrets[label] = cr.squeeze() if isinstance(cr, pd.DataFrame) else cr
-
-    _add(results_std.get('pf_rot'),          lbl['std_on'])
-    _add(results_std.get('pf_rot_base'),     lbl['std_base'])
-    _add(results_cluster.get('pf_rot'),      lbl['cl_on'])
-    _add(results_cluster.get('pf_rot_base'), lbl['cl_base'])
-
-    if not cumrets:
-        print("Nessun portafoglio disponibile per il confronto.")
-        return pd.DataFrame()
-
-    # Benchmark (primo disponibile)
-    pf_bm = (
-        results_std.get('pf_benchmark') or
-        results_std.get('pf_benchmark_base') or
-        results_cluster.get('pf_benchmark') or
-        results_cluster.get('pf_benchmark_base')
-    )
-    bm_cumret = None
-    if pf_bm is not None:
-        bm_cr = pf_bm.cumulative_returns() + 1
-        bm_cumret = bm_cr.squeeze() if isinstance(bm_cr, pd.DataFrame) else bm_cr
-
-    port_cumrets = pd.DataFrame(cumrets)
-
-    # Filtro data
-    if start_date:
-        port_cumrets = port_cumrets[port_cumrets.index >= start_date]
-        if bm_cumret is not None:
-            bm_cumret = bm_cumret[bm_cumret.index >= start_date]
-    if end_date:
-        port_cumrets = port_cumrets[port_cumrets.index <= end_date]
-        if bm_cumret is not None:
-            bm_cumret = bm_cumret[bm_cumret.index <= end_date]
-
-    port_cumrets = port_cumrets.dropna(how='all')
-
-    # ------------------------------------------------------------------
-    # 1. Plot cumulativo
-    # ------------------------------------------------------------------
-    COLORS = {
-        lbl['std_on']   : "#1f77b4",  # blu pieno
-        lbl['std_base'] : "#aec7e8",  # blu chiaro
-        lbl['cl_on']    : "#d62728",  # rosso pieno
-        lbl['cl_base']  : "#f5a7a7",  # rosso chiaro
-        benchmark_title   : "#7f7f7f",  # grigio
-    }
-    DASH = {
-        lbl['std_on']   : "solid",
-        lbl['std_base'] : "dot",
-        lbl['cl_on']    : "solid",
-        lbl['cl_base']  : "dot",
-        benchmark_title   : "dash",
-    }
-    WIDTH = {
-        lbl['std_on']   : 2.5,
-        lbl['std_base'] : 1.5,
-        lbl['cl_on']    : 2.5,
-        lbl['cl_base']  : 1.5,
-        benchmark_title   : 1.5,
-    }
-
-    fig = go.Figure()
-    for col in port_cumrets.columns:
-        fig.add_trace(go.Scatter(
-            x    = port_cumrets.index,
-            y    = port_cumrets[col],
-            name = col,
-            mode = "lines",
-            line = dict(
-                color = COLORS.get(col, "#333333"),
-                dash  = DASH.get(col, "solid"),
-                width = WIDTH.get(col, 2),
-            ),
-        ))
-
-    if bm_cumret is not None:
-        bm_aligned = bm_cumret.reindex(port_cumrets.index, method="ffill")
-        fig.add_trace(go.Scatter(
-            x    = bm_aligned.index,
-            y    = bm_aligned.values,
-            name = benchmark_title,
-            mode = "lines",
-            line = dict(
-                color = COLORS[benchmark_title],
-                dash  = DASH[benchmark_title],
-                width = WIDTH[benchmark_title],
-            ),
-        ))
-
-    fig.update_layout(
-        title       = f"Confronto rendimenti cumulativi \u2013 {portfolio_title}",
-        xaxis_title = "Data",
-        yaxis_title = "Rendimento cumulativo (base 1.0)",
-        height      = 550,
-        width       = 1100,
-        template    = "plotly_white",
-        hovermode   = "x unified",
-        legend      = dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-    )
-    if save_plots and plots_dir is not None:
-        from pathlib import Path as _P
-        _pd = _P(str(plots_dir))
-        _pd.mkdir(parents=True, exist_ok=True)
-        # equity_comparison.png — tutti i path (fig già costruita sopra)
-        fig.write_image(str(_pd / 'equity_comparison.png'))
-        # equity_std.png — solo percorsi Standard
-        _std_cols = [c for c in port_cumrets.columns
-                     if c in (lbl['std_on'], lbl['std_base'])]
-        if _std_cols:
-            _fig_std = go.Figure()
-            for _c in _std_cols:
-                _fig_std.add_trace(go.Scatter(
-                    x=port_cumrets.index, y=port_cumrets[_c], name=_c, mode='lines',
-                    line=dict(color=COLORS.get(_c,'#333'), dash=DASH.get(_c,'solid'), width=WIDTH.get(_c,2))))
-            if bm_cumret is not None:
-                _ba = bm_cumret.reindex(port_cumrets.index, method='ffill')
-                _fig_std.add_trace(go.Scatter(
-                    x=_ba.index, y=_ba.values, name=benchmark_title, mode='lines',
-                    line=dict(color=COLORS[benchmark_title], dash=DASH[benchmark_title], width=WIDTH[benchmark_title])))
-            _fig_std.update_layout(title=f"Rendimenti cumulativi \u2013 Standard \u2013 {portfolio_title}",
-                                   height=400, width=900, template='plotly_white',
-                                   hovermode='x unified')
-            _fig_std.write_image(str(_pd / 'equity_std.png'))
-        # equity_cluster.png — solo percorsi Cluster (condizionale)
-        _cl_cols = [c for c in port_cumrets.columns
-                    if c in (lbl.get('cl_on',''), lbl.get('cl_base',''))]
-        if _cl_cols:
-            _fig_cl = go.Figure()
-            for _c in _cl_cols:
-                _fig_cl.add_trace(go.Scatter(
-                    x=port_cumrets.index, y=port_cumrets[_c], name=_c, mode='lines',
-                    line=dict(color=COLORS.get(_c,'#333'), dash=DASH.get(_c,'solid'), width=WIDTH.get(_c,2))))
-            if bm_cumret is not None:
-                _ba = bm_cumret.reindex(port_cumrets.index, method='ffill')
-                _fig_cl.add_trace(go.Scatter(
-                    x=_ba.index, y=_ba.values, name=benchmark_title, mode='lines',
-                    line=dict(color=COLORS[benchmark_title], dash=DASH[benchmark_title], width=WIDTH[benchmark_title])))
-            _fig_cl.update_layout(title=f"Rendimenti cumulativi \u2013 Cluster \u2013 {portfolio_title}",
-                                   height=400, width=900, template='plotly_white',
-                                   hovermode='x unified')
-            _fig_cl.write_image(str(_pd / 'equity_cluster.png'))
-    if plot:
-        fig.show()
-
-    # ------------------------------------------------------------------
-    # 2. Tabella metriche + Radar (via analyze_portfolio_metrics)
-    # ------------------------------------------------------------------
-    metrics_df = analyze_portfolio_metrics(
-        port_cumrets     = port_cumrets,
-        portfolio_name   = f"Confronto WFO \u2013 {portfolio_title}",
-        benchmark_cumret = bm_cumret,
-        freq             = "D",
-        sort_by          = "CAGR (%)",
-        ascending        = False,
-        plot_radar       = plot_radar,
-        radar_metrics    = "all",
-        highlight_best   = True,
-        apply_gradient   = apply_gradient,
-    )
-
-    return metrics_df
 
 def run_rotational_portfolio_performance(
     portfolio: dict,
@@ -16369,4 +16150,688 @@ def build_cluster_grids_v2(
               f"(effettive senza all-zero: ~{n_comb - n_comb // 81:,})")
 
     return grids
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# V2 GAP FUNCTIONS  (additive — no v1 code modified)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def collect_wfo_selections_v2(
+    summary_df: pd.DataFrame,
+    stocks_data: pd.DataFrame,
+    benchmark_data: pd.Series | None = None,
+    benchmark_prices: pd.Series | None = None,
+    debug: bool = False,
+    per_window_universe: dict | None = None,
+) -> pd.DataFrame:
+    """
+    V2 counterpart of collect_wfo_selections() (riga 737).
+
+    Replays OOS selections from a v2 WFO summary_df using EngineParamsV2
+    and run_rotational_engine_v2.  All logic is identical to v1 except:
+      - EngineParamsV2.from_dict() deserialises ivol_weight / sortino_weight /
+        idio_weight from the summary row (v1 silently ignored these).
+      - run_rotational_engine_v2() is called instead of run_rotational_engine().
+      - benchmark_prices is forwarded when idio_weight > 0 is in use.
+
+    Parameters
+    ----------
+    summary_df : pd.DataFrame
+        Output of walk_forward_rotational_v2(); index = strings "start→end".
+    stocks_data : pd.DataFrame
+        Full daily price history.
+    benchmark_data : pd.Series, optional
+        Accepted for API symmetry; not used in selection logic.
+    benchmark_prices : pd.Series, optional
+        Required only when idio_weight > 0 in any summary row.
+    debug : bool
+    per_window_universe : dict, optional
+        Mapping window_str → list[ticker] for cluster-path restriction.
+
+    Returns
+    -------
+    pd.DataFrame
+        Same structure as collect_wfo_selections():
+        index 'rebal_date', columns 'tickers' (list[str]), 'carried' (bool),
+        'n_passed_filters' (int).
+    """
+    if stocks_data is None or stocks_data.empty:
+        return _empty_selections()
+    if summary_df is None or summary_df.empty:
+        return _empty_selections()
+
+    stocks = stocks_data.copy()
+    stocks.index = _norm_dt_index(stocks.index)
+    stocks = stocks.sort_index()
+
+    all_sel: list[pd.DataFrame] = []
+
+    for window, row in summary_df.iterrows():
+        try:
+            start_str, end_str = str(window).split("→")
+            win_start = pd.Timestamp(start_str).normalize()
+            win_end   = pd.Timestamp(end_str).normalize()
+        except Exception:
+            if debug:
+                print(f"[WFO-v2] SKIP: parse error window='{window}'")
+            continue
+
+        last_avail = stocks.index.max()
+        slice_end  = min(win_end, last_avail)
+
+        params = EngineParamsV2.from_dict(dict(row))
+
+        buffer_days = params.required_warmup_days()
+        buf_start   = max(win_start - pd.Timedelta(days=buffer_days), stocks.index.min())
+
+        slice_prices = stocks.loc[buf_start:slice_end].copy()
+        if slice_prices.empty:
+            if debug:
+                print(f"[WFO-v2] SKIP: slice vuota | window={window}")
+            continue
+
+        if per_window_universe is not None:
+            eligible = per_window_universe.get(str(window))
+            if eligible is not None:
+                keep = [c for c in slice_prices.columns if c in set(eligible)]
+                if keep:
+                    slice_prices = slice_prices[keep]
+                    if debug:
+                        print(f"[WFO-v2] pool ristretto | window={window} | "
+                              f"{len(keep)}/{len(stocks.columns)} ticker")
+
+        engine_result = run_rotational_engine_v2(
+            prices=slice_prices,
+            params=params,
+            benchmark_prices=benchmark_prices,
+            debug=debug,
+        )
+
+        if engine_result.selections.empty:
+            if debug:
+                print(f"[WFO-v2] SKIP: selezioni vuote | window={window}")
+            continue
+
+        sel = engine_result.selections.copy()
+        sel = sel.loc[(sel.index >= win_start) & (sel.index <= slice_end)]
+
+        if sel.empty:
+            if debug:
+                print(f"[WFO-v2] SKIP: selezioni fuori window | window={window}")
+            continue
+
+        if debug:
+            n_carried = int(sel["carried"].sum())
+            n_empty   = int((sel["tickers"].apply(len) == 0).sum())
+            print(
+                f"[WFO-v2] OK | window={window} | "
+                f"n_sel={len(sel)} | carried={n_carried} | empty={n_empty}"
+            )
+
+        all_sel.append(sel)
+
+    if not all_sel:
+        return _empty_selections()
+
+    combined = pd.concat(all_sel).sort_index()
+    combined = combined[~combined.index.duplicated(keep="last")]
+    combined.index.name = "rebal_date"
+
+    if debug:
+        print(f"\n[WFO-v2] FINAL: {len(combined)} selezioni totali | "
+              f"carried={combined['carried'].sum()} | "
+              f"empty={(combined['tickers'].apply(len) == 0).sum()}")
+
+    return combined
+
+
+def _evaluate_ptf_on_period_v2(
+    ptf_config: dict,
+    params: "EngineParamsV2",
+    start_date,
+    end_date,
+    metric: str = "CAGR",
+    benchmark_prices: pd.Series | None = None,
+) -> float:
+    """
+    V2 counterpart of _evaluate_ptf_on_period() (riga 11322).
+
+    Runs run_rotational_engine_v2() instead of run_rotational_engine(), then
+    delegates portfolio construction and metric computation to build_portfolio()
+    and _mc_compute_metrics() — both engine-agnostic (work on RotationalResult).
+
+    Parameters
+    ----------
+    ptf_config : dict
+        Required keys: 'stocks_data' (pd.DataFrame), 'init_cash' (float).
+    params : EngineParamsV2
+        V2 parameter set to evaluate.
+    start_date, end_date : str or pd.Timestamp
+        Evaluation window (inclusive).
+    metric : str, default "CAGR"
+        One of {"CAGR", "Sharpe", "Calmar"}.
+    benchmark_prices : pd.Series, optional
+        Required only when params.score.idio_weight > 0.
+
+    Returns
+    -------
+    float
+        Scalar metric value, or np.nan if fewer than 2 equity points in window.
+    """
+    if metric not in _STABILITY_METRICS:
+        raise ValueError(
+            f"metric={metric!r} is not supported. "
+            f"Supported: {sorted(_STABILITY_METRICS)}. "
+            f"To use lower-is-better metrics (MaxDD, Volatility, Ulcer), "
+            f"handle sign convention explicitly before calling this function."
+        )
+
+    stocks_data: pd.DataFrame = ptf_config["stocks_data"]
+    init_cash: float = float(ptf_config["init_cash"])
+
+    start = pd.Timestamp(start_date).normalize()
+    end   = pd.Timestamp(end_date).normalize()
+
+    buf_start    = start - pd.Timedelta(days=params.required_warmup_days())
+    slice_prices = stocks_data.loc[buf_start:end].copy()
+
+    if slice_prices.empty:
+        raise ValueError(
+            f"Empty price slice for [{buf_start.date()}, {end.date()}]. "
+            f"Ensure ptf_config['stocks_data'] covers at least "
+            f"{buf_start.date()} → {end.date()}."
+        )
+
+    rot_result = run_rotational_engine_v2(
+        slice_prices, params, benchmark_prices=benchmark_prices
+    )
+
+    pf_rot, _ = build_portfolio(
+        rot_result,
+        slice_prices,
+        init_cash=init_cash,
+        start_date=start,
+        end_date=end,
+        plot=False,
+        show_report=False,
+    )
+
+    equity = pf_rot.value()
+    if isinstance(equity, pd.DataFrame):
+        equity = equity.squeeze()
+
+    if len(equity) < 2:
+        return np.nan
+
+    return float(_mc_compute_metrics(equity)[metric])
+
+
+def _evaluate_flag_stability_v2(
+    ptf_config: dict,
+    base_params: dict,
+    flag_name: str,
+    full_start_date,
+    full_end_date,
+    metric: str = "CAGR",
+    k: int = 3,
+    n_top_anchors: list[int] | None = None,
+    benchmark_prices: pd.Series | None = None,
+) -> dict:
+    """
+    V2 counterpart of _evaluate_flag_stability() (riga 11430).
+
+    Identical logic to v1 but uses EngineParamsV2.from_dict() and
+    _evaluate_ptf_on_period_v2(), so the flag delta is evaluated against the
+    v2 engine (momentum + ivol + sortino + idio weighted score).
+
+    The guard on _STABILITY_FLAGS is intentionally kept: 'use_acceleration' is
+    in the frozenset but never appears in v2 grids, so it is never eligible
+    (filtered out in Step 1 of reduce_grid_via_stability_v2).
+    """
+    if flag_name not in _STABILITY_FLAGS:
+        raise ValueError(
+            f"flag_name={flag_name!r} is not a supported binary flag. "
+            f"Supported: {sorted(_STABILITY_FLAGS)}."
+        )
+    if metric not in _STABILITY_METRICS:
+        raise ValueError(
+            f"metric={metric!r} is not supported. "
+            f"Supported: {sorted(_STABILITY_METRICS)}."
+        )
+    if n_top_anchors is None:
+        n_top_anchors = [3, 5, 8]
+
+    periods = _split_history_into_periods(full_start_date, full_end_date, k)
+
+    delta_per_period_per_anchor: list[list[float]] = []
+
+    for s, e in periods:
+        deltas_for_period: list[float] = []
+        for anchor in n_top_anchors:
+            params_true  = {**base_params, flag_name: True,  "n_top": anchor}
+            params_false = {**base_params, flag_name: False, "n_top": anchor}
+
+            val_true  = _evaluate_ptf_on_period_v2(
+                ptf_config, EngineParamsV2.from_dict(params_true),  s, e, metric,
+                benchmark_prices=benchmark_prices,
+            )
+            val_false = _evaluate_ptf_on_period_v2(
+                ptf_config, EngineParamsV2.from_dict(params_false), s, e, metric,
+                benchmark_prices=benchmark_prices,
+            )
+
+            if np.isnan(val_true) or np.isnan(val_false):
+                warnings.warn(
+                    f"_evaluate_flag_stability_v2: NaN for {flag_name}, "
+                    f"anchor={anchor}, period={s.date()}→{e.date()} "
+                    f"(true={val_true:.4f} false={val_false:.4f}). "
+                    f"Delta set to NaN.",
+                    stacklevel=2,
+                )
+                deltas_for_period.append(float("nan"))
+            else:
+                deltas_for_period.append(val_true - val_false)
+
+        delta_per_period_per_anchor.append(deltas_for_period)
+
+    delta_per_period: list[float] = []
+    for row in delta_per_period_per_anchor:
+        valid = [d for d in row if not np.isnan(d)]
+        if not valid:
+            delta_per_period.append(float("nan"))
+        else:
+            delta_per_period.append(float(np.mean(valid)))
+
+    non_nan  = [d for d in delta_per_period if not np.isnan(d)]
+    positive = sum(1 for d in non_nan if d > 0)
+    negative = sum(1 for d in non_nan if d < 0)
+    zero     = sum(1 for d in non_nan if d == 0)
+
+    mean_delta = float(np.mean(non_nan)) if non_nan else float("nan")
+    recommended_value: bool = False
+
+    if not non_nan:
+        coherent_sign = False
+        diagnostic_note = "all periods produced NaN — insufficient data"
+    elif len(non_nan) < k:
+        coherent_sign = False
+        diagnostic_note = f"incoherent: {k - len(non_nan)} NaN period(s)"
+    elif positive == k:
+        coherent_sign = True
+        recommended_value = True
+        diagnostic_note = "coherent positive"
+    elif negative == k:
+        coherent_sign = True
+        recommended_value = False
+        diagnostic_note = "coherent negative"
+    elif zero == k:
+        coherent_sign = False
+        recommended_value = False
+        diagnostic_note = "no effect (all deltas zero)"
+    else:
+        coherent_sign = False
+        recommended_value = False
+        diagnostic_note = "incoherent: mixed signs across periods"
+
+    return {
+        "flag_name":                    flag_name,
+        "metric":                       metric,
+        "k":                            k,
+        "n_top_anchors":                list(n_top_anchors),
+        "delta_per_period":             delta_per_period,
+        "delta_per_period_per_anchor":  delta_per_period_per_anchor,
+        "mean_delta":                   mean_delta,
+        "coherent_sign":                coherent_sign,
+        "recommended_value":            recommended_value,
+        "diagnostic_note":              diagnostic_note,
+    }
+
+
+def reduce_grid_via_stability_v2(
+    ptf_config: dict,
+    full_grid: dict,
+    full_start_date,
+    full_end_date,
+    metric: str = "CAGR",
+    k: int = 3,
+    n_top_anchors: list[int] | None = None,
+    verbose: bool = True,
+    benchmark_prices: pd.Series | None = None,
+) -> tuple[dict, pd.DataFrame]:
+    """
+    V2 counterpart of reduce_grid_via_stability() (riga 11599).
+
+    Reduces a v2 WFO parameter grid by fixing binary filter flags to their
+    stability-recommended values.  Step 3 calls _evaluate_flag_stability_v2()
+    (which uses EngineParamsV2 + run_rotational_engine_v2) so that flag deltas
+    are computed with the actual v2 multi-factor score.
+
+    Steps 1, 2, 4, 5, 6 are structurally identical to v1 and handle v2-specific
+    weight keys (ivol_weight, sortino_weight, idio_weight) generically.
+
+    'use_acceleration' is in _STABILITY_FLAGS but absent from v2 grids; Step 1
+    excludes it automatically (not eligible if not in full_grid).
+    """
+    if metric not in _STABILITY_METRICS:
+        raise ValueError(
+            f"metric={metric!r} is not supported. "
+            f"Supported: {sorted(_STABILITY_METRICS)}."
+        )
+
+    requested_anchors = list(n_top_anchors) if n_top_anchors is not None else [3, 5, 8]
+    stocks_data: pd.DataFrame = ptf_config["stocks_data"]
+
+    universe_size = len(stocks_data.columns)
+    margin = 3
+    max_allowed_anchor = universe_size - margin
+
+    if max_allowed_anchor < 1:
+        raise ValueError(
+            f"Universe too small: {universe_size} tickers available. "
+            f"Need at least {margin + 1} tickers to run stability analysis "
+            f"with margin={margin}."
+        )
+
+    anchors = [a for a in requested_anchors if a <= max_allowed_anchor]
+
+    if not anchors:
+        anchors = [max_allowed_anchor]
+    elif max_allowed_anchor not in anchors:
+        anchors = sorted(set(anchors + [max_allowed_anchor]))
+    else:
+        anchors = sorted(set(anchors))
+
+    if verbose and anchors != requested_anchors:
+        print(
+            f"[WARN] n_top_anchors adattato automaticamente: "
+            f"richiesto={requested_anchors}, usato={anchors}, "
+            f"universe_size={universe_size}, margin={margin}"
+        )
+
+    # ── Step 1: identify eligible flags ──────────────────────────────────────
+    eligible_flags = [
+        flag for flag in sorted(_STABILITY_FLAGS)
+        if flag in full_grid
+        and True in full_grid[flag]
+        and False in full_grid[flag]
+    ]
+
+    # ── Step 2: build centroid base_params ───────────────────────────────────
+    base_params: dict = {}
+    for key, vals in full_grid.items():
+        if key in _STABILITY_FLAGS:
+            base_params[key] = False
+        elif all(isinstance(v, bool) for v in vals):
+            base_params[key] = False
+        elif all(isinstance(v, (int, float)) for v in vals):
+            median_val = float(np.median(vals))
+            base_params[key] = min(vals, key=lambda v: abs(v - median_val))
+        else:
+            base_params[key] = vals[0]
+
+    # ── Step 3: run v2 stability analysis for each eligible flag ─────────────
+    stability_results: dict = {}
+    for flag_name in eligible_flags:
+        if verbose:
+            print(f"  Evaluating {flag_name} (v2) …")
+
+        stability_results[flag_name] = _evaluate_flag_stability_v2(
+            ptf_config=ptf_config,
+            base_params=base_params,
+            flag_name=flag_name,
+            full_start_date=full_start_date,
+            full_end_date=full_end_date,
+            metric=metric,
+            k=k,
+            n_top_anchors=anchors,
+            benchmark_prices=benchmark_prices,
+        )
+
+    # ── Step 4: build reduced_grid ────────────────────────────────────────────
+    reduced_grid: dict = {}
+    for key, vals in full_grid.items():
+        if key in stability_results:
+            reduced_grid[key] = [stability_results[key]["recommended_value"]]
+        else:
+            reduced_grid[key] = list(vals)
+
+    # ── Step 5: build diagnostic_report ──────────────────────────────────────
+    rows = []
+    for flag in sorted(_STABILITY_FLAGS):
+        if flag in stability_results:
+            r = stability_results[flag]
+            rows.append({
+                "flag_name":                   flag,
+                "evaluated":                   True,
+                "mean_delta":                  r["mean_delta"],
+                "coherent_sign":               r["coherent_sign"],
+                "recommended_value":           r["recommended_value"],
+                "diagnostic_note":             r["diagnostic_note"],
+                "delta_per_period":            str(r["delta_per_period"]),
+                "delta_per_period_per_anchor": str(r["delta_per_period_per_anchor"]),
+            })
+        else:
+            if flag in full_grid:
+                reason = f"skipped: single value {full_grid[flag]}"
+            else:
+                reason = "skipped: not in full_grid"
+
+            rows.append({
+                "flag_name":                   flag,
+                "evaluated":                   False,
+                "mean_delta":                  float("nan"),
+                "coherent_sign":               None,
+                "recommended_value":           None,
+                "diagnostic_note":             reason,
+                "delta_per_period":            None,
+                "delta_per_period_per_anchor": None,
+            })
+
+    diagnostic_report = pd.DataFrame(rows)
+
+    # ── Step 6: verbose summary ───────────────────────────────────────────────
+    if verbose:
+        from math import prod as _prod
+
+        orig_count = _prod(len(v) for v in full_grid.values())
+        new_count  = _prod(len(v) for v in reduced_grid.values())
+        reduction  = orig_count / new_count if new_count > 0 else float("inf")
+
+        print("\n=== Stability Analysis v2 Diagnostic Report ===")
+        display_cols = [
+            "flag_name", "evaluated", "mean_delta",
+            "coherent_sign", "recommended_value", "diagnostic_note",
+        ]
+        print(diagnostic_report[display_cols].to_string(index=False))
+
+        print(
+            f"\nGrid: {orig_count} → {new_count} combinations "
+            f"({reduction:.1f}x reduction)"
+        )
+
+        eval_results = list(stability_results.values())
+        if eval_results and all(not r["coherent_sign"] for r in eval_results):
+            print("\n⚠ WARNING: all evaluated flags resulted INCOHERENT.")
+            print("  Stability analysis produced no positive signal. Consider:")
+            print("  - increasing k for finer temporal granularity")
+            print("  - extending [full_start_date, full_end_date] range")
+            print("  - inspecting diagnostic_report for per-anchor details")
+            print("  - reviewing whether base_params centroid is appropriate")
+
+    return reduced_grid, diagnostic_report
+
+def compare_wfo_pipelines(
+    results         : dict,   # {nome: dict_risultati_run_wfo_pipeline}
+    portfolio_title : str  = "Portfolio",
+    benchmark_title : str  = "Benchmark",
+    plot_radar      : bool = True,
+    plot            : bool = True,
+    start_date      : str  = None,
+    end_date        : str  = None,
+    save_plots      : bool = False,
+    plots_dir              = None,
+    apply_gradient  : bool = True,
+) -> "Union[pd.DataFrame, pd.io.formats.style.Styler]":
+    """
+    Confronta N portafogli prodotti da N run di run_wfo_pipeline/run_wfo_pipeline_v2,
+    ciascuno identificato da un nome scelto dall'utente.
+
+    Genera:
+    1. Grafico lineare dei rendimenti cumulativi (N portafogli base + Risk ON/OFF + benchmark).
+    2. Tabella comparativa delle metriche con heatmap (via analyze_portfolio_metrics).
+    3. Radar chart normalizzato su range assoluti (se plot_radar=True).
+
+    Parameters
+    ----------
+    results : dict[str, dict]
+        Mapping nome → dict di ritorno di run_wfo_pipeline / run_wfo_pipeline_v2.
+        Esempio: {"v1": results_std, "v2": results_std_v2}
+        Per ciascuna entry vengono mostrati 'pf_rot' (Risk ON/OFF) e 'pf_rot_base',
+        se presenti e non None.
+    portfolio_title : str   Titolo base usato nelle etichette.
+    benchmark_title : str   Etichetta del benchmark.
+    plot_radar      : bool  Se True genera il radar chart.
+    start_date      : str   Filtro opzionale inizio (es. "2020-01-01").
+    end_date        : str   Filtro opzionale fine   (es. "2024-12-31").
+
+    Returns
+    -------
+    pd.DataFrame  Tabella metriche restituita da analyze_portfolio_metrics.
+    """
+    import plotly.graph_objects as go
+
+    # ------------------------------------------------------------------
+    # Etichette dinamiche, una coppia (Risk ON/OFF, Base) per ciascun nome
+    # ------------------------------------------------------------------
+    PALETTE = [
+        ("#1f77b4", "#aec7e8"),   # blu pieno / chiaro
+        ("#d62728", "#f5a7a7"),   # rosso pieno / chiaro
+        ("#2ca02c", "#98df8a"),   # verde pieno / chiaro
+        ("#9467bd", "#c5b0d5"),   # viola pieno / chiaro
+        ("#ff7f0e", "#ffbb78"),   # arancio pieno / chiaro
+    ]
+
+    cumrets = {}
+    COLORS, DASH, WIDTH = {}, {}, {}
+
+    def _add(pf, label, color, dash, width):
+        if pf is None:
+            return
+        cr = pf.cumulative_returns() + 1
+        cumrets[label] = cr.squeeze() if isinstance(cr, pd.DataFrame) else cr
+        COLORS[label] = color
+        DASH[label]   = dash
+        WIDTH[label]  = width
+
+    pf_bm = None
+    for i, (name, res) in enumerate(results.items()):
+        if res is None:
+            continue
+        color_on, color_base = PALETTE[i % len(PALETTE)]
+
+        lbl_on   = f"{name} \u2013 Risk ON/OFF"
+        lbl_base = f"{name} \u2013 Base"
+
+        _add(res.get('pf_rot'),      lbl_on,   color_on,   "solid", 2.5)
+        _add(res.get('pf_rot_base'), lbl_base, color_base, "dot",   1.5)
+
+        if pf_bm is None:
+            pf_bm = res.get('pf_benchmark') or res.get('pf_benchmark_base')
+
+    if not cumrets:
+        print("Nessun portafoglio disponibile per il confronto.")
+        return pd.DataFrame()
+
+    bm_cumret = None
+    if pf_bm is not None:
+        bm_cr = pf_bm.cumulative_returns() + 1
+        bm_cumret = bm_cr.squeeze() if isinstance(bm_cr, pd.DataFrame) else bm_cr
+
+    COLORS[benchmark_title] = "#7f7f7f"
+    DASH[benchmark_title]   = "dash"
+    WIDTH[benchmark_title]  = 1.5
+
+    port_cumrets = pd.DataFrame(cumrets)
+
+    # Filtro data
+    if start_date:
+        port_cumrets = port_cumrets[port_cumrets.index >= start_date]
+        if bm_cumret is not None:
+            bm_cumret = bm_cumret[bm_cumret.index >= start_date]
+    if end_date:
+        port_cumrets = port_cumrets[port_cumrets.index <= end_date]
+        if bm_cumret is not None:
+            bm_cumret = bm_cumret[bm_cumret.index <= end_date]
+
+    port_cumrets = port_cumrets.dropna(how='all')
+
+    # ------------------------------------------------------------------
+    # 1. Plot cumulativo
+    # ------------------------------------------------------------------
+    fig = go.Figure()
+    for col in port_cumrets.columns:
+        fig.add_trace(go.Scatter(
+            x    = port_cumrets.index,
+            y    = port_cumrets[col],
+            name = col,
+            mode = "lines",
+            line = dict(
+                color = COLORS.get(col, "#333333"),
+                dash  = DASH.get(col, "solid"),
+                width = WIDTH.get(col, 2),
+            ),
+        ))
+
+    if bm_cumret is not None:
+        bm_aligned = bm_cumret.reindex(port_cumrets.index, method="ffill")
+        fig.add_trace(go.Scatter(
+            x    = bm_aligned.index,
+            y    = bm_aligned.values,
+            name = benchmark_title,
+            mode = "lines",
+            line = dict(
+                color = COLORS[benchmark_title],
+                dash  = DASH[benchmark_title],
+                width = WIDTH[benchmark_title],
+            ),
+        ))
+
+    fig.update_layout(
+        title       = f"Confronto rendimenti cumulativi \u2013 {portfolio_title}",
+        xaxis_title = "Data",
+        yaxis_title = "Rendimento cumulativo (base 1.0)",
+        height      = 550,
+        width       = 1100,
+        template    = "plotly_white",
+        hovermode   = "x unified",
+        legend      = dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+
+    if save_plots and plots_dir is not None:
+        from pathlib import Path as _P
+        _pd = _P(str(plots_dir))
+        _pd.mkdir(parents=True, exist_ok=True)
+        fig.write_image(str(_pd / 'equity_comparison.png'))
+
+    if plot:
+        fig.show()
+
+    # ------------------------------------------------------------------
+    # 2. Tabella metriche + Radar (via analyze_portfolio_metrics)
+    # ------------------------------------------------------------------
+    metrics_df = analyze_portfolio_metrics(
+        port_cumrets     = port_cumrets,
+        portfolio_name   = f"Confronto WFO \u2013 {portfolio_title}",
+        benchmark_cumret = bm_cumret,
+        freq             = "D",
+        sort_by          = "CAGR (%)",
+        ascending        = False,
+        plot_radar       = plot_radar,
+        radar_metrics    = "all",
+        highlight_best   = True,
+        apply_gradient   = apply_gradient,
+    )
+
+    return metrics_df
+
 
