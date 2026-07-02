@@ -7386,6 +7386,55 @@ def resolve_n_top(asset_type: str = "stock", profile: str = "satellite") -> list
     return _N_TOP_TABLE.get((asset_type, profile), [3, 5, 8])
 
 
+def build_wfo_grid(
+    engine: str = "Momentum",
+    profile: str = "satellite",
+    asset_type: str = "stock",
+) -> dict:
+    """
+    Factory: restituisce la griglia WFO per l'engine specificato.
+
+    engine='Momentum'    → griglia v1 (momentum_weight con ivol implicito come complemento,
+                           use_acceleration). Compatibile con walk_forward_rotational().
+    engine='Multifactor' → griglia v2 (4 pesi indipendenti, nessun use_acceleration).
+                           Compatibile con walk_forward_rotational_v2().
+
+    I valori rispecchiano le griglie definite nel notebook §4 / §4v2.
+    """
+    if engine not in ("Momentum", "Multifactor"):
+        raise ValueError(
+            f"build_wfo_grid: engine={engine!r} non riconosciuto. "
+            "Valori validi: 'Momentum' | 'Multifactor'."
+        )
+
+    n_top = resolve_n_top(asset_type, profile)
+
+    _base: dict = {
+        "rebalance_frequency":     ["QE", "ME"],
+        "momentum_lookback_days":  [10, 20, 40, 60],
+        "riskparity_lookback_days": [10, 20, 40, 60],
+        "n_top":                   n_top,
+        "filter_ema":              [True, False],
+        "filter_volatility":       [True, False],
+        "filter_min_momentum":     [True, False],
+    }
+
+    if engine == "Momentum":
+        return {
+            **_base,
+            "use_acceleration": [True, False],
+            "momentum_weight":  [0.5, 0.7, 1.0],
+        }
+    else:  # Multifactor
+        return {
+            **_base,
+            "momentum_weight":  [0, 0.5, 1.0],
+            "ivol_weight":      [0, 0.5, 1.0],
+            "sortino_weight":   [0, 0.5, 1.0],
+            "idio_weight":      [0, 0.5, 1.0],
+        }
+
+
 def build_cluster_grids(
     cluster_labels : dict,
     cluster_groups : dict,
@@ -11409,10 +11458,16 @@ def reduce_grid_via_stability(
     k: int = 3,
     n_top_anchors: list[int] | None = None,
     verbose: bool = True,
+    benchmark_prices: pd.Series | None = None,
 ) -> tuple[dict, pd.DataFrame]:
     """
     Reduce a WFO parameter grid by fixing binary flags to their stability-
     recommended values, then return the reduced grid and a diagnostic report.
+
+    Supports both Momentum (v1) and Multifactor (v2) engines: if the grid
+    contains any of ivol_weight / sortino_weight / idio_weight, the v2
+    evaluator (_evaluate_flag_stability_v2) is used automatically.
+    benchmark_prices is forwarded to the v2 evaluator when idio_weight > 0.
     """
     if metric not in _STABILITY_METRICS:
         raise ValueError(
@@ -11472,21 +11527,37 @@ def reduce_grid_via_stability(
             base_params[key] = vals[0]
 
     # ── Step 3: run stability analysis for each eligible flag ─────────────────
+    _v2_keys = {"ivol_weight", "sortino_weight", "idio_weight"}
+    _is_v2   = bool(_v2_keys & set(full_grid.keys()))
+
     stability_results: dict = {}
     for flag_name in eligible_flags:
         if verbose:
             print(f"  Evaluating {flag_name} …")
 
-        stability_results[flag_name] = _evaluate_flag_stability(
-            ptf_config=ptf_config,
-            base_params=base_params,
-            flag_name=flag_name,
-            full_start_date=full_start_date,
-            full_end_date=full_end_date,
-            metric=metric,
-            k=k,
-            n_top_anchors=anchors,
-        )
+        if _is_v2:
+            stability_results[flag_name] = _evaluate_flag_stability_v2(
+                ptf_config=ptf_config,
+                base_params=base_params,
+                flag_name=flag_name,
+                full_start_date=full_start_date,
+                full_end_date=full_end_date,
+                metric=metric,
+                k=k,
+                n_top_anchors=anchors,
+                benchmark_prices=benchmark_prices,
+            )
+        else:
+            stability_results[flag_name] = _evaluate_flag_stability(
+                ptf_config=ptf_config,
+                base_params=base_params,
+                flag_name=flag_name,
+                full_start_date=full_start_date,
+                full_end_date=full_end_date,
+                metric=metric,
+                k=k,
+                n_top_anchors=anchors,
+            )
 
     # ── Step 4: build reduced_grid ────────────────────────────────────────────
     reduced_grid: dict = {}
@@ -16510,179 +16581,6 @@ def _evaluate_flag_stability_v2(
     }
 
 
-def reduce_grid_via_stability_v2(
-    ptf_config: dict,
-    full_grid: dict,
-    full_start_date,
-    full_end_date,
-    metric: str = "CAGR",
-    k: int = 3,
-    n_top_anchors: list[int] | None = None,
-    verbose: bool = True,
-    benchmark_prices: pd.Series | None = None,
-) -> tuple[dict, pd.DataFrame]:
-    """
-    V2 counterpart of reduce_grid_via_stability() (riga 11599).
-
-    Reduces a v2 WFO parameter grid by fixing binary filter flags to their
-    stability-recommended values.  Step 3 calls _evaluate_flag_stability_v2()
-    (which uses EngineParamsV2 + run_rotational_engine_v2) so that flag deltas
-    are computed with the actual v2 multi-factor score.
-
-    Steps 1, 2, 4, 5, 6 are structurally identical to v1 and handle v2-specific
-    weight keys (ivol_weight, sortino_weight, idio_weight) generically.
-
-    'use_acceleration' is in _STABILITY_FLAGS but absent from v2 grids; Step 1
-    excludes it automatically (not eligible if not in full_grid).
-    """
-    if metric not in _STABILITY_METRICS:
-        raise ValueError(
-            f"metric={metric!r} is not supported. "
-            f"Supported: {sorted(_STABILITY_METRICS)}."
-        )
-
-    requested_anchors = list(n_top_anchors) if n_top_anchors is not None else [3, 5, 8]
-    stocks_data: pd.DataFrame = ptf_config["stocks_data"]
-
-    universe_size = len(stocks_data.columns)
-    margin = 3
-    max_allowed_anchor = universe_size - margin
-
-    if max_allowed_anchor < 1:
-        raise ValueError(
-            f"Universe too small: {universe_size} tickers available. "
-            f"Need at least {margin + 1} tickers to run stability analysis "
-            f"with margin={margin}."
-        )
-
-    anchors = [a for a in requested_anchors if a <= max_allowed_anchor]
-
-    if not anchors:
-        anchors = [max_allowed_anchor]
-    elif max_allowed_anchor not in anchors:
-        anchors = sorted(set(anchors + [max_allowed_anchor]))
-    else:
-        anchors = sorted(set(anchors))
-
-    if verbose and anchors != requested_anchors:
-        print(
-            f"[WARN] n_top_anchors adattato automaticamente: "
-            f"richiesto={requested_anchors}, usato={anchors}, "
-            f"universe_size={universe_size}, margin={margin}"
-        )
-
-    # ── Step 1: identify eligible flags ──────────────────────────────────────
-    eligible_flags = [
-        flag for flag in sorted(_STABILITY_FLAGS)
-        if flag in full_grid
-        and True in full_grid[flag]
-        and False in full_grid[flag]
-    ]
-
-    # ── Step 2: build centroid base_params ───────────────────────────────────
-    base_params: dict = {}
-    for key, vals in full_grid.items():
-        if key in _STABILITY_FLAGS:
-            base_params[key] = False
-        elif all(isinstance(v, bool) for v in vals):
-            base_params[key] = False
-        elif all(isinstance(v, (int, float)) for v in vals):
-            median_val = float(np.median(vals))
-            base_params[key] = min(vals, key=lambda v: abs(v - median_val))
-        else:
-            base_params[key] = vals[0]
-
-    # ── Step 3: run v2 stability analysis for each eligible flag ─────────────
-    stability_results: dict = {}
-    for flag_name in eligible_flags:
-        if verbose:
-            print(f"  Evaluating {flag_name} (v2) …")
-
-        stability_results[flag_name] = _evaluate_flag_stability_v2(
-            ptf_config=ptf_config,
-            base_params=base_params,
-            flag_name=flag_name,
-            full_start_date=full_start_date,
-            full_end_date=full_end_date,
-            metric=metric,
-            k=k,
-            n_top_anchors=anchors,
-            benchmark_prices=benchmark_prices,
-        )
-
-    # ── Step 4: build reduced_grid ────────────────────────────────────────────
-    reduced_grid: dict = {}
-    for key, vals in full_grid.items():
-        if key in stability_results:
-            reduced_grid[key] = [stability_results[key]["recommended_value"]]
-        else:
-            reduced_grid[key] = list(vals)
-
-    # ── Step 5: build diagnostic_report ──────────────────────────────────────
-    rows = []
-    for flag in sorted(_STABILITY_FLAGS):
-        if flag in stability_results:
-            r = stability_results[flag]
-            rows.append({
-                "flag_name":                   flag,
-                "evaluated":                   True,
-                "mean_delta":                  r["mean_delta"],
-                "coherent_sign":               r["coherent_sign"],
-                "recommended_value":           r["recommended_value"],
-                "diagnostic_note":             r["diagnostic_note"],
-                "delta_per_period":            str(r["delta_per_period"]),
-                "delta_per_period_per_anchor": str(r["delta_per_period_per_anchor"]),
-            })
-        else:
-            if flag in full_grid:
-                reason = f"skipped: single value {full_grid[flag]}"
-            else:
-                reason = "skipped: not in full_grid"
-
-            rows.append({
-                "flag_name":                   flag,
-                "evaluated":                   False,
-                "mean_delta":                  float("nan"),
-                "coherent_sign":               None,
-                "recommended_value":           None,
-                "diagnostic_note":             reason,
-                "delta_per_period":            None,
-                "delta_per_period_per_anchor": None,
-            })
-
-    diagnostic_report = pd.DataFrame(rows)
-
-    # ── Step 6: verbose summary ───────────────────────────────────────────────
-    if verbose:
-        from math import prod as _prod
-
-        orig_count = _prod(len(v) for v in full_grid.values())
-        new_count  = _prod(len(v) for v in reduced_grid.values())
-        reduction  = orig_count / new_count if new_count > 0 else float("inf")
-
-        print("\n=== Stability Analysis v2 Diagnostic Report ===")
-        display_cols = [
-            "flag_name", "evaluated", "mean_delta",
-            "coherent_sign", "recommended_value", "diagnostic_note",
-        ]
-        print(diagnostic_report[display_cols].to_string(index=False))
-
-        print(
-            f"\nGrid: {orig_count} → {new_count} combinations "
-            f"({reduction:.1f}x reduction)"
-        )
-
-        eval_results = list(stability_results.values())
-        if eval_results and all(not r["coherent_sign"] for r in eval_results):
-            print("\n⚠ WARNING: all evaluated flags resulted INCOHERENT.")
-            print("  Stability analysis produced no positive signal. Consider:")
-            print("  - increasing k for finer temporal granularity")
-            print("  - extending [full_start_date, full_end_date] range")
-            print("  - inspecting diagnostic_report for per-anchor details")
-            print("  - reviewing whether base_params centroid is appropriate")
-
-    return reduced_grid, diagnostic_report
-
 def compare_wfo_pipelines(
     results         : dict,   # {nome: dict_risultati_run_wfo_pipeline}
     portfolio_title : str  = "Portfolio",
@@ -16884,10 +16782,19 @@ def run_wfo_pipeline_v2(
     profile: str = 'satellite',
     asset_type: str = 'stock',
     benchmark_prices: 'pd.Series | None' = None,
+    engine: str = 'Momentum',
+    autoreduce: bool = True,
 ) -> dict:
     """
-    Mirror del path use_clustering=False di run_wfo_pipeline() (riga 7967),
-    che usa il motore v2 multi-fattore internamente.
+    Entry point unificato per entrambi gli engine WFO.
+
+    engine='Momentum'     → usa walk_forward_rotational (v1, mono-fattore).
+    engine='Multifactor'  → usa walk_forward_rotational_v2 (4 pesi).
+    autoreduce=True       → chiama reduce_grid_via_stability sulla griglia
+                            prima del WFO (usa il periodo start_date/end_date).
+
+    Mirror del path use_clustering=False di run_wfo_pipeline() (riga 7967)
+    per engine='Momentum'; motore v2 multi-fattore per engine='Multifactor'.
 
     Sostituzioni rispetto al Path B di run_wfo_pipeline:
       - walk_forward_rotational()           → walk_forward_rotational_v2()
@@ -16954,10 +16861,15 @@ def run_wfo_pipeline_v2(
         selected_k, summary_df, pf_rot, pf_benchmark, sel_tickers,
         pf_rot_base, pf_benchmark_base, sel_tickers_base.
     """
+    if engine not in ("Momentum", "Multifactor"):
+        raise ValueError(
+            f"run_wfo_pipeline_v2: engine={engine!r} non riconosciuto. "
+            "Valori validi: 'Momentum' | 'Multifactor'."
+        )
+
     if param_grid is None:
         raise ValueError(
-            "run_wfo_pipeline_v2: param_grid è obbligatorio. "
-            "Usare build_cluster_grids_v2() per generare la griglia v2."
+            "run_wfo_pipeline_v2: param_grid è obbligatorio."
         )
 
     results = {}
@@ -16970,10 +16882,44 @@ def run_wfo_pipeline_v2(
         selected_k=None,
     ))
 
+    if autoreduce:
+        print("\n=======================================================")
+        print("STEP 0 — Stability Analysis (autoreduce=True)")
+        print("=======================================================")
+        _ptf_config_auto = {
+            "stocks_data": stocks_data_raw[tickers],
+            "init_cash": init_cash,
+        }
+        param_grid, _ = reduce_grid_via_stability(
+            ptf_config=_ptf_config_auto,
+            full_grid=param_grid,
+            full_start_date=start_date,
+            full_end_date=end_date,
+            benchmark_prices=benchmark_prices if engine == "Multifactor" else None,
+            verbose=verbose,
+        )
+
     print("\n=======================================================")
-    print("STEP 1 — WFO Standard v2 (multi-fattore)")
+    print(f"STEP 1 — WFO Standard ({engine})")
     print("=======================================================")
-    summary_df_final = walk_forward_rotational_v2(
+    if engine == "Momentum":
+        summary_df_final = walk_forward_rotational(
+            stocks_data=stocks_data_raw[tickers],
+            param_grid=param_grid,
+            ratio=ratio,
+            metric=metric,
+            start_date=start_date,
+            end_date=end_date,
+            benchmark_data=benchmark_data_raw,
+            n_jobs=cores,
+            backend='loky',
+            plot=False,
+            verbose=verbose,
+            debug=False,
+            force_next_year_params=force_next_year_params,
+        )
+    else:  # Multifactor
+        summary_df_final = walk_forward_rotational_v2(
             stocks_data=stocks_data_raw[tickers],
             benchmark_data=benchmark_data_raw,
             param_grid=param_grid,
@@ -16989,11 +16935,11 @@ def run_wfo_pipeline_v2(
             force_next_year_params=force_next_year_params,
             benchmark_prices=benchmark_prices,
         )
-    
+
     results['summary_df'] = summary_df_final
 
     if wfo_audit_path_base is not None:
-        _audit_path = f"{wfo_audit_path_base}.std_raw_v2.csv"
+        _audit_path = f"{wfo_audit_path_base}.std_raw_{engine.lower()}.csv"
         save_rotational_wfo_summary(
             summary_df=summary_df_final,
             start_date=start_date,
@@ -17006,23 +16952,23 @@ def run_wfo_pipeline_v2(
             extra_meta=dict(
                 audit_only=True,
                 use_clustering=False,
-                engine='v2',
+                engine=engine,
                 note=(
-                    "calcolo grezzo v2 — NON usato dal runtime; il file "
+                    "calcolo grezzo — NON usato dal runtime; il file "
                     "runtime e' salvato separatamente dopo la decisione "
                     "manuale (JN §8)"
                 ),
             ),
         )
-        print(f"[run_wfo_pipeline_v2] Audit trail salvato: {_audit_path}")
-        my_display(summary_df_final, title=f"WFO Results Standard v2 — {portfolio_title}")
+        print(f"[run_wfo_pipeline_v2] Audit trail salvato ({engine}): {_audit_path}")
+        my_display(summary_df_final, title=f"WFO Results {engine} — {portfolio_title}")
 
     print("\n=======================================================")
     print("STEP 2 — Costruzione portafogli v2")
     print("=======================================================")
 
     if risk_on_off and risk_off_data is not None:
-        print("\n▶ Portafoglio CON Risk ON/OFF (v2)...")
+        print(f"\n▶ Portafoglio CON Risk ON/OFF ({engine})...")
 
         duplicate_risk_off_cols = stocks_data.columns.intersection(risk_off_data.columns)
         if len(duplicate_risk_off_cols) > 0 and verbose:
@@ -17038,23 +16984,35 @@ def run_wfo_pipeline_v2(
             dup_cols = oos_data.columns[oos_data.columns.duplicated()].tolist()
             raise ValueError(f"Duplicate columns in oos_data after concat: {dup_cols}")
 
-        sel = collect_wfo_selections_v2(
-            summary_df=summary_df_final,
-            stocks_data=oos_data,
-            benchmark_prices=benchmark_prices,
-        )
-
-        pf_rot, pf_bm = build_portfolio_from_selections(
-            selections=sel,
-            stocks_data=oos_data,
-            benchmark_data=benchmark_data,
-            benchmark_title=benchmark_title,
-            init_cash=init_cash,
-            start_date=analisys_start_date,
-            end_date=analisys_end_date,
-            plot=plot,
-            portfolio_name=f"{portfolio_title} – Standard v2 OOS WFO - Total Return (Risk on/off)",
-        )
+        if engine == "Momentum":
+            pf_rot, pf_bm, sel = build_rotational_portfolios_from_wfo_result(
+                summary_df=summary_df_final,
+                stocks_data=oos_data,
+                benchmark_data=benchmark_data,
+                benchmark_title=benchmark_title,
+                portfolio_name=f"{portfolio_title} – Standard OOS WFO - Total Return (Risk on/off)",
+                init_cash=init_cash,
+                start_date=analisys_start_date,
+                end_date=analisys_end_date,
+                plot=plot,
+            )
+        else:  # Multifactor
+            sel = collect_wfo_selections_v2(
+                summary_df=summary_df_final,
+                stocks_data=oos_data,
+                benchmark_prices=benchmark_prices,
+            )
+            pf_rot, pf_bm = build_portfolio_from_selections(
+                selections=sel,
+                stocks_data=oos_data,
+                benchmark_data=benchmark_data,
+                benchmark_title=benchmark_title,
+                init_cash=init_cash,
+                start_date=analisys_start_date,
+                end_date=analisys_end_date,
+                plot=plot,
+                portfolio_name=f"{portfolio_title} – Standard v2 OOS WFO - Total Return (Risk on/off)",
+            )
 
         results['pf_rot'] = pf_rot
         results['pf_benchmark'] = pf_bm
@@ -17080,25 +17038,37 @@ def run_wfo_pipeline_v2(
         results['pf_benchmark'] = None
         results['sel_tickers'] = None
 
-    print("\n▶ Portafoglio SENZA Risk ON/OFF (v2)...")
+    print(f"\n▶ Portafoglio SENZA Risk ON/OFF ({engine})...")
 
-    sel_base = collect_wfo_selections_v2(
-        summary_df=summary_df_final,
-        stocks_data=stocks_data,
-        benchmark_prices=benchmark_prices,
-    )
-
-    pf_rot_base, pf_bm_base = build_portfolio_from_selections(
-        selections=sel_base,
-        stocks_data=stocks_data,
-        benchmark_data=benchmark_data,
-        benchmark_title=benchmark_title,
-        init_cash=init_cash,
-        start_date=analisys_start_date,
-        end_date=analisys_end_date,
-        plot=plot,
-        portfolio_name=f"{portfolio_title} – Standard v2 OOS WFO - Total Return",
-    )
+    if engine == "Momentum":
+        pf_rot_base, pf_bm_base, sel_base = build_rotational_portfolios_from_wfo_result(
+            summary_df=summary_df_final,
+            stocks_data=stocks_data,
+            benchmark_data=benchmark_data,
+            benchmark_title=benchmark_title,
+            portfolio_name=f"{portfolio_title} – Standard OOS WFO - Total Return",
+            init_cash=init_cash,
+            start_date=analisys_start_date,
+            end_date=analisys_end_date,
+            plot=plot,
+        )
+    else:  # Multifactor
+        sel_base = collect_wfo_selections_v2(
+            summary_df=summary_df_final,
+            stocks_data=stocks_data,
+            benchmark_prices=benchmark_prices,
+        )
+        pf_rot_base, pf_bm_base = build_portfolio_from_selections(
+            selections=sel_base,
+            stocks_data=stocks_data,
+            benchmark_data=benchmark_data,
+            benchmark_title=benchmark_title,
+            init_cash=init_cash,
+            start_date=analisys_start_date,
+            end_date=analisys_end_date,
+            plot=plot,
+            portfolio_name=f"{portfolio_title} – Standard v2 OOS WFO - Total Return",
+        )
 
     results['pf_rot_base'] = pf_rot_base
     results['pf_benchmark_base'] = pf_bm_base
@@ -17111,7 +17081,7 @@ def run_wfo_pipeline_v2(
         })
         analyze_portfolio_metrics(
             port_cumrets=port_cumrets_base,
-            portfolio_name=f"{portfolio_title} (Base, v2)",
+            portfolio_name=f"{portfolio_title} (Base, {engine})",
             freq='D',
             sort_by='CAGR (%)',
             ascending=False,
@@ -17120,15 +17090,17 @@ def run_wfo_pipeline_v2(
             highlight_best=True,
         )
 
+    results['engine'] = engine
+
     print("\n=======================================================")
-    print("PIPELINE v2 COMPLETATA")
+    print(f"PIPELINE {engine} COMPLETATA")
     print("=======================================================")
 
     _expected_keys = {
         'selected_k', 'sel_tickers_base', 'merged_summary', 'sel_tickers',
         'summary_df', 'cluster_grids', 'pf_rot', 'cluster_result',
         'pf_rot_base', 'pf_benchmark_base', 'regime', 'pf_benchmark',
-        'wfo_results',
+        'wfo_results', 'engine',
     }
     assert set(results.keys()) == _expected_keys, (
         f"run_wfo_pipeline_v2: chiavi mancanti o in eccesso: "
