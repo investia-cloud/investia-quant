@@ -3962,11 +3962,33 @@ def analyze_rebalance_actions_for_report(
     def _fmt(lst, title, icon):
         if not lst:
             return ""
-        s = f"<h3>{icon} {title} ({len(lst)}):</h3><ul>"
+        s = f"<h3>{icon} {title} ({len(lst)}):</h3>"
+        s += (
+            "<table style='border-collapse: collapse; margin-top: 8px;'>"
+            "<thead>"
+            "<tr style='background-color: #f0f0f0;'>"
+            "<th style='border: 1px solid #ccc; padding: 6px 12px; text-align: left;'>Ticker</th>"
+            "<th style='border: 1px solid #ccc; padding: 6px 12px; text-align: left;'>Company</th>"
+            "<th style='border: 1px solid #ccc; padding: 6px 12px; text-align: left;'>ISIN</th>"
+            "</tr>"
+            "</thead>"
+            "<tbody>"
+        )
         for t in lst:
-            company = company_data.at[t, "Company"] if t in company_data.index else ""
-            s += f"<li><b>{t}</b> – {company}</li>"
-        return s + "</ul>"
+            if t in company_data.index:
+                company = company_data.at[t, "Company"] if pd.notna(company_data.at[t, "Company"]) else ""
+                isin    = company_data.at[t, "ISIN"]    if pd.notna(company_data.at[t, "ISIN"])    else ""
+            else:
+                company = ""
+                isin    = ""
+            s += (
+                "<tr>"
+                f"<td style='border: 1px solid #ccc; padding: 6px 12px;'>{t}</td>"
+                f"<td style='border: 1px solid #ccc; padding: 6px 12px;'>{company}</td>"
+                f"<td style='border: 1px solid #ccc; padding: 6px 12px; font-family: monospace;'>{isin}</td>"
+                "</tr>"
+            )
+        return s + "</tbody></table>"
 
     html += _fmt(to_keep, "Da mantenere", "📌")
     html += _fmt(to_sell, "Da vendere", "❌")
@@ -8417,10 +8439,10 @@ def run_wfo_pipeline(
               f"({'Cluster' if use_clustering else 'Standard'}): {_audit_path}")
 
     # ----------------------------------------------------------
-    # STEP 6 — Portafogli
+    # STEP 2 — Portafogli
     # ----------------------------------------------------------
     print("\n" + "="*55)
-    print("STEP 6 — Costruzione portafogli")
+    print("STEP 2 — Costruzione portafogli")
     print("="*55)
 
     # Pool eleggibili per-finestra (solo path Cluster)
@@ -8593,9 +8615,15 @@ def run_wfo_pipeline(
             highlight_best=True,
         )
 
-    # Confronto selezioni
+ 
     if risk_on_off and results['sel_tickers'] is not None:
-        print("\n▶ Confronto selezioni Risk ON/OFF vs Base...")
+        
+        # ----------------------------------------------------------
+        # STEP 3 — Confronto selezioni
+        # ----------------------------------------------------------
+        print("\n" + "="*55)
+        print("STEP 3 — Confronto selezioni")
+        print("="*55)
 
         _ = compare_selection_columns(
             results['sel_tickers'],
@@ -8606,11 +8634,6 @@ def run_wfo_pipeline(
             compare_only_common_dates=True,
             sort_table_by_diff=True
         )
-        # _ = compare_selection_columns(
-        #     results['sel_tickers'],
-        #     results['sel_tickers_base'],
-        #     column="tickers"
-        # )
 
     print("\n" + "="*55)
     print("PIPELINE COMPLETATA")
@@ -16835,3 +16858,281 @@ def compare_wfo_pipelines(
     return metrics_df
 
 
+def run_wfo_pipeline_v2(
+    stocks_data_raw: pd.DataFrame,
+    stocks_data: pd.DataFrame,
+    benchmark_data,
+    benchmark_data_raw,
+    tickers: list,
+    risk_off_data: pd.DataFrame = None,
+    ratio: str = '3:1',
+    metric: str = 'Sharpe Ratio',
+    start_date: str = None,
+    end_date: str = None,
+    cores: int = 1,
+    verbose: bool = False,
+    force_next_year_params: bool = True,
+    param_grid: dict = None,
+    wfo_audit_path_base=None,
+    portfolio_title: str = 'Portfolio',
+    benchmark_title: str = 'Benchmark',
+    init_cash: float = 100_000,
+    analisys_start_date: str = None,
+    analisys_end_date: str = None,
+    risk_on_off: bool = True,
+    plot: bool = True,
+    profile: str = 'satellite',
+    asset_type: str = 'stock',
+    benchmark_prices: 'pd.Series | None' = None,
+) -> dict:
+    """
+    Mirror del path use_clustering=False di run_wfo_pipeline() (riga 7967),
+    che usa il motore v2 multi-fattore internamente.
+
+    Sostituzioni rispetto al Path B di run_wfo_pipeline:
+      - walk_forward_rotational()           → walk_forward_rotational_v2()
+      - build_rotational_portfolios_from_wfo_result() →
+            collect_wfo_selections_v2() + build_portfolio_from_selections()
+      - audit suffix "std_raw"              → "std_raw_v2"
+
+    Struttura di ritorno identica al Path B (13 chiavi):
+      cluster_result, cluster_grids, wfo_results, regime, merged_summary,
+      selected_k  — tutti None (nessun clustering)
+      summary_df, pf_rot, pf_benchmark, sel_tickers,
+      pf_rot_base, pf_benchmark_base, sel_tickers_base
+
+    Parameters
+    ----------
+    stocks_data_raw : pd.DataFrame
+        Prezzi grezzi (passati a walk_forward_rotational_v2 come universo WFO).
+    stocks_data : pd.DataFrame
+        Prezzi normalizzati (usati per il replay selezioni OOS in STEP 6).
+    benchmark_data : pd.Series
+        Prezzi benchmark per build_portfolio_from_selections.
+    benchmark_data_raw : pd.Series
+        Prezzi benchmark grezzi passati a walk_forward_rotational_v2.
+    tickers : list
+        Lista ticker dell'universo.
+    risk_off_data : pd.DataFrame, optional
+        Asset risk-off per il portafoglio con Risk ON/OFF switching.
+    ratio : str
+        Rapporto train:test per WFO, es. "3:1".
+    metric : str
+        Metrica di ottimizzazione per walk_forward_rotational_v2,
+        es. "Sharpe Ratio".
+    start_date, end_date : str, optional
+        Finestra temporale WFO.
+    cores : int
+        n_jobs per la parallelizzazione WFO.
+    verbose : bool
+    force_next_year_params : bool
+    param_grid : dict
+        Griglia v2 obbligatoria (contiene ivol_weight, sortino_weight,
+        idio_weight oltre ai parametri v1).
+    wfo_audit_path_base : str | Path | None
+        Se fornito, salva audit CSV come {wfo_audit_path_base}.std_raw_v2.csv.
+    portfolio_title : str
+    benchmark_title : str
+    init_cash : float
+    analisys_start_date, analisys_end_date : str, optional
+        Finestra di analisi per i portafogli OOS (può differire da start/end WFO).
+    risk_on_off : bool
+        Se True e risk_off_data non None, costruisce anche il portafoglio
+        con asset risk-off.
+    plot : bool
+    profile : str
+        "satellite" o "core" — usato solo per etichette.
+    asset_type : str
+    benchmark_prices : pd.Series, optional
+        Prezzi del benchmark per il calcolo del fattore idiosincratico (idio).
+        Obbligatorio solo se idio_weight > 0 nella griglia.
+
+    Returns
+    -------
+    dict con 13 chiavi (compatibile con compare_wfo_pipelines):
+        cluster_result, cluster_grids, wfo_results, regime, merged_summary,
+        selected_k, summary_df, pf_rot, pf_benchmark, sel_tickers,
+        pf_rot_base, pf_benchmark_base, sel_tickers_base.
+    """
+    if param_grid is None:
+        raise ValueError(
+            "run_wfo_pipeline_v2: param_grid è obbligatorio. "
+            "Usare build_cluster_grids_v2() per generare la griglia v2."
+        )
+
+    results = {}
+    results.update(dict(
+        cluster_result=None,
+        cluster_grids=None,
+        wfo_results=None,
+        regime=None,
+        merged_summary=None,
+        selected_k=None,
+    ))
+
+    print("\n=======================================================")
+    print("STEP 1 — WFO Standard v2 (multi-fattore)")
+    print("=======================================================")
+    summary_df_final = walk_forward_rotational_v2(
+            stocks_data=stocks_data_raw[tickers],
+            benchmark_data=benchmark_data_raw,
+            param_grid=param_grid,
+            ratio=ratio,
+            metric=metric,
+            start_date=start_date,
+            end_date=end_date,
+            n_jobs=cores,
+            backend='loky',
+            plot=False,
+            verbose=verbose,
+            debug=False,
+            force_next_year_params=force_next_year_params,
+            benchmark_prices=benchmark_prices,
+        )
+    
+    results['summary_df'] = summary_df_final
+
+    if wfo_audit_path_base is not None:
+        _audit_path = f"{wfo_audit_path_base}.std_raw_v2.csv"
+        save_rotational_wfo_summary(
+            summary_df=summary_df_final,
+            start_date=start_date,
+            end_date=end_date,
+            file_path=_audit_path,
+            param_grid=param_grid,
+            metric=metric,
+            ratio=ratio,
+            force_next_year_params=force_next_year_params,
+            extra_meta=dict(
+                audit_only=True,
+                use_clustering=False,
+                engine='v2',
+                note=(
+                    "calcolo grezzo v2 — NON usato dal runtime; il file "
+                    "runtime e' salvato separatamente dopo la decisione "
+                    "manuale (JN §8)"
+                ),
+            ),
+        )
+        print(f"[run_wfo_pipeline_v2] Audit trail salvato: {_audit_path}")
+        my_display(summary_df_final, title=f"WFO Results Standard v2 — {portfolio_title}")
+
+    print("\n=======================================================")
+    print("STEP 2 — Costruzione portafogli v2")
+    print("=======================================================")
+
+    if risk_on_off and risk_off_data is not None:
+        print("\n▶ Portafoglio CON Risk ON/OFF (v2)...")
+
+        duplicate_risk_off_cols = stocks_data.columns.intersection(risk_off_data.columns)
+        if len(duplicate_risk_off_cols) > 0 and verbose:
+            print(
+                f"[WARN] Rimossi da risk_off_data ticker già presenti in "
+                f"stocks_data: {list(duplicate_risk_off_cols)}"
+            )
+
+        risk_off_clean = risk_off_data.drop(columns=duplicate_risk_off_cols, errors='ignore')
+        oos_data = pd.concat([stocks_data, risk_off_clean], axis=1)
+
+        if oos_data.columns.duplicated().any():
+            dup_cols = oos_data.columns[oos_data.columns.duplicated()].tolist()
+            raise ValueError(f"Duplicate columns in oos_data after concat: {dup_cols}")
+
+        sel = collect_wfo_selections_v2(
+            summary_df=summary_df_final,
+            stocks_data=oos_data,
+            benchmark_prices=benchmark_prices,
+        )
+
+        pf_rot, pf_bm = build_portfolio_from_selections(
+            selections=sel,
+            stocks_data=oos_data,
+            benchmark_data=benchmark_data,
+            benchmark_title=benchmark_title,
+            init_cash=init_cash,
+            start_date=analisys_start_date,
+            end_date=analisys_end_date,
+            plot=plot,
+            portfolio_name=f"{portfolio_title} – Standard v2 OOS WFO - Total Return (Risk on/off)",
+        )
+
+        results['pf_rot'] = pf_rot
+        results['pf_benchmark'] = pf_bm
+        results['sel_tickers'] = sel
+
+        if plot:
+            port_cumrets = pd.DataFrame({
+                portfolio_title: pf_rot.cumulative_returns() + 1,
+                benchmark_title: pf_bm.cumulative_returns() + 1,
+            })
+            analyze_portfolio_metrics(
+                port_cumrets=port_cumrets,
+                portfolio_name=portfolio_title,
+                freq='D',
+                sort_by='CAGR (%)',
+                ascending=False,
+                plot_radar=True,
+                radar_metrics='all',
+                highlight_best=True,
+            )
+    else:
+        results['pf_rot'] = None
+        results['pf_benchmark'] = None
+        results['sel_tickers'] = None
+
+    print("\n▶ Portafoglio SENZA Risk ON/OFF (v2)...")
+
+    sel_base = collect_wfo_selections_v2(
+        summary_df=summary_df_final,
+        stocks_data=stocks_data,
+        benchmark_prices=benchmark_prices,
+    )
+
+    pf_rot_base, pf_bm_base = build_portfolio_from_selections(
+        selections=sel_base,
+        stocks_data=stocks_data,
+        benchmark_data=benchmark_data,
+        benchmark_title=benchmark_title,
+        init_cash=init_cash,
+        start_date=analisys_start_date,
+        end_date=analisys_end_date,
+        plot=plot,
+        portfolio_name=f"{portfolio_title} – Standard v2 OOS WFO - Total Return",
+    )
+
+    results['pf_rot_base'] = pf_rot_base
+    results['pf_benchmark_base'] = pf_bm_base
+    results['sel_tickers_base'] = sel_base
+
+    if plot:
+        port_cumrets_base = pd.DataFrame({
+            portfolio_title: pf_rot_base.cumulative_returns() + 1,
+            benchmark_title: pf_bm_base.cumulative_returns() + 1,
+        })
+        analyze_portfolio_metrics(
+            port_cumrets=port_cumrets_base,
+            portfolio_name=f"{portfolio_title} (Base, v2)",
+            freq='D',
+            sort_by='CAGR (%)',
+            ascending=False,
+            plot_radar=True,
+            radar_metrics='all',
+            highlight_best=True,
+        )
+
+    print("\n=======================================================")
+    print("PIPELINE v2 COMPLETATA")
+    print("=======================================================")
+
+    _expected_keys = {
+        'selected_k', 'sel_tickers_base', 'merged_summary', 'sel_tickers',
+        'summary_df', 'cluster_grids', 'pf_rot', 'cluster_result',
+        'pf_rot_base', 'pf_benchmark_base', 'regime', 'pf_benchmark',
+        'wfo_results',
+    }
+    assert set(results.keys()) == _expected_keys, (
+        f"run_wfo_pipeline_v2: chiavi mancanti o in eccesso: "
+        f"{set(results.keys()) ^ _expected_keys}"
+    )
+
+    return results
