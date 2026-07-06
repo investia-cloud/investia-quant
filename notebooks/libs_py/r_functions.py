@@ -27,11 +27,15 @@ from typing import Union, List, Dict, Tuple, Any
 from itertools import product, combinations
 
 import warnings
+import requests
+import re
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 from dataclasses import dataclass, field
 from typing import Optional
+
+from pathlib import Path
 
 """
 rotational_engine.py
@@ -12111,6 +12115,7 @@ def generate_ptf_card_md(
     wfo_config: dict,
     engines: dict,
     output_path,
+    analysis_md: str,
 ) -> _Path_doc:
     '''
     Genera la PTF Card markdown (sezioni 1-9) e la scrive su output_path.
@@ -12241,16 +12246,8 @@ def generate_ptf_card_md(
         'dalla struttura dell\'universe o dal Risk ON/OFF.*\n\n---\n\n'
     )
 
-    # ── Sezioni 6+7: generate via LLM (N-ario, zero riferimenti Standard/Cluster) ─
-    _sec_llm = generate_relazione_llm(
-        engines         = engines,
-        wfo_config      = wfo_config,
-        portfolio_title = portfolio_title,
-        year            = year,
-        profile         = profile,
-        benchmark_title = benchmark,
-        benchmark_pf    = benchmark_pf,
-    )
+    # ── Sezioni 6+7: testo LLM passato dall'esterno (generato una sola volta dal chiamante) ─
+    _sec_llm = analysis_md
 
     _card = (
         f"# PTF Card — {portfolio_title} {year}\n\n---\n\n"
@@ -12291,6 +12288,58 @@ def generate_ptf_card_md(
     
 
 
+def _load_anthropic_key(key_file=None) -> str:
+    key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not key and key_file is not None and key_file.exists():
+        m = re.search(r"ANTHROPIC_API_KEY=['\"]?([^'\"]+)['\"]?", key_file.read_text())
+        if m:
+            key = m.group(1).strip()
+    return key
+
+
+ANTHROPIC_MODEL = "claude-sonnet-4-6"
+_TRANSIENT_CODES = {429, 502, 503, 529}
+
+
+_K_STRATEGY_KEY_SH = Path(__file__).parent.parent.parent / "K-Strategy-Agent" / "Claude-K-strategy_Key.sh"
+
+
+def _call_claude(system_prompt: str, user_message: str, max_tokens: int = 4096) -> str:
+    api_key = _load_anthropic_key(key_file=_K_STRATEGY_KEY_SH)
+    if not api_key:
+        raise RuntimeError("ANTHROPIC_API_KEY non trovata.")
+    payload = {"model": ANTHROPIC_MODEL, "max_tokens": max_tokens,
+               "system": system_prompt,
+               "messages": [{"role": "user", "content": user_message}]}
+    last_exc = None
+    for attempt in range(1, 4):
+        try:
+            resp = requests.post(
+                "https://api.anthropic.com/v1/messages", json=payload,
+                headers={"Content-Type": "application/json",
+                         "x-api-key": api_key,
+                         "anthropic-version": "2023-06-01"},
+                timeout=600)
+            if resp.status_code in _TRANSIENT_CODES:
+                time.sleep(10 * attempt)
+                last_exc = requests.HTTPError(response=resp)
+                continue
+            resp.raise_for_status()
+            _data = resp.json()
+            if _data.get("stop_reason") == "max_tokens":
+                raise RuntimeError(
+                    "generate_relazione_llm: risposta troncata per max_tokens — "
+                    "aumentare il limite o ridurre il contenuto richiesto."
+                )
+            return _data["content"][0]["text"].strip()
+        except requests.HTTPError as e:
+            last_exc = e
+            if e.response is not None and e.response.status_code not in _TRANSIENT_CODES:
+                raise
+            time.sleep(10 * attempt)
+    raise RuntimeError("generate_relazione_llm: API irraggiungibile dopo 3 tentativi") from last_exc
+
+
 def generate_relazione_llm(
     *,
     engines: dict,
@@ -12312,11 +12361,7 @@ def generate_relazione_llm(
     Solleva ValueError se il testo generato contiene numeri assenti dal payload
     (guardrail anti-allucinazione). Propagare l'eccezione — non ingoiarla.
     """
-    import anthropic as _anthropic
     import json as _json
-    import re as _re
-
-    client = _anthropic.Anthropic()
 
     def _pf_metrics(pf):
         if pf is None:
@@ -12373,6 +12418,10 @@ Regole non negoziabili:
   un risultato "tipico". Quando il MaxDD realizzato è peggiore del
   MaxDD mediano bootstrap, dillo altrettanto chiaramente.
 - Nessun consiglio di investimento esplicito.
+- Non usare simboli decorativi (■, •, ▪, o altri bullet/quadratini)
+  prima o dopo verdetti (PASS/FAIL/Sì/No) o valori numerici nelle
+  tabelle — scrivi solo il testo/numero, la formattazione visiva è
+  gestita dal renderer.
 - Stile: diretto, quantitativo, zero riempitivo.
 """
 
@@ -12390,18 +12439,48 @@ Regole non negoziabili:
         f'gestore userebbe per decidere quale engine (se uno) promuovere.\n'
     )
 
-    response = client.messages.create(
-        model=model,
-        max_tokens=4000,
-        system=system_prompt,
-        messages=[{"role": "user", "content": user_prompt}],
-    )
-    analysis_md = response.content[0].text
+    analysis_md = _call_claude(system_prompt, user_prompt, max_tokens=64000)
 
-    payload_numbers = set(_re.findall(r"-?\d+(?:[.,]\d+)?", payload_json))
-    output_numbers  = set(_re.findall(r"-?\d+(?:[.,]\d+)?", analysis_md))
-    sospetti = output_numbers - payload_numbers - {"6", "7"}
+    # ── Guardrail anti-allucinazione (numericamente consapevole) ────────────
+    # Normalizza il segno meno unicode prima di estrarre i token numerici.
+    _NORM = str.maketrans({'−': '-', '–': '-'})
+
+    def _numtokens(text: str) -> list[str]:
+        return re.findall(r"-?\d+(?:[.,]\d+)?", text.translate(_NORM))
+
+    def _accettabile(token: str, payload_floats: frozenset, tol: float = 0.01) -> bool:
+        cleaned = token.replace(',', '.')
+        try:
+            v = float(cleaned)
+        except ValueError:
+            return True
+        candidati = {v, v / 100, v * 100}
+        # Separatore migliaia italiano: "62.208" → 62208, "2.304" → 2304
+        # Solo se parte intera != "0" e parte decimale esattamente 3 cifre.
+        if cleaned.count('.') == 1:
+            base = cleaned.lstrip('-')
+            parts = base.split('.')
+            if parts[0] != '0' and len(parts[1]) == 3 and parts[1].isdigit():
+                sign = -1.0 if cleaned.startswith('-') else 1.0
+                big = sign * float(parts[0] + parts[1])
+                candidati.update({big, big / 100, big * 100})
+        return any(abs(c - p) < tol * max(abs(p), 1.0) for c in candidati for p in payload_floats)
+
+    _pf_raw: list[float] = []
+    for _t in _numtokens(payload_json):
+        try:
+            _pf_raw.append(float(_t.replace(',', '.')))
+        except ValueError:
+            pass
+    payload_floats = frozenset(_pf_raw)
+
+    _ALWAYS_ACCEPT = {"6", "7"}
+    sospetti = {t for t in _numtokens(analysis_md)
+                if t not in _ALWAYS_ACCEPT and not _accettabile(t, payload_floats)}
     if sospetti:
+        debug_path = Path("/tmp/relazione_llm_debug.md")
+        debug_path.write_text(analysis_md)
+        print(f"[DEBUG] Testo generato salvato in {debug_path} per ispezione")
         raise ValueError(
             f"generate_relazione_llm: numeri nel testo generato assenti dal "
             f"payload di input: {sospetti}. Output scartato — probabile "
@@ -12430,9 +12509,15 @@ def _md_to_flowables(md_text: str, styles: dict) -> list:
     from reportlab.platypus import Paragraph, Spacer, Table, TableStyle, HRFlowable
     from reportlab.lib.units import mm
 
-    st_section = styles['section']
-    st_subsec  = styles['subsec']
-    st_body    = styles['body']
+    st_section    = styles['section']
+    st_subsec     = styles['subsec']
+    st_body       = styles['body']
+    # h4/h5 fallback: derive from st_subsec if not provided by caller
+    st_subsubsec  = styles.get('subsubsec')
+    if st_subsubsec is None:
+        from reportlab.lib.styles import ParagraphStyle as _ParagraphStyle
+        st_subsubsec = _ParagraphStyle('_h4_fallback', parent=st_subsec,
+                                       fontSize=9, spaceBefore=4, spaceAfter=2)
 
     def _escape_html(s):
         return s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
@@ -12458,6 +12543,16 @@ def _md_to_flowables(md_text: str, styles: dict) -> list:
 
         if stripped.startswith('---'):
             flowables.append(HRFlowable(width='100%', thickness=0.5))
+            i += 1
+            continue
+
+        if stripped.startswith('##### '):
+            flowables.append(Paragraph(_inline(stripped[6:]), st_subsubsec))
+            i += 1
+            continue
+
+        if stripped.startswith('#### '):
+            flowables.append(Paragraph(_inline(stripped[5:]), st_subsubsec))
             i += 1
             continue
 
@@ -12487,25 +12582,88 @@ def _md_to_flowables(md_text: str, styles: dict) -> list:
             data_lines = [l for l in tbl_lines
                           if not all(c in '|-: ' for c in l)]
             if data_lines:
+                from reportlab.lib import colors as _rlc
+                raw_rows = []
                 tbl_data = []
                 for tl in data_lines:
                     cells = [c.strip() for c in tl.strip('|').split('|')]
+                    raw_rows.append(cells)
                     tbl_data.append([Paragraph(_inline(c), st_body) for c in cells])
                 if tbl_data:
-                    n_cols = max(len(r) for r in tbl_data)
-                    col_w_val = styles.get('content_w', 150 * mm) / max(n_cols, 1)
-                    tbl = Table(tbl_data, colWidths=[col_w_val] * n_cols)
-                    from reportlab.lib import colors as _rlc
-                    tbl.setStyle(TableStyle([
-                        ('GRID',        (0, 0), (-1, -1), 0.4, _rlc.grey),
-                        ('BACKGROUND',  (0, 0), (-1, 0),  _rlc.HexColor('#E8ECF4')),
-                        ('FONTNAME',    (0, 0), (-1, 0),  'Helvetica-Bold'),
-                        ('FONTSIZE',    (0, 0), (-1, -1), 8),
-                        ('TOPPADDING',  (0, 0), (-1, -1), 3),
+                    n_cols     = max(len(r) for r in tbl_data)
+                    content_w  = styles.get('content_w', 150 * mm)
+
+                    # Proportional column widths (sum of stripped char lengths)
+                    col_lens = [0] * n_cols
+                    for row in raw_rows:
+                        for j, txt in enumerate(row[:n_cols]):
+                            col_lens[j] += len(
+                                txt.replace('✅', '').replace('❌', '').strip()
+                            )
+                    _total = sum(col_lens) or n_cols
+                    _MIN   = 12 * mm
+                    col_widths = [max(_MIN, content_w * (l / _total)) for l in col_lens]
+                    _cw_sum    = sum(col_widths)
+                    col_widths = [w * content_w / _cw_sum for w in col_widths]
+
+                    # Conditional background using palette from §4 (_RL_GREEN/_RL_RED)
+                    _C_GREEN = _rlc.HexColor(_RL_GREEN)
+                    _C_RED   = _rlc.HexColor(_RL_RED)
+
+                    def _vbg(raw: str) -> object | None:
+                        # Strip emoji then non-alphanumeric chars at both ends
+                        s = raw.replace('✅', '').replace('❌', '')
+                        s = re.sub(r'^[^\w]+|[^\w]+$', '', s).strip().upper()
+                        _GREEN = ('PASS', 'PROMOTED', 'SÌ', 'SI', 'SIGNIFICATIVO',
+                                  'SIGNIFICATIVA')
+                        _RED   = ('FAIL', 'NOT PROMOTED', 'NO',
+                                  'NON SIGNIFICATIVO', 'NON SIGNIFICATIVA',
+                                  'NOT SIGNIFICANT')
+                        if any(s.startswith(t) for t in _GREEN):
+                            return _C_GREEN
+                        if any(s.startswith(t) for t in _RED):
+                            return _C_RED
+                        return None
+
+                    ts_cmds = [
+                        ('GRID',          (0, 0), (-1, -1), 0.4, _rlc.grey),
+                        ('BACKGROUND',    (0, 0), (-1,  0), _rlc.HexColor('#E8ECF4')),
+                        ('FONTNAME',      (0, 0), (-1,  0), 'Helvetica-Bold'),
+                        ('FONTSIZE',      (0, 0), (-1, -1), 8),
+                        ('TOPPADDING',    (0, 0), (-1, -1), 3),
                         ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
-                        ('LEFTPADDING',  (0, 0), (-1, -1), 4),
-                        ('RIGHTPADDING', (0, 0), (-1, -1), 4),
-                    ]))
+                        ('LEFTPADDING',   (0, 0), (-1, -1), 4),
+                        ('RIGHTPADDING',  (0, 0), (-1, -1), 4),
+                    ]
+                    # Apply cell colors starting from row 1 (skip header)
+                    for ri, row_raw in enumerate(raw_rows):
+                        if ri == 0:
+                            continue
+                        for ci, cell_txt in enumerate(row_raw[:n_cols]):
+                            bg = _vbg(cell_txt)
+                            if bg is not None:
+                                ts_cmds.append(
+                                    ('BACKGROUND', (ci, ri), (ci, ri), bg)
+                                )
+
+                    # FIX 3: floor verdict-only columns to width of "PROMOTED"
+                    from reportlab.pdfbase.pdfmetrics import stringWidth as _sw
+                    _VERDICT_FLOOR = _sw("PROMOTED", "Helvetica", 8) + 8  # +8pt padding
+                    _verdict_adj = False
+                    for _j in range(n_cols):
+                        _vcells = [raw_rows[_ri][_j]
+                                   for _ri in range(1, len(raw_rows))
+                                   if _j < len(raw_rows[_ri])]
+                        if _vcells and all(_vbg(c) is not None for c in _vcells):
+                            if col_widths[_j] < _VERDICT_FLOOR:
+                                col_widths[_j] = _VERDICT_FLOOR
+                                _verdict_adj = True
+                    if _verdict_adj:
+                        _cw2 = sum(col_widths)
+                        col_widths = [w * content_w / _cw2 for w in col_widths]
+
+                    tbl = Table(tbl_data, colWidths=col_widths)
+                    tbl.setStyle(TableStyle(ts_cmds))
                     flowables.append(tbl)
                     flowables.append(Spacer(1, 2 * mm))
             continue
@@ -13592,6 +13750,7 @@ def generate_relazione_tecnica(
     engines: dict,
     plots_dir,
     output_path,
+    analysis_md: str,
     gen_date: str | None = None,
     survivorship_bias_universe: bool = False,
 ) -> _Path_doc:
@@ -13705,6 +13864,8 @@ def generate_relazione_tecnica(
                        spaceAfter=5, fontName='Helvetica-Bold')
     st_subsec   = _st('_rt_ssec',   fontSize=10.5, textColor=C_NAVY_LT, spaceBefore=7,
                        spaceAfter=3, fontName='Helvetica-Bold')
+    st_subsubsec = ParagraphStyle('_rt_sssec', parent=st_subsec,
+                                  fontSize=9, spaceBefore=4, spaceAfter=2)
     st_body     = _st('_rt_body',   fontSize=9.5, textColor=C_TEXT, spaceAfter=6,
                        alignment=TA_JUSTIFY, leading=14)
     st_caption  = _st('_rt_cap',    fontSize=7.5, textColor=C_NAVY_LT, spaceAfter=6,
@@ -14350,23 +14511,16 @@ def generate_relazione_tecnica(
     from reportlab.platypus import PageBreak as _PB
     story.append(_PB())
 
-    # Sezioni 6+7: generate via LLM (N-ario, zero riferimenti Standard/Cluster)
-    _llm_md = generate_relazione_llm(
-        engines         = engines,
-        wfo_config      = wfo_config,
-        portfolio_title = portfolio_title,
-        year            = year,
-        profile         = profile,
-        benchmark_title = benchmark,
-        benchmark_pf    = benchmark_pf,
-    )
+    # Sezioni 6+7: testo LLM passato dall'esterno (generato una sola volta dal chiamante)
+    _llm_md = analysis_md
     _llm_flowables = _md_to_flowables(
         _llm_md,
         styles={
-            'section':   st_section,
-            'subsec':    st_subsec,
-            'body':      st_body,
-            'content_w': CONTENT_W,
+            'section':    st_section,
+            'subsec':     st_subsec,
+            'subsubsec':  st_subsubsec,
+            'body':       st_body,
+            'content_w':  CONTENT_W,
         },
     )
     story.extend(_llm_flowables)
@@ -14792,6 +14946,16 @@ def run_r_portfolio_analysis(
     _card_path = output_dir / f"{portfolio_title.replace(' ', '_').lower()}_{year}_{profile}.md"
     _pdf_path  = output_dir / f"{portfolio_title}_{year}_{profile}_Relazione_Tecnica.pdf"
 
+    _analysis_md = generate_relazione_llm(
+        engines         = _engines_raw,
+        wfo_config      = _wfo_config,
+        portfolio_title = portfolio_title,
+        year            = year,
+        profile         = profile,
+        benchmark_title = benchmark_title,
+        benchmark_pf    = _benchmark_pf,
+    )
+
     generate_ptf_card_md(
         portfolio_title = portfolio_title,
         year            = year,
@@ -14803,6 +14967,7 @@ def run_r_portfolio_analysis(
         wfo_config      = _wfo_config,
         engines         = _engines_raw,
         output_path     = str(_card_path),
+        analysis_md     = _analysis_md,
     )
 
     # La relazione tecnica PDF è opzionale: la card .md è sempre generata
@@ -14820,6 +14985,7 @@ def run_r_portfolio_analysis(
             engines                    = _engines_raw,
             plots_dir                  = str(plots_dir),
             output_path                = str(_pdf_path),
+            analysis_md                = _analysis_md,
             survivorship_bias_universe = survivorship_bias_universe,
         )
     else:

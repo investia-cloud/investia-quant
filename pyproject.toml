@@ -31,7 +31,6 @@ dependencies = [
     "playwright",
     "pypdf",
     "feedparser",
-    "anthropic",
 ]
 
 [project.optional-dependencies]
