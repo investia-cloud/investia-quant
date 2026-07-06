@@ -40,8 +40,8 @@ Refactoring del motore rotazionale.
 
 ARCHITETTURA A 3 LAYER:
   Layer 1 – Pure functions   : compute_rebal_dates, compute_scores, select_tickers, build_weight_matrix
-  Layer 2 – Orchestrator     : run_rotational_engine  →  RotationalResult (dataclass)
-  Layer 3 – VBT Bridge       : build_portfolio, build_portfolio_from_wfo_summary
+  Layer 2 – Orchestrator     : run_rotational_engine_legacy_cluster  →  RotationalResult (dataclass)
+  Layer 3 – VBT Bridge       : build_portfolio, build_portfolio_from_wfo_summary_legacy_cluster
 
 PRINCIPI:
   - Arità STABILE: niente più tuple a lunghezza variabile.
@@ -52,8 +52,8 @@ PRINCIPI:
   - bottom_tickers sperimentale → rimosso dal core, disponibile come utility separata.
 
 COMPATIBILITÀ COI NOTEBOOK:
-  - build_rotational_portfolios_from_wfo_result  → alias di build_portfolio_from_wfo_summary
-  - collect_selections_from_summary              → alias di collect_wfo_selections
+  - build_rotational_portfolios_from_wfo_result  → alias di build_portfolio_from_wfo_summary_legacy_cluster
+  - collect_selections_from_summary              → alias di collect_wfo_selections_legacy_cluster
   - build_rotational_portfolios_from_selections  → alias di build_portfolio_from_selections
 """
 
@@ -444,7 +444,7 @@ def build_weight_matrix(
 @dataclass
 class RotationalResult:
     """
-    Output strutturato di run_rotational_engine.
+    Output strutturato di run_rotational_engine_legacy_cluster.
 
     Attributes
     ----------
@@ -468,7 +468,7 @@ class RotationalResult:
     params: EngineParams
 
 
-def run_rotational_engine(
+def run_rotational_engine_legacy_cluster(
     prices: pd.DataFrame,
     params: EngineParams,
     vol_cache: dict | None = None,
@@ -641,9 +641,9 @@ def build_portfolio(
     Parameters
     ----------
     result : RotationalResult
-        Output di run_rotational_engine.
+        Output di run_rotational_engine_legacy_cluster.
     prices : pd.DataFrame
-        Prezzi (stesso universo usato per run_rotational_engine).
+        Prezzi (stesso universo usato per run_rotational_engine_legacy_cluster).
     benchmark_data : pd.Series, optional
     init_cash : float
     start_date, end_date : str | Timestamp, optional
@@ -734,7 +734,7 @@ def build_portfolio(
 
 # ─────────────────────────────────────────────────────────────────────────────
 
-def collect_wfo_selections(
+def collect_wfo_selections_legacy_cluster(
     summary_df: pd.DataFrame,
     stocks_data: pd.DataFrame,
     benchmark_data: pd.Series | None = None,
@@ -746,7 +746,7 @@ def collect_wfo_selections(
 
     Per ogni finestra temporale in summary_df:
       1. Calcola i parametri del motore dalla riga del summary.
-      2. Esegue run_rotational_engine sulla slice di prezzo corretta
+      2. Esegue run_rotational_engine_legacy_cluster sulla slice di prezzo corretta
          (con buffer storico per garantire il lookback).
       3. Tiene solo le selezioni nella finestra [start, end].
       4. NON fa doppio carry-forward: le selezioni già contengono il flag 'carried'.
@@ -823,7 +823,7 @@ def collect_wfo_selections(
                               f"{len(keep)}/{len(stocks.columns)} ticker")
 
         # ── run engine sulla slice ────────────────────────────────────────────
-        engine_result = run_rotational_engine(
+        engine_result = run_rotational_engine_legacy_cluster(
             prices=slice_prices,
             params=params,
             debug=debug,
@@ -870,7 +870,7 @@ def collect_wfo_selections(
 
 # ─────────────────────────────────────────────────────────────────────────────
 
-def build_portfolio_from_wfo_summary(
+def build_portfolio_from_wfo_summary_legacy_cluster(
     summary_df: pd.DataFrame,
     stocks_data: pd.DataFrame,
     benchmark_data: pd.Series,
@@ -889,7 +889,7 @@ def build_portfolio_from_wfo_summary(
     Funzione di alto livello per i Notebook.
 
     Pipeline completa:
-      1. collect_wfo_selections  → selections DataFrame
+      1. collect_wfo_selections_legacy_cluster  → selections DataFrame
       2. build_portfolio_from_selections → (pf_rot, pf_bh)
 
     Returns
@@ -897,7 +897,7 @@ def build_portfolio_from_wfo_summary(
     (pf_rot, pf_bh, selections)
         selections : pd.DataFrame con colonne tickers, carried, n_passed_filters
     """
-    selections = collect_wfo_selections(
+    selections = collect_wfo_selections_legacy_cluster(
         summary_df=summary_df,
         stocks_data=stocks_data,
         benchmark_data=benchmark_data,
@@ -907,7 +907,7 @@ def build_portfolio_from_wfo_summary(
 
     if selections.empty:
         raise ValueError(
-            "collect_wfo_selections ha restituito un DataFrame vuoto. "
+            "collect_wfo_selections_legacy_cluster ha restituito un DataFrame vuoto. "
             "Controlla summary_df e stocks_data."
         )
 
@@ -1226,8 +1226,8 @@ def _print_report(pf_rot, pf_bh, selections: pd.DataFrame, portfolio_name: str, 
 # ALIAS PER RETROCOMPATIBILITÀ COI NOTEBOOK ESISTENTI
 # ─────────────────────────────────────────────────────────────────────────────
 
-build_rotational_portfolios_from_wfo_result   = build_portfolio_from_wfo_summary
-collect_selections_from_summary               = collect_wfo_selections
+build_rotational_portfolios_from_wfo_result   = build_portfolio_from_wfo_summary_legacy_cluster
+collect_selections_from_summary               = collect_wfo_selections_legacy_cluster
 build_rotational_portfolios_from_selections   = build_portfolio_from_selections
 
 # Funzioni di utilita' per i rotazionali
@@ -1433,7 +1433,7 @@ def precalculate_volatility_multiwindow(
     return vol_dict
 
     
-def walk_forward_rotational(
+def walk_forward_rotational_legacy_cluster(
     stocks_data: pd.DataFrame,
     benchmark_data: pd.Series,
     param_grid: Dict[str, List[Any]],
@@ -1881,7 +1881,7 @@ def walk_forward_rotational(
                 buf_s  = pd.Timestamp(test_start) - pd.Timedelta(days=buffer_days)
                 te_px  = stocks_data.loc[buf_s:test_end]
                 te_bch = benchmark_data.loc[buf_s:test_end]
-                pf_te, *_ = build_rotational_portfolios_vbt(
+                pf_te, *_ = build_rotational_portfolios_vbt_legacy_cluster(
                     stocks_data=te_px,
                     benchmark_data=te_bch,
                     plot=plot,
@@ -2025,9 +2025,9 @@ def walk_forward_rotational(
 
 
 """
-build_rotational_portfolios_vbt.py
+build_rotational_portfolios_vbt_legacy_cluster.py
 ===================================
-Versione migliorata di build_rotational_portfolios_vbt.
+Versione migliorata di build_rotational_portfolios_vbt_legacy_cluster.
 
 MIGLIORAMENTI RISPETTO ALL'ORIGINALE
 -------------------------------------
@@ -2073,7 +2073,7 @@ MIGLIORAMENTI RISPETTO ALL'ORIGINALE
 @dataclass
 class RotationalVbtResult:
     """
-    Output strutturato di build_rotational_portfolios_vbt.
+    Output strutturato di build_rotational_portfolios_vbt_legacy_cluster.
 
     Attributi sempre presenti
     -------------------------
@@ -2201,7 +2201,7 @@ def _build_vbt_bh(bench_px: pd.Series, prices_index: pd.DatetimeIndex, init_cash
 # FUNZIONE PRINCIPALE
 # ─────────────────────────────────────────────────────────────────────────────
 
-def build_rotational_portfolios_vbt(
+def build_rotational_portfolios_vbt_legacy_cluster(
     stocks_data: pd.DataFrame,
     benchmark_data: pd.Series | None = None,
     # ── frequenza e lookback ─────────────────────────────────────────────────
@@ -4798,7 +4798,7 @@ def monte_carlo_ranking_noise(
     Parametri
     ----------
     stocks_data : pd.DataFrame
-        Prezzi storici (stesso formato di build_rotational_portfolios_vbt)
+        Prezzi storici (stesso formato di build_rotational_portfolios_vbt_legacy_cluster)
     benchmark_data : pd.Series, optional
         Benchmark per confronto
     params : dict
@@ -4823,7 +4823,7 @@ def monte_carlo_ranking_noise(
         Progress bar
     build_portfolio_func : Callable, optional
         Funzione custom per build portfolio.
-        Se None, usa build_rotational_portfolios_vbt di default.
+        Se None, usa build_rotational_portfolios_vbt_legacy_cluster di default.
         
     Returns
     -------
@@ -4853,7 +4853,7 @@ def monte_carlo_ranking_noise(
     
     # Set build function (assume disponibile)
     if build_portfolio_func is None:
-            build_portfolio_func = build_rotational_portfolios_vbt
+            build_portfolio_func = build_rotational_portfolios_vbt_legacy_cluster
 
     
     # =========================================================================
@@ -5552,7 +5552,7 @@ def monte_carlo_wfo_per_window(
     benchmark_data : pd.Series
         Benchmark completo
     wfo_summary : pd.DataFrame
-        Output di walk_forward_rotational() con colonne:
+        Output di walk_forward_rotational_legacy_cluster() con colonne:
         - Index: Window string (es. "2020-01-01→2020-12-31 | 2021-01-01→2021-12-31")
         - Parametri: rebalance_frequency, n_top, momentum_lookback_days, etc.
         - TestStart, TestEnd: date OOS (se presenti, altrimenti parsate da Index)
@@ -5763,7 +5763,7 @@ def monte_carlo_wfo_per_window(
             try:
                 # Build con noise usando monkey-patch interno
                 # NOTA: build_rotational_portfolios_from_wfo_result chiama
-                # build_rotational_portfolios_vbt internamente, quindi
+                # build_rotational_portfolios_vbt_legacy_cluster internamente, quindi
                 # il monkey-patch su pd.Series.rank funziona
                 
                 original_rank = pd.Series.rank
@@ -6970,7 +6970,7 @@ def plot_dendrogram_colored(Z, labels, n_clusters, ax, palette=None):
     return cluster_colors  # restituisce la palette per allineare lo scatter
 
     
-def analyze_and_cluster_universe(
+def analyze_and_cluster_universe_legacy_cluster(
     prices            : pd.DataFrame,
     n_clusters        : int  = 3,
     lookback_days     : int  = 252,
@@ -7017,7 +7017,7 @@ def analyze_and_cluster_universe(
 
     if metrics_df.empty:
         raise ValueError(
-            f"analyze_and_cluster_universe: nessun ticker ha dati sufficienti "
+            f"analyze_and_cluster_universe_legacy_cluster: nessun ticker ha dati sufficienti "
             f"(ret ha {len(ret)} righe, soglia minima=60). "
             f"Riduci lookback_days o verifica i dati in ingresso."
         )
@@ -7281,7 +7281,7 @@ def analyze_and_cluster_universe(
     )
 
 
-def plot_cluster_heatmap(
+def plot_cluster_heatmap_legacy_cluster(
     cluster_result : dict,
     stocks_data    : pd.DataFrame,
     lookback_days  : int  = 252,
@@ -7295,7 +7295,7 @@ def plot_cluster_heatmap(
 
     Parameters
     ----------
-    cluster_result : output di analyze_and_cluster_universe (chiavi: cluster_groups, cluster_labels)
+    cluster_result : output di analyze_and_cluster_universe_legacy_cluster (chiavi: cluster_groups, cluster_labels)
     stocks_data    : prezzi storici — stessa sorgente passata al WFO
     lookback_days  : finestra in giorni — DEVE corrispondere al lookback_days del run WFO
     save_path      : se fornito, salva la figura nel path indicato (dpi=150)
@@ -7310,7 +7310,7 @@ def plot_cluster_heatmap(
         sorted_t.extend([t for t in cluster_groups[cid] if t in stocks_data.columns])
 
     if not sorted_t:
-        print("plot_cluster_heatmap: nessun ticker disponibile in stocks_data — skip")
+        print("plot_cluster_heatmap_legacy_cluster: nessun ticker disponibile in stocks_data — skip")
         return
 
     ret_sub = (stocks_data[sorted_t]
@@ -7355,7 +7355,7 @@ def plot_cluster_heatmap(
     plt.show()
 
 
-def _build_cluster_pool_labels(profile: str, regime_val: int) -> set:
+def _build_cluster_pool_labels_legacy_cluster(profile: str, regime_val: int) -> set:
     """
     Ritorna le label cluster eleggibili come pool di selezione per una finestra,
     in base a profile e regime (1=ON, 0=OFF).
@@ -7390,17 +7390,20 @@ def build_wfo_grid(
     engine: str = "Momentum",
     profile: str = "satellite",
     asset_type: str = "stock",
-) -> dict:
+) -> list:
     """
-    Factory: restituisce la griglia WFO per l'engine specificato.
+    Factory: restituisce la griglia WFO per l'engine specificato come lista
+    di combinazioni già espanse (ogni dict = una combinazione completa di parametri).
 
-    engine='Momentum'    → griglia v1 (momentum_weight con ivol implicito come complemento,
-                           use_acceleration). Compatibile con walk_forward_rotational().
-    engine='Multifactor' → griglia v2 (4 pesi indipendenti, nessun use_acceleration).
-                           Compatibile con walk_forward_rotational_v2().
-
-    I valori rispecchiano le griglie definite nel notebook §4 / §4v2.
+    engine='Momentum'    → 3 combinazioni paired (momentum_weight ∈ {0.5, 0.7, 1.0},
+                           ivol_weight = 1 - momentum_weight, sortino/idio = 0).
+                           Compatibile con walk_forward_rotational().
+    engine='Multifactor' → prodotto cartesiano completo dei 4 pesi ∈ {0, 0.5, 1.0}
+                           (81 combinazioni peso × dimensioni base).
+                           Compatibile con walk_forward_rotational().
     """
+    from itertools import product as _product
+
     if engine not in ("Momentum", "Multifactor"):
         raise ValueError(
             f"build_wfo_grid: engine={engine!r} non riconosciuto. "
@@ -7409,33 +7412,50 @@ def build_wfo_grid(
 
     n_top = resolve_n_top(asset_type, profile)
 
-    _base: dict = {
-        "rebalance_frequency":     ["QE", "ME"],
-        "momentum_lookback_days":  [10, 20, 40, 60],
-        "riskparity_lookback_days": [10, 20, 40, 60],
-        "n_top":                   n_top,
-        "filter_ema":              [True, False],
-        "filter_volatility":       [True, False],
-        "filter_min_momentum":     [True, False],
-    }
+    _base_keys = [
+        "rebalance_frequency",
+        "momentum_lookback_days",
+        "riskparity_lookback_days",
+        "n_top",
+        "filter_ema",
+        "filter_volatility",
+        "filter_min_momentum",
+    ]
+    _base_vals = [
+        ["QE", "ME"],
+        [10, 20, 40, 60],
+        [10, 20, 40, 60],
+        n_top,
+        [True, False],
+        [True, False],
+        [True, False],
+    ]
+
+    combos: list = []
 
     if engine == "Momentum":
-        return {
-            **_base,
-            "use_acceleration": [True, False],
-            "momentum_weight":  [0.5, 0.7, 1.0],
-        }
+        _weight_pairs = [
+            {"momentum_weight": 0.5, "ivol_weight": 0.5, "sortino_weight": 0.0, "idio_weight": 0.0},
+            {"momentum_weight": 0.7, "ivol_weight": 0.3, "sortino_weight": 0.0, "idio_weight": 0.0},
+            {"momentum_weight": 1.0, "ivol_weight": 0.0, "sortino_weight": 0.0, "idio_weight": 0.0},
+        ]
+        for base_combo in _product(*_base_vals):
+            base_dict = dict(zip(_base_keys, base_combo))
+            for wp in _weight_pairs:
+                combos.append({**base_dict, **wp})
     else:  # Multifactor
-        return {
-            **_base,
-            "momentum_weight":  [0, 0.5, 1.0],
-            "ivol_weight":      [0, 0.5, 1.0],
-            "sortino_weight":   [0, 0.5, 1.0],
-            "idio_weight":      [0, 0.5, 1.0],
-        }
+        _w_vals = [0.0, 0.5, 1.0]
+        _w_keys = ["momentum_weight", "ivol_weight", "sortino_weight", "idio_weight"]
+        for base_combo in _product(*_base_vals):
+            base_dict = dict(zip(_base_keys, base_combo))
+            for w_combo in _product(*[_w_vals] * 4):
+                wd = dict(zip(_w_keys, w_combo))
+                combos.append({**base_dict, **wd})
+
+    return combos
 
 
-def build_cluster_grids(
+def build_cluster_grids_legacy_cluster(
     cluster_labels : dict,
     cluster_groups : dict,
     n_top_min      : int   = 2,           # mantenuto per compatibilità, non più usato
@@ -7514,7 +7534,7 @@ def build_cluster_grids(
     return grids
 
 
-def run_clustered_wfo(
+def run_clustered_wfo_legacy_cluster(
     cluster_groups  : dict,
     cluster_grids   : dict,
     cluster_labels  : dict,
@@ -7537,7 +7557,7 @@ def run_clustered_wfo(
         print(f"{'='*55}")
 
         try:
-            summary_df = walk_forward_rotational(
+            summary_df = walk_forward_rotational_legacy_cluster(
                 stocks_data            = cluster_data,
                 param_grid             = grid,
                 ratio                  = wfo_kwargs.get('ratio', 'sharpe'),
@@ -7572,7 +7592,7 @@ def run_clustered_wfo(
     return results
 
 
-def compute_market_regime(
+def compute_market_regime_legacy_cluster(
     prices        : pd.DataFrame,
     equity_tickers: list,
     ema_fast      : int   = 50,
@@ -7630,7 +7650,7 @@ def aggregate_cluster_portfolios(
 
         print(f"\nCostruzione portafoglio Cluster {cid} [{label}]...")
         try:
-            pf_rot, pf_bh, selections = build_portfolio_from_wfo_summary(
+            pf_rot, pf_bh, selections = build_portfolio_from_wfo_summary_legacy_cluster(
                 summary_df      = res['summary_df'],
                 stocks_data     = cluster_data,
                 benchmark_data  = benchmark_data,
@@ -7723,10 +7743,10 @@ def aggregate_cluster_portfolios(
     )
 
 
-# cluster_grids = build_cluster_grids(cluster_result['cluster_labels'])
+# cluster_grids = build_cluster_grids_legacy_cluster(cluster_result['cluster_labels'])
 
 
-def merge_cluster_summary_dfs(
+def merge_cluster_summary_dfs_legacy_cluster(
     wfo_results    : dict,
     cluster_labels : dict,
     regime         : pd.Series,
@@ -7937,7 +7957,7 @@ def merge_cluster_summary_dfs(
     return merged
 
 
-def get_clean_summary_df(merged: pd.DataFrame) -> pd.DataFrame:
+def get_clean_summary_df_legacy_cluster(merged: pd.DataFrame) -> pd.DataFrame:
     """
     Rimuove le colonne di debug prima di passare a
     build_rotational_portfolios_from_wfo_result.
@@ -7948,7 +7968,7 @@ def get_clean_summary_df(merged: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def _compute_cluster_checkpoints(
+def _compute_cluster_checkpoints_legacy_cluster(
     prices_df        : pd.DataFrame,
     full_start_date,
     full_end_date,
@@ -7983,7 +8003,7 @@ def _compute_cluster_checkpoints(
         print(f"[CLUSTER CP {i+1}/{k}] Partizione su dati fino al "
               f"{chk_date.date()} ({len(px_chk)} trading days)…")
         try:
-            result = analyze_and_cluster_universe(
+            result = analyze_and_cluster_universe_legacy_cluster(
                 prices            = px_chk,
                 n_clusters        = n_clusters,
                 lookback_days     = len(px_chk) + 1,  # usa tutti i dati disponibili
@@ -8009,7 +8029,7 @@ def _compute_cluster_checkpoints(
     return checkpoints
 
 
-def _cluster_partition_for_window(window_start_date, checkpoints: list) -> dict:
+def _cluster_partition_for_window_legacy_cluster(window_start_date, checkpoints: list) -> dict:
     """
     Returns the cluster_result from the most recent checkpoint with
     checkpoint_date <= window_start_date.
@@ -8035,7 +8055,7 @@ def _cluster_partition_for_window(window_start_date, checkpoints: list) -> dict:
     return best
 
 
-def run_wfo_pipeline(
+def run_wfo_pipeline_legacy_cluster(
     # Dati
     stocks_data_raw  : pd.DataFrame,
     stocks_data      : pd.DataFrame,
@@ -8196,7 +8216,7 @@ def run_wfo_pipeline(
             if verbose:
                 print(f"[CLUSTER CONTROL] Tentativo clustering con k={k_try}")
 
-            candidate_result = analyze_and_cluster_universe(
+            candidate_result = analyze_and_cluster_universe_legacy_cluster(
                 prices            = prices_df,
                 n_clusters        = k_try,
                 lookback_days     = lookback_days,
@@ -8241,7 +8261,7 @@ def run_wfo_pipeline(
                     "Fallback forzato a k=2."
                 )
 
-            cluster_result = analyze_and_cluster_universe(
+            cluster_result = analyze_and_cluster_universe_legacy_cluster(
                 prices            = prices_df,
                 n_clusters        = 2,
                 lookback_days     = lookback_days,
@@ -8272,7 +8292,7 @@ def run_wfo_pipeline(
                 else None
             )
 
-            plot_cluster_heatmap(
+            plot_cluster_heatmap_legacy_cluster(
                 cluster_result = cluster_result,
                 stocks_data    = prices_df,
                 lookback_days  = lookback_days,
@@ -8286,7 +8306,7 @@ def run_wfo_pipeline(
             print("\n" + "="*55)
             print("STEP 1b — Cluster checkpoint espandenti (k=3)")
             print("="*55)
-            _cluster_checkpoints = _compute_cluster_checkpoints(
+            _cluster_checkpoints = _compute_cluster_checkpoints_legacy_cluster(
                 prices_df         = prices_df,
                 full_start_date   = prices_df.index.min(),
                 full_end_date     = prices_df.index.max(),
@@ -8327,7 +8347,7 @@ def run_wfo_pipeline(
         print("STEP 2 — Griglie WFO per cluster")
         print("="*55)
 
-        cluster_grids = build_cluster_grids(
+        cluster_grids = build_cluster_grids_legacy_cluster(
             cluster_labels = cluster_result['cluster_labels'],
             cluster_groups = cluster_result['cluster_groups'],
             n_top_min      = n_top_min,
@@ -8343,7 +8363,7 @@ def run_wfo_pipeline(
         print("STEP 3 — WFO per cluster")
         print("="*55)
 
-        wfo_results = run_clustered_wfo(
+        wfo_results = run_clustered_wfo_legacy_cluster(
             cluster_groups  = cluster_result['cluster_groups'],
             cluster_grids   = cluster_grids,
             cluster_labels  = cluster_result['cluster_labels'],
@@ -8379,7 +8399,7 @@ def run_wfo_pipeline(
             print(f"⚠️  Nessun ticker '{_lbl_str}' — uso tutti")
             equity_tickers = tickers
 
-        regime = compute_market_regime(
+        regime = compute_market_regime_legacy_cluster(
             prices          = stocks_data[equity_tickers].dropna(how='all'),
             equity_tickers  = equity_tickers,
         )
@@ -8391,14 +8411,14 @@ def run_wfo_pipeline(
         print("STEP 5 — Merge summary_df aggregato")
         print("="*55)
 
-        merged_summary = merge_cluster_summary_dfs(
+        merged_summary = merge_cluster_summary_dfs_legacy_cluster(
             wfo_results    = wfo_results,
             cluster_labels = cluster_result['cluster_labels'],
             regime         = regime,
             profile        = profile,
         )
 
-        summary_df_final = get_clean_summary_df(merged_summary)
+        summary_df_final = get_clean_summary_df_legacy_cluster(merged_summary)
 
         df_disp = summary_df_final.rename(columns=short_map)
         my_display(
@@ -8429,7 +8449,7 @@ def run_wfo_pipeline(
         if param_grid is None:
             raise ValueError("use_clustering=False richiede param_grid")
 
-        summary_df_final = walk_forward_rotational(
+        summary_df_final = walk_forward_rotational_legacy_cluster(
             stocks_data            = stocks_data_raw[tickers],
             param_grid             = param_grid,
             ratio                  = ratio,
@@ -8484,7 +8504,7 @@ def run_wfo_pipeline(
                 ),
             },
         )
-        print(f"[run_wfo_pipeline] Audit trail salvato "
+        print(f"[run_wfo_pipeline_legacy_cluster] Audit trail salvato "
               f"({'Cluster' if use_clustering else 'Standard'}): {_audit_path}")
 
     # ----------------------------------------------------------
@@ -8514,14 +8534,14 @@ def run_wfo_pipeline(
                   f"identico per tutte le finestre OFF.")
         for _win, _row in merged_summary.iterrows():
             _regime_val  = int(_row.get('_regime', 1))
-            _pool_labels = _build_cluster_pool_labels(profile, _regime_val)
+            _pool_labels = _build_cluster_pool_labels_legacy_cluster(profile, _regime_val)
 
             # Partizione per-finestra (expanding) o statica (legacy)
             if _use_expanding:
                 try:
                     _win_start_str = str(_win).split("→")[0].strip()
                     _win_start     = pd.Timestamp(_win_start_str)
-                    _cp_res        = _cluster_partition_for_window(_win_start, _cluster_checkpoints)
+                    _cp_res        = _cluster_partition_for_window_legacy_cluster(_win_start, _cluster_checkpoints)
                     _cmap_win    = _cp_res['cluster_map']
                     _clabels_win = _cp_res['cluster_labels']
                 except Exception as _e_cp:
@@ -10031,7 +10051,7 @@ def run_mc_confidence_intervals_rotational(
     ----------
     pf_rot         : vbt.Portfolio  portafoglio principale (con risk on/off se disponibile)
     pf_rot_base    : vbt.Portfolio  portafoglio base (senza risk on/off)
-    regime         : pd.Series 0/1 da compute_market_regime, oppure None
+    regime         : pd.Series 0/1 da compute_market_regime_legacy_cluster, oppure None
     benchmark_data : pd.Series      prezzi giornalieri del benchmark di mercato
     init_cash      : float
     n_simulations  : int            default 1000
@@ -11172,106 +11192,6 @@ def _split_history_into_periods(
     return periods
 
 
-def _evaluate_ptf_on_period(
-    ptf_config: dict,
-    params: "EngineParams",
-    start_date,
-    end_date,
-    metric: str = "CAGR",
-) -> float:
-    """
-    Evaluate a rotational portfolio on a date range and return a scalar metric.
-
-    Runs the rotational engine on a warmup-extended price slice, then builds
-    the VBT portfolio restricted to [start_date, end_date].
-
-    Parameters
-    ----------
-    ptf_config : dict
-        Required keys:
-            - ``stocks_data`` (pd.DataFrame): full price history, trading-day
-              DatetimeIndex, columns = tickers.  Must cover at least
-              [start_date - params.required_warmup_days(), end_date].
-            - ``init_cash`` (float): initial portfolio value.
-        Extra keys are silently ignored.
-    params : EngineParams
-        Single parameter set to evaluate (e.g. best row from wfo_summary_df).
-    start_date : str or pd.Timestamp
-        Inclusive start of the evaluation window.
-    end_date : str or pd.Timestamp
-        Inclusive end of the evaluation window.
-    metric : str, default "CAGR"
-        Performance metric.  One of {"CAGR", "Sharpe", "Calmar"}.
-        All three are higher-is-better.
-
-    Returns
-    -------
-    float
-        Scalar metric value over [start_date, end_date].
-        Returns ``np.nan`` if the equity curve has fewer than 2 points in
-        the window (engine ran but produced no valid data).
-
-    Raises
-    ------
-    ValueError
-        If metric is not in {"CAGR", "Sharpe", "Calmar"} (message includes
-        the received value), or if the price slice for the window is empty.
-    KeyError
-        If ``stocks_data`` or ``init_cash`` are missing from ptf_config.
-
-    Notes
-    -----
-    Metric conventions match ``_mc_compute_metrics`` (academic formulas):
-      CAGR   = (V_end/V_start)^(252/n_days) - 1
-      Sharpe = mean(daily_rets) * 252 / (std * sqrt(252)), rf = 0
-      Calmar = CAGR / abs(MaxDD)
-    These differ from vbt's built-in annualisation; do not mix the two.
-    """
-    if metric not in _STABILITY_METRICS:
-        raise ValueError(
-            f"metric={metric!r} is not supported. "
-            f"Supported metrics: {sorted(_STABILITY_METRICS)}. "
-            f"To use lower-is-better metrics (MaxDD, Volatility, Ulcer), "
-            f"handle sign convention explicitly before calling this function."
-        )
-
-    stocks_data: pd.DataFrame = ptf_config["stocks_data"]
-    init_cash: float = float(ptf_config["init_cash"])
-
-    start = pd.Timestamp(start_date).normalize()
-    end   = pd.Timestamp(end_date).normalize()
-
-    buf_start = start - pd.Timedelta(days=params.required_warmup_days())
-    slice_prices = stocks_data.loc[buf_start:end].copy()
-
-    if slice_prices.empty:
-        raise ValueError(
-            f"Empty price slice for [{buf_start.date()}, {end.date()}]. "
-            f"Ensure ptf_config['stocks_data'] covers at least "
-            f"{buf_start.date()} → {end.date()}."
-        )
-
-    rot_result = run_rotational_engine(slice_prices, params)
-
-    pf_rot, _ = build_portfolio(
-        rot_result,
-        slice_prices,
-        init_cash=init_cash,
-        start_date=start,
-        end_date=end,
-        plot=False,
-        show_report=False,
-    )
-
-    equity = pf_rot.value()
-    if isinstance(equity, pd.DataFrame):
-        equity = equity.squeeze()
-
-    if len(equity) < 2:
-        return np.nan
-
-    return float(_mc_compute_metrics(equity)[metric])
-
 _STABILITY_FLAGS = frozenset({
     "filter_ema",
     "filter_volatility",
@@ -11279,175 +11199,6 @@ _STABILITY_FLAGS = frozenset({
     "use_acceleration",
 })
 
-
-def _evaluate_flag_stability(
-    ptf_config: dict,
-    base_params: dict,
-    flag_name: str,
-    full_start_date,
-    full_end_date,
-    metric: str = "CAGR",
-    k: int = 3,
-    n_top_anchors: list[int] | None = None,
-) -> dict:
-    """
-    Evaluate whether toggling a binary flag improves performance consistently
-    across k contiguous sub-periods of the portfolio history.
-
-    For each sub-period and each value of n_top in n_top_anchors, runs the
-    rotational engine twice (flag=True vs flag=False) and records the delta.
-    Aggregates per-period deltas across anchors, then classifies the flag as
-    coherently beneficial, coherently harmful, or unstable.
-
-    Parameters
-    ----------
-    ptf_config : dict
-        Required keys: ``stocks_data`` (pd.DataFrame), ``init_cash`` (float).
-        Passed directly to ``_evaluate_ptf_on_period``.
-    base_params : dict
-        Base parameter set (e.g. a row of wfo_summary_df as a plain dict).
-        ``flag_name`` and ``n_top`` are overridden internally; all other keys
-        are passed through to ``EngineParams.from_dict``.
-    flag_name : str
-        The boolean flag to test. Must be one of:
-        ``{"filter_ema", "filter_volatility", "filter_min_momentum",
-        "use_acceleration"}``.
-    full_start_date : str or pd.Timestamp
-        Inclusive start of the full evaluation range.
-    full_end_date : str or pd.Timestamp
-        Inclusive end of the full evaluation range.
-    metric : str, default "CAGR"
-        Performance metric. One of ``{"CAGR", "Sharpe", "Calmar"}``.
-    k : int, default 3
-        Number of contiguous sub-periods.
-    n_top_anchors : list of int or None, default None
-        Values of n_top over which to average the flag delta.
-        Defaults to [3, 5, 8] if None.
-
-    Returns
-    -------
-    dict with keys:
-        flag_name, metric, k, n_top_anchors,
-        delta_per_period (list[float], length k),
-        delta_per_period_per_anchor (list[list[float]], shape k × len(anchors)),
-        mean_delta (float),
-        coherent_sign (bool),
-        recommended_value (bool),
-        diagnostic_note (str).
-
-    Raises
-    ------
-    ValueError
-        If flag_name not in the supported whitelist, or metric not supported.
-
-    Notes
-    -----
-    When one of the values in n_top_anchors coincides with
-    base_params['n_top'], the corresponding comparison varies ONLY the
-    flag (pure flag effect). For the other anchors, both the flag and n_top
-    vary simultaneously, so each delta measures the joint effect
-    "flag × concentration". This is intentional: averaging across anchors
-    captures the flag's effect under different portfolio concentrations,
-    not a single "centroid" comparison. Inspect delta_per_period_per_anchor
-    to disentangle the two effects if needed.
-    """
-    if flag_name not in _STABILITY_FLAGS:
-        raise ValueError(
-            f"flag_name={flag_name!r} is not a supported binary flag. "
-            f"Supported: {sorted(_STABILITY_FLAGS)}."
-        )
-    if metric not in _STABILITY_METRICS:
-        raise ValueError(
-            f"metric={metric!r} is not supported. "
-            f"Supported: {sorted(_STABILITY_METRICS)}."
-        )
-    if n_top_anchors is None:
-        n_top_anchors = [3, 5, 8]
-
-    periods = _split_history_into_periods(full_start_date, full_end_date, k)
-
-    delta_per_period_per_anchor: list[list[float]] = []
-
-    for s, e in periods:
-        deltas_for_period: list[float] = []
-        for anchor in n_top_anchors:
-            params_true  = {**base_params, flag_name: True,  "n_top": anchor}
-            params_false = {**base_params, flag_name: False, "n_top": anchor}
-
-            val_true  = _evaluate_ptf_on_period(
-                ptf_config, EngineParams.from_dict(params_true),  s, e, metric
-            )
-            val_false = _evaluate_ptf_on_period(
-                ptf_config, EngineParams.from_dict(params_false), s, e, metric
-            )
-
-            if np.isnan(val_true) or np.isnan(val_false):
-                warnings.warn(
-                    f"_evaluate_flag_stability: NaN for {flag_name}, "
-                    f"anchor={anchor}, period={s.date()}→{e.date()} "
-                    f"(true={val_true:.4f} false={val_false:.4f}). "
-                    f"Delta set to NaN.",
-                    stacklevel=2,
-                )
-                deltas_for_period.append(float("nan"))
-            else:
-                deltas_for_period.append(val_true - val_false)
-
-        delta_per_period_per_anchor.append(deltas_for_period)
-
-    # Aggregate per period: mean across anchors, ignoring NaN
-    delta_per_period: list[float] = []
-    for row in delta_per_period_per_anchor:
-        valid = [d for d in row if not np.isnan(d)]
-        if not valid:
-            delta_per_period.append(float("nan"))
-        else:
-            delta_per_period.append(float(np.mean(valid)))
-
-    # Sign coherence and recommendation
-    non_nan = [d for d in delta_per_period if not np.isnan(d)]
-    positive = sum(1 for d in non_nan if d > 0)
-    negative = sum(1 for d in non_nan if d < 0)
-    zero     = sum(1 for d in non_nan if d == 0)
-
-    mean_delta = float(np.mean(non_nan)) if non_nan else float("nan")
-    recommended_value: bool = False
-
-    if not non_nan:
-        coherent_sign = False
-        diagnostic_note = "all periods produced NaN — insufficient data"
-    elif len(non_nan) < k:
-        coherent_sign = False
-        diagnostic_note = f"incoherent: {k - len(non_nan)} NaN period(s)"
-    elif positive == k:
-        coherent_sign = True
-        recommended_value = True
-        diagnostic_note = "coherent positive"
-    elif negative == k:
-        coherent_sign = True
-        recommended_value = False
-        diagnostic_note = "coherent negative"
-    elif zero == k:
-        coherent_sign = False
-        recommended_value = False
-        diagnostic_note = "no effect (all deltas zero)"
-    else:
-        coherent_sign = False
-        recommended_value = False
-        diagnostic_note = "incoherent: mixed signs across periods"
-
-    return {
-        "flag_name":                    flag_name,
-        "metric":                       metric,
-        "k":                            k,
-        "n_top_anchors":                list(n_top_anchors),
-        "delta_per_period":             delta_per_period,
-        "delta_per_period_per_anchor":  delta_per_period_per_anchor,
-        "mean_delta":                   mean_delta,
-        "coherent_sign":                coherent_sign,
-        "recommended_value":            recommended_value,
-        "diagnostic_note":              diagnostic_note,
-    }
 
 def reduce_grid_via_stability(
     ptf_config: dict,
@@ -11466,7 +11217,7 @@ def reduce_grid_via_stability(
 
     Supports both Momentum (v1) and Multifactor (v2) engines: if the grid
     contains any of ivol_weight / sortino_weight / idio_weight, the v2
-    evaluator (_evaluate_flag_stability_v2) is used automatically.
+    evaluator (_evaluate_flag_stability) is used automatically.
     benchmark_prices is forwarded to the v2 evaluator when idio_weight > 0.
     """
     if metric not in _STABILITY_METRICS:
@@ -11527,37 +11278,22 @@ def reduce_grid_via_stability(
             base_params[key] = vals[0]
 
     # ── Step 3: run stability analysis for each eligible flag ─────────────────
-    _v2_keys = {"ivol_weight", "sortino_weight", "idio_weight"}
-    _is_v2   = bool(_v2_keys & set(full_grid.keys()))
-
     stability_results: dict = {}
     for flag_name in eligible_flags:
         if verbose:
             print(f"  Evaluating {flag_name} …")
 
-        if _is_v2:
-            stability_results[flag_name] = _evaluate_flag_stability_v2(
-                ptf_config=ptf_config,
-                base_params=base_params,
-                flag_name=flag_name,
-                full_start_date=full_start_date,
-                full_end_date=full_end_date,
-                metric=metric,
-                k=k,
-                n_top_anchors=anchors,
-                benchmark_prices=benchmark_prices,
-            )
-        else:
-            stability_results[flag_name] = _evaluate_flag_stability(
-                ptf_config=ptf_config,
-                base_params=base_params,
-                flag_name=flag_name,
-                full_start_date=full_start_date,
-                full_end_date=full_end_date,
-                metric=metric,
-                k=k,
-                n_top_anchors=anchors,
-            )
+        stability_results[flag_name] = _evaluate_flag_stability(
+            ptf_config=ptf_config,
+            base_params=base_params,
+            flag_name=flag_name,
+            full_start_date=full_start_date,
+            full_end_date=full_end_date,
+            metric=metric,
+            k=k,
+            n_top_anchors=anchors,
+            benchmark_prices=benchmark_prices,
+        )
 
     # ── Step 4: build reduced_grid ────────────────────────────────────────────
     reduced_grid: dict = {}
@@ -11782,6 +11518,7 @@ def _ofc_reconstruct_oos_equity(
     wfo_summary: pd.DataFrame,
     stocks_data: pd.DataFrame,
     init_cash: float = 100_000,
+    benchmark_prices: "pd.Series | None" = None,
 ) -> tuple[pd.Series, list[tuple]]:
     """
     Rebuild the compounded OOS equity curve from wfo_summary best params.
@@ -11802,15 +11539,13 @@ def _ofc_reconstruct_oos_equity(
         oos_end   = pd.Timestamp(parts_w[1].strip()).normalize()
         if oos_start > pd.Timestamp.today().normalize():   # ← ADD
             continue                                        # ← ADD
-        params    = EngineParams.from_dict(dict(row))
-        
-        params    = EngineParams.from_dict(dict(row))
+        params    = EngineParamsV2.from_dict(dict(row))
         buf_start = oos_start - pd.Timedelta(days=params.required_warmup_days())
         sl        = stocks.loc[buf_start:oos_end].copy()
         if sl.empty:
             continue
 
-        rot = run_rotational_engine(sl, params)
+        rot = run_rotational_engine(sl, params, benchmark_prices=benchmark_prices)
         pf_rot, _ = build_portfolio(
             rot, sl, init_cash=init_cash,
             start_date=oos_start, end_date=oos_end,
@@ -11997,7 +11732,7 @@ def overfitting_check_rotational(
     wfo_summary: pd.DataFrame,
     stocks_data: pd.DataFrame,
     benchmark_data: pd.Series,
-    param_grid: dict,
+    param_grid: "dict | list",
     *,
     n_total_trials: int | None = None,
     profile: str = "satellite",
@@ -12008,6 +11743,7 @@ def overfitting_check_rotational(
     s4_dsr_threshold: float | None = None,
     min_signals_to_pass: int | None = None,
     stability_report: pd.DataFrame | None = None,
+    benchmark_prices: "pd.Series | None" = None,
     n_bootstrap: int = 1000,
     seed: int = 42,
     verbose: bool = True,
@@ -12025,14 +11761,14 @@ def overfitting_check_rotational(
     Parameters
     ----------
     wfo_summary : pd.DataFrame
-        Output of walk_forward_rotational. Index = Window strings
+        Output of walk_forward_rotational_legacy_cluster. Index = Window strings
         ("YYYY-MM-DD→YYYY-MM-DD"), columns = param_names + TrainScore + TestScore.
     stocks_data : pd.DataFrame
         Full price history. Must cover all WFO OOS windows + warmup buffer.
     benchmark_data : pd.Series
         Benchmark prices (reserved for future extensions; not used in current signals).
     param_grid : dict
-        Parameter grid used in walk_forward_rotational (or reduced grid if
+        Parameter grid used in walk_forward_rotational_legacy_cluster (or reduced grid if
         auto_reduce_grid was applied). Used for S1 diversity and S4 n_trials.
     n_total_trials : int or None
         Total strategy combinations explored during WFO.
@@ -12130,13 +11866,23 @@ def overfitting_check_rotational(
         )
     res_metric_norm = _ofc_normalize_metric(res_metric)
 
-    # ── 2. n_total_trials ─────────────────────────────────────────────────────
-    grid_card = _prod(len(v) for v in param_grid.values())
+    # ── 2. n_total_trials + normalise param_grid for signal helpers ───────────
+    if isinstance(param_grid, list):
+        # list[dict]: n_trials = len(list); derive unique-values dict for S1/S2
+        _n_trials_from_grid = len(param_grid)
+        _param_grid_dict: dict = {}
+        if param_grid:
+            for key in param_grid[0]:
+                _param_grid_dict[key] = list(dict.fromkeys(c[key] for c in param_grid))
+    else:
+        _n_trials_from_grid = _prod(len(v) for v in param_grid.values())
+        _param_grid_dict = param_grid
+
     if n_total_trials is None:
-        n_trials = grid_card
+        n_trials = _n_trials_from_grid
         warnings.warn(
             "overfitting_check_rotational: n_total_trials not specified. "
-            f"Using param_grid cardinality ({grid_card}). "
+            f"Using param_grid cardinality ({_n_trials_from_grid}). "
             "If auto_reduce_grid was applied, pass the ORIGINAL grid size "
             "for a correct S4 DSR penalty.",
             stacklevel=2,
@@ -12145,14 +11891,15 @@ def overfitting_check_rotational(
         n_trials = int(n_total_trials)
 
     # ── 3. Reconstruct OOS equity ─────────────────────────────────────────────
-    oos_equity, _ = _ofc_reconstruct_oos_equity(wfo_summary, stocks_data)
+    oos_equity, _ = _ofc_reconstruct_oos_equity(wfo_summary, stocks_data,
+                                                  benchmark_prices=benchmark_prices)
 
     # ── 4. Compute signals ────────────────────────────────────────────────────
-    s1_val, s1_pass, s1_note = _ofc_s1_plateau(wfo_summary, param_grid, res_plat)
+    s1_val, s1_pass, s1_note = _ofc_s1_plateau(wfo_summary, _param_grid_dict, res_plat)
     s2_val, s2_pass, s2_note = _ofc_s2_coherence(
-        wfo_summary, param_grid, stability_report, res_s2)
+        wfo_summary, _param_grid_dict, stability_report, res_s2)
     s3_val, s3_pass, s3_note = _ofc_s3_bootstrap(
-        oos_equity, stocks_data, wfo_summary, param_grid,
+        oos_equity, stocks_data, wfo_summary, _param_grid_dict,
         n_bootstrap, res_metric_norm, res_s3, seed,
     )
     s4_val, s4_pass, s4_note = _ofc_s4_dsr(oos_equity, n_trials, res_s4)
@@ -12233,16 +11980,11 @@ _RL_GRAY_LT = '#F5F6FA'
 _RL_GRAY_BD = '#D5D8DC'
 _RL_TEXT    = '#2C3E50'
 
-def compute_skill_profile(
-    *, mc_skill: dict,
-    ofc_report_std: dict | None = None,   # mantenuto per retro-compat firma, non più usato
-    mc_skill_cluster: dict | None = None,
-    ofc_report_cluster: dict | None = None,
-) -> tuple[str, str | None]:
+def compute_skill_profile(*, engines: dict) -> dict:
     '''
-    Deriva lo Skill Profile per Standard e (opzionalmente) Cluster basandosi sui 
-    test MC Block B: B1 (rotation reshuffle) e B2 (rebalance timing).
-    
+    Deriva lo Skill Profile per ogni engine basandosi sui test MC Block B:
+    B1 (rotation reshuffle) e B2 (rebalance timing).
+
     Logica:
       |  B1 PASS  |  B2 PASS  |  Profile          |
       |-----------|-----------|-------------------|
@@ -12250,36 +11992,32 @@ def compute_skill_profile(
       |    ✓      |    ✗      |  Selection-driven |
       |    ✗      |    ✓      |  Timing-driven    |
       |    ✗      |    ✗      |  No-skill         |
-    
+
     Soglia p-value per PASS: < 0.10
-    
-    Note storiche
-    -------------
-    Versione precedente (pre-B-006) usava (B1, S3-OFC) e aveva nomenclatura 
-    invertita: (B1 PASS, S3 FAIL) → "Timing-driven" anziché "Selection-driven".
-    Vedi TODO B-006 per dettagli. I parametri ofc_report_std/cluster sono 
-    mantenuti nella firma per retro-compatibilità ma non più usati.
-    
+
+    Parameters
+    ----------
+    engines : dict[str, dict]
+        Chiave = nome engine. Ogni valore deve contenere "mc_skill" (dict MC skill results).
+
     Returns
     -------
-    (profile_std, profile_cluster_or_None)
-        Tupla di due Skill Profile. Il secondo è None se mc_skill_cluster non passato.
+    dict[str, str]
+        {engine_name: skill_profile_str}
     '''
     def _profile(mc):
         if mc is None:
-            return None
+            return 'No-skill'
         b1 = mc.get('rotation_reshuffle', {}).get('p_values', {}).get('CAGR')
         b2 = mc.get('rebalance_timing', {}).get('p_values', {}).get('CAGR')
         b1_pass = (b1 is not None) and (b1 < 0.10)
         b2_pass = (b2 is not None) and (b2 < 0.10)
-        if b1_pass and b2_pass:        return 'Strong'
-        if b1_pass and not b2_pass:    return 'Selection-driven'
-        if not b1_pass and b2_pass:    return 'Timing-driven'
+        if b1_pass and b2_pass:     return 'Strong'
+        if b1_pass and not b2_pass: return 'Selection-driven'
+        if not b1_pass and b2_pass: return 'Timing-driven'
         return 'No-skill'
 
-    profile_std = _profile(mc_skill)
-    profile_cl  = _profile(mc_skill_cluster)
-    return profile_std, profile_cl
+    return {name: _profile(eng.get('mc_skill')) for name, eng in engines.items()}
     
 
 
@@ -12288,61 +12026,19 @@ def print_final_decision(
     portfolio_title: str,
     year: int,
     profile: str,
-    ofc_report_std: dict,
-    ofc_report_cluster: dict | None,
-    mc_skill: dict,
-    mc_ci,
-    skill_profile: str,
-    # NEW: opzionali per simmetria std/cluster
-    mc_skill_cluster: dict | None = None,
-    mc_ci_cluster=None,
+    engines: dict,
 ) -> None:
-    
     '''
-    Stampa la DECISIONE FINALE: banner + tabella pandas 3 colonne.
-
-    Mantiene layout originale STEP 8: banner di 76 '=', titolo, tabella
-    Signal/WFO STANDARD/WFO CLUSTER, footer con invito a compilare.
+    Stampa la DECISIONE FINALE: banner + tabella pandas N+1 colonne.
 
     Parameters
     ----------
-    mc_ci : pd.DataFrame
-        ci_summary_df da run_all_mc_methods_rotational.
+    engines : dict[str, dict]
+        Chiave = nome engine. Ogni valore deve contenere:
+        "ofc_report", "mc_skill", "mc_ci", "skill_profile".
     '''
-    _sigs    = ofc_report_std.get('signals', {}) if ofc_report_std else {}
-    _cl_sigs = ofc_report_cluster.get('signals', {}) if ofc_report_cluster else {}
-    ofc_passed_std     = bool(ofc_report_std.get('promoted', False)) if ofc_report_std else False
-    ofc_passed_cluster = (
-        bool(ofc_report_cluster.get('promoted', False)) if ofc_report_cluster else None
-    )
+    _eng_names = list(engines.keys())
 
-    # Std (codice esistente)
-    reshuffle_pval   = mc_skill.get('rotation_reshuffle', {}).get('p_values', {}).get('CAGR')
-    reshuffle_passed = (reshuffle_pval is not None) and (reshuffle_pval < 0.10)
-    
-    ci_sharpe_p50 = None
-    try:
-        ci_sharpe_p50 = mc_ci.loc['A1 · IID Bootstrap', 'Sharpe_p50']
-    except Exception:
-        pass
-    
-    # NEW: Cluster (fallback a std se non passati → retro-compat)
-    if mc_skill_cluster is not None:
-        reshuffle_pval_cl   = mc_skill_cluster.get('rotation_reshuffle', {}).get('p_values', {}).get('CAGR')
-        reshuffle_passed_cl = (reshuffle_pval_cl is not None) and (reshuffle_pval_cl < 0.10)
-    else:
-        reshuffle_pval_cl, reshuffle_passed_cl = reshuffle_pval, reshuffle_passed
-    
-    ci_sharpe_p50_cl = None
-    if mc_ci_cluster is not None:
-        try:
-            ci_sharpe_p50_cl = mc_ci_cluster.loc['A1 · IID Bootstrap', 'Sharpe_p50']
-        except Exception:
-            pass
-    else:
-        ci_sharpe_p50_cl = ci_sharpe_p50
-
-    
     _sig_key_map = {
         'S1 plateau':    'S1_plateau',
         'S2 coherence':  'S2_coherence',
@@ -12355,34 +12051,50 @@ def print_final_decision(
             return 'N/A'
         return 'PASS' if v else 'FAIL'
 
-    _resh_str = (f"p={reshuffle_pval:.3f} {'PASS' if reshuffle_passed else 'FAIL'}"
-                 if reshuffle_pval is not None else 'N/A')
-    _resh_str_cl = (f"p={reshuffle_pval_cl:.3f} {'PASS' if reshuffle_passed_cl else 'FAIL'}"
-                    if reshuffle_pval_cl is not None else 'N/A')
-    _sharpe_str    = f"{ci_sharpe_p50:.3f}"    if ci_sharpe_p50    is not None else 'N/A'
-    _sharpe_str_cl = f"{ci_sharpe_p50_cl:.3f}" if ci_sharpe_p50_cl is not None else 'N/A'
+    # Per-engine values
+    def _eng_col_values(eng):
+        ofc_rep  = eng.get('ofc_report') or {}
+        mc_skill = eng.get('mc_skill') or {}
+        mc_ci    = eng.get('mc_ci')
+        sp       = eng.get('skill_profile', 'N/A')
 
+        sigs        = ofc_rep.get('signals', {})
+        ofc_passed  = bool(ofc_rep.get('promoted', False))
+        resh_pval   = mc_skill.get('rotation_reshuffle', {}).get('p_values', {}).get('CAGR')
+        resh_passed = (resh_pval is not None) and (resh_pval < 0.10)
+        sharpe_p50  = None
+        try:
+            sharpe_p50 = mc_ci.loc['A1 · IID Bootstrap', 'Sharpe_p50']
+        except Exception:
+            pass
+
+        sig_vals = {k: _fp(sigs.get(ok, {}).get('pass')) for k, ok in _sig_key_map.items()}
+        resh_str = (f"p={resh_pval:.3f} {'PASS' if resh_passed else 'FAIL'}"
+                    if resh_pval is not None else 'N/A')
+        sharpe_str = f"{sharpe_p50:.3f}" if sharpe_p50 is not None else 'N/A'
+        return sig_vals, resh_str, sharpe_str, _fp(ofc_passed), sp
+
+    cols_data = {name: _eng_col_values(eng) for name, eng in engines.items()}
 
     _rows = []
-    for sig, key in _sig_key_map.items():
-        v_std = _sigs.get(key, {}).get('pass')
-        v_clu = _cl_sigs.get(key, {}).get('pass') if _cl_sigs else None
-        _rows.append((sig, _fp(v_std), _fp(v_clu)))
+    for sig, _ in _sig_key_map.items():
+        row = [sig] + [cols_data[n][0][sig] for n in _eng_names]
+        _rows.append(row)
+    _rows.append(['MC Reshuffle p']   + [cols_data[n][1] for n in _eng_names])
+    _rows.append(['MC CI Sharpe p50'] + [cols_data[n][2] for n in _eng_names])
+    _rows.append(['OFC Verdict']      + [cols_data[n][3] for n in _eng_names])
+    _rows.append(['Skill profile']    + [cols_data[n][4] for n in _eng_names])
 
-    _rows.append(('MC Reshuffle p',   _resh_str,   _resh_str_cl))
-    _rows.append(('MC CI Sharpe p50', _sharpe_str, _sharpe_str_cl))
-    
-    _rows.append(('OFC Verdict',      _fp(ofc_passed_std), _fp(ofc_passed_cluster)))
-    _rows.append(('Skill profile',    skill_profile, ''))
+    col_labels = ['Signal'] + [f'WFO {n.upper()}' for n in _eng_names]
+    _df = pd.DataFrame(_rows, columns=col_labels)
 
-    _df = pd.DataFrame(_rows, columns=['Signal', 'WFO STANDARD', 'WFO CLUSTER'])
-
+    _dec_opts = ' | '.join(_eng_names) + ' | NESSUNO'
     print('=' * 76)
     print(f"  DECISIONE FINALE — {portfolio_title} ({year}) — profile={profile}")
     print('=' * 76)
     print(_df.to_string(index=False))
     print('=' * 76)
-    print('  User decision: quale path deployare? [ STANDARD | CLUSTER | NESSUNO ]')
+    print(f'  User decision: quale path deployare? [ {_dec_opts} ]')
     print('  (compilare a mano nella scheda PTF con motivazione)')
     print('=' * 76)
 
@@ -12393,86 +12105,37 @@ def generate_ptf_card_md(
     year: int,
     profile: str,
     benchmark: str,
+    benchmark_pf=None,
     period: tuple,
     universe_size: int,
     wfo_config: dict,
-    cluster_result: dict | None,
-    metrics_comparison: dict,
-    ofc_report_std: dict,
-    ofc_report_cluster: dict | None,
-    mc_skill: dict,
-    mc_ci,
-    skill_profile: str,
+    engines: dict,
     output_path,
-    mc_skill_cluster: dict | None = None,
-    mc_ci_cluster=None,
 ) -> _Path_doc:
     '''
     Genera la PTF Card markdown (sezioni 1-9) e la scrive su output_path.
 
-    Sezione 5 (MC) e Sezione 6 (Skill Profile) sdoppiate per path Standard / Cluster.
-    Se mc_skill_cluster/mc_ci_cluster non passati, usa fallback al path standard
-    (retro-compat con i chiamanti precedenti al fix MC).
+    Parameters
+    ----------
+    engines : dict[str, dict]
+        Chiave = nome engine. Ogni valore deve contenere:
+        "ofc_report", "mc_skill", "mc_ci", "skill_profile",
+        "pf_rot" (opzionale), "pf_rot_base" (opzionale).
+    benchmark_pf : portfolio opzionale per metriche benchmark nella sezione 3.
     '''
     output_path = _Path_doc(output_path)
     _today = _dt_doc.date.today().isoformat()
     period_start, period_end = (period if len(period) == 2 else (period[0], _today))
 
-    _s  = ofc_report_std.get('signals', {}) if ofc_report_std else {}
-    _sc = ofc_report_cluster.get('signals', {}) if ofc_report_cluster else None
-    ofc_passed_std     = bool(ofc_report_std.get('promoted', False)) if ofc_report_std else False
-    ofc_passed_cluster = (
-        bool(ofc_report_cluster.get('promoted', False)) if ofc_report_cluster else None
-    )
     use_clustering = wfo_config.get('use_clustering', False)
-
-    # MC Std
-    reshuffle_pval  = mc_skill.get('rotation_reshuffle', {}).get('p_values', {}).get('CAGR')
-    timing_pval     = mc_skill.get('rebalance_timing', {}).get('p_values', {}).get('CAGR')
-    reshuffle_passed = (reshuffle_pval is not None) and (reshuffle_pval < 0.10)
-    timing_passed   = (timing_pval is not None) and (timing_pval < 0.10)
-    s3_passed_std   = _s.get('S3_bootstrap', {}).get('pass')
-
-    _reshuffle_pval_str = f"p={reshuffle_pval:.3f}" if reshuffle_pval is not None else 'N/A'
-    _timing_pval_str    = f"p={timing_pval:.3f}" if timing_pval is not None else 'N/A'
-    _s3_str             = 'Pass' if s3_passed_std else 'Fail'
-
-    # MC Cluster (fallback a std)
-    if mc_skill_cluster is not None:
-        reshuffle_pval_cl   = mc_skill_cluster.get('rotation_reshuffle', {}).get('p_values', {}).get('CAGR')
-        timing_pval_cl      = mc_skill_cluster.get('rebalance_timing', {}).get('p_values', {}).get('CAGR')
-        reshuffle_passed_cl = (reshuffle_pval_cl is not None) and (reshuffle_pval_cl < 0.10)
-        timing_passed_cl    = (timing_pval_cl is not None) and (timing_pval_cl < 0.10)
-    else:
-        reshuffle_pval_cl, timing_pval_cl     = reshuffle_pval, timing_pval
-        reshuffle_passed_cl, timing_passed_cl = reshuffle_passed, timing_passed
-
-    _reshuffle_pval_str_cl = f"p={reshuffle_pval_cl:.3f}" if reshuffle_pval_cl is not None else 'N/A'
-    _timing_pval_str_cl    = f"p={timing_pval_cl:.3f}"    if timing_pval_cl    is not None else 'N/A'
-
-    s3_passed_cl = _sc.get('S3_bootstrap', {}).get('pass') if _sc else None
-    _s3_str_cl   = 'Pass' if s3_passed_cl else ('Fail' if s3_passed_cl is False else 'N/A')
-
-    # plots_dir derivato da output_path
-    _plots_dir = (
-        output_path.parent.parent / 'reports' / 'plots' / f'{portfolio_title}_{year}'
-    )
+    _eng_names = list(engines.keys())
+    _n_bs_ofc = wfo_config.get('n_bootstrap_ofc', wfo_config.get('n_bootstrap', 1000))
 
     def _vd(v):
         if v is None: return 'N/A'
         return 'Pass' if v else 'Fail'
 
-    def _ci(row, col):
-        try: return f"{mc_ci.loc[row, col]:.3f}"
-        except Exception: return 'N/A'
-
-    def _ci_cl(row, col):
-        src = mc_ci_cluster if mc_ci_cluster is not None else mc_ci
-        try: return f"{src.loc[row, col]:.3f}"
-        except Exception: return 'N/A'
-
-    def _m(key, metric):
-        pf = metrics_comparison.get(key)
+    def _mpf(pf, metric):
         if pf is None: return 'N/A'
         try:
             if metric == 'cum':    return f"{pf.total_return()*100:.1f}%"
@@ -12482,30 +12145,112 @@ def generate_ptf_card_md(
         except Exception: return 'N/A'
         return 'N/A'
 
-    # Sezione cluster (composizione)
-    _cluster_section = ''
-    if use_clustering and cluster_result is not None:
-        _cgroups = cluster_result.get('cluster_groups', {})
-        _clabels = cluster_result.get('cluster_labels', {})
-        if _cgroups:
-            def _fmt_t(ts):
-                return ', '.join(ts[:8]) + (f' ... (+{len(ts)-8})' if len(ts) > 8 else '')
-            _rows_cl = '\n'.join(
-                f"| {cid} | {_clabels.get(cid, f'C{cid}')} | {len(_cgroups[cid])} "
-                f"| {_fmt_t(_cgroups[cid])} |"
-                for cid in sorted(_cgroups.keys())
+    # ── Sezione 3: metriche comparative ──────────────────────────────────────
+    _sec3_rows = ''
+    for eng_name, eng in engines.items():
+        for variant, pf_key in [(f'{eng_name} — Risk ON/OFF', 'pf_rot'),
+                                 (f'{eng_name} — Base', 'pf_rot_base')]:
+            pf = eng.get(pf_key)
+            _sec3_rows += (
+                f"| {variant} | {_mpf(pf,'cum')} | {_mpf(pf,'cagr')} "
+                f"| {_mpf(pf,'sharpe')} | {_mpf(pf,'maxdd')} |\n"
             )
-            _cluster_section = (
-                "## 2b. Struttura dei Cluster\n"
-                "*Composizione dei cluster sull'ultimo periodo WFO*\n\n"
-                "| Cluster | Label | N. Titoli | Tickers |\n"
-                "|---------|-------|-----------|---------|\n"
-                + _rows_cl
-                + "\n\nPlot salvati: `cluster_heatmap.png`, `cluster_dendrogram.png`\n\n---"
-            )
+    _sec3_rows += (
+        f"| Benchmark ({benchmark}) | {_mpf(benchmark_pf,'cum')} | {_mpf(benchmark_pf,'cagr')} "
+        f"| {_mpf(benchmark_pf,'sharpe')} | {_mpf(benchmark_pf,'maxdd')} |\n"
+    )
 
-    def _plot_ok(name):
-        return 'Sì' if (_plots_dir / name).exists() else 'No'
+    # ── Sezione 4: OFC per engine ─────────────────────────────────────────────
+    def _ofc_section(eng_name, eng, sec_label):
+        sigs = (eng.get('ofc_report') or {}).get('signals', {})
+        promoted = bool((eng.get('ofc_report') or {}).get('promoted', False))
+        return (
+            f"### {sec_label} — {eng_name}\n"
+            f"| Segnale | Cosa misura | Verdetto | Valore |\n|---------|-------------|---------|--------|\n"
+            f"| S1 — Plateau proxy | Diversità parametrica: il WFO converge su un unico punto? | {_vd(sigs.get('S1_plateau', {}).get('pass'))} | {sigs.get('S1_plateau', {}).get('value', 'N/A')} |\n"
+            f"| S2 — Flag coherence | I filtri sono stabili tra sottoperiodi? | {_vd(sigs.get('S2_coherence', {}).get('pass'))} | {sigs.get('S2_coherence', {}).get('value', 'N/A')} |\n"
+            f"| S3 — Random selection | Il risultato Out-Of-Sample batte {_n_bs_ofc} portafogli con parametri casuali? | {_vd(sigs.get('S3_bootstrap', {}).get('pass'))} | p={sigs.get('S3_bootstrap', {}).get('p_value', 'N/A')} |\n"
+            f"| S4 — DSR | Lo Sharpe è significativo dopo correzione per n. trial? | {_vd(sigs.get('S4_dsr', {}).get('pass'))} | {sigs.get('S4_dsr', {}).get('dsr', 'N/A')} |\n"
+            f"| **OFC Verdict** | Soglia: 3/4 segnali | **{'PROMOTED' if promoted else 'NOT PROMOTED'}** | |\n\n"
+        )
+
+    _sec4 = '## 4. Overfitting Check (OFC)\n*Valuta la robustezza del processo di ottimizzazione WFO. Soglia promozione: 3/4 segnali.*\n\n'
+    sec_labels = [chr(ord('a') + i) for i in range(len(_eng_names))]
+    for i, (eng_name, eng) in enumerate(engines.items()):
+        _sec4 += _ofc_section(eng_name, eng, f'4{sec_labels[i]}.')
+
+    # ── Sezione 5: MC per engine ──────────────────────────────────────────────
+    def _mc_skill_block(eng_name, eng, sec_label):
+        mc_skill = eng.get('mc_skill') or {}
+        def _pv(test):
+            pv = mc_skill.get(test, {}).get('p_values', {}).get('CAGR')
+            passed = (pv is not None) and (pv < 0.10)
+            return f"p={pv:.3f}" if pv is not None else 'N/A', passed
+        resh_str, resh_pass = _pv('rotation_reshuffle')
+        tim_str,  tim_pass  = _pv('rebalance_timing')
+        return (
+            f"### {sec_label} Skill Tests (Block B) — {eng_name}\n"
+            f"| Test | Cosa misura | Verdetto | p-value |\n|------|-------------|---------|----------|\n"
+            f"| B1 — Rotation Reshuffle | La rotazione batte una selezione casuale dei titoli? | {'Pass' if resh_pass else 'Fail'} | {resh_str} |\n"
+            f"| B2 — Rebalance Timing | Il timing mensile batte date di ribilanciamento casuali? | {'Pass' if tim_pass else 'Fail'} | {tim_str} |\n\n"
+        )
+
+    def _ci_block(eng_name, eng, sec_label):
+        mc_ci = eng.get('mc_ci')
+        def _civ(row, col):
+            try: return f"{mc_ci.loc[row, col]:.3f}"
+            except Exception: return 'N/A'
+        return (
+            f"### {sec_label} Confidence Intervals (Block A) — {eng_name}\n"
+            f"| Metodo | CAGR p5 | CAGR p50 | CAGR p95 | Sharpe p50 | MaxDD p50 |\n"
+            f"|--------|---------|---------|---------|-----------|----------|\n"
+            f"| A1 — IID Bootstrap | {_civ('A1 · IID Bootstrap','CAGR_p5')} | {_civ('A1 · IID Bootstrap','CAGR_p50')} | {_civ('A1 · IID Bootstrap','CAGR_p95')} | {_civ('A1 · IID Bootstrap','Sharpe_p50')} | {_civ('A1 · IID Bootstrap','MaxDD_p50')} |\n"
+            f"| A2 — Block Bootstrap | {_civ('A2 · Block Bootstrap','CAGR_p5')} | {_civ('A2 · Block Bootstrap','CAGR_p50')} | {_civ('A2 · Block Bootstrap','CAGR_p95')} | {_civ('A2 · Block Bootstrap','Sharpe_p50')} | {_civ('A2 · Block Bootstrap','MaxDD_p50')} |\n\n"
+        )
+
+    _sec5 = '## 5. Monte Carlo Validation\n*Valuta se il motore aggiunge valore rispetto al caso (analisi indipendente per engine)*\n\n'
+    sl2 = [chr(ord('a') + i) for i in range(len(_eng_names))]
+    for i, (eng_name, eng) in enumerate(engines.items()):
+        _sec5 += _mc_skill_block(eng_name, eng, f'5{sl2[i]}.')
+    for i, (eng_name, eng) in enumerate(engines.items()):
+        _sec5 += _ci_block(eng_name, eng, f'5{chr(ord("a")+len(_eng_names)+i)}.')
+
+    # ── Sezione 6: Skill Profile ──────────────────────────────────────────────
+    _sp_header_cols = ' | '.join(_eng_names)
+    _sp_sep_cols    = '---------| ' * len(_eng_names)
+    _sec6 = (
+        f'## 6. Skill Profile\n*Sintesi della capacità predittiva per engine*\n\n'
+        f'| Test | Cosa misura | {_sp_header_cols} |\n'
+        f'|------|-------------|{_sp_sep_cols}|\n'
+    )
+    for test_name, mc_key, desc in [
+        ('MC Rotation Reshuffle', 'rotation_reshuffle', 'La rotazione batte il caso?'),
+        ('MC Rebalance Timing',   'rebalance_timing',   'Il timing batte il caso?'),
+    ]:
+        row_vals = []
+        for eng in engines.values():
+            ms = eng.get('mc_skill') or {}
+            pv = ms.get(mc_key, {}).get('p_values', {}).get('CAGR')
+            row_vals.append('Pass' if (pv is not None and pv < 0.10) else 'Fail')
+        _sec6 += f'| {test_name} | {desc} | {" | ".join(row_vals)} |\n'
+    _sec6 += '\n'
+    for eng_name, eng in engines.items():
+        _sec6 += f'**Skill Profile {eng_name}: {eng.get("skill_profile", "N/A")}**\n'
+    _sec6 += (
+        '*Nota: No-skill non implica PTF non deployabile — il valore può derivare\n'
+        'dalla struttura dell\'universe o dal Risk ON/OFF.*\n\n---\n\n'
+    )
+
+    # ── Sezioni 6+7: generate via LLM (N-ario, zero riferimenti Standard/Cluster) ─
+    _sec_llm = generate_relazione_llm(
+        engines         = engines,
+        wfo_config      = wfo_config,
+        portfolio_title = portfolio_title,
+        year            = year,
+        profile         = profile,
+        benchmark_title = benchmark,
+        benchmark_pf    = benchmark_pf,
+    )
 
     _card = (
         f"# PTF Card — {portfolio_title} {year}\n\n---\n\n"
@@ -12526,89 +12271,19 @@ def generate_ptf_card_md(
         f"| Grid size (full) | {wfo_config.get('n_full_trials', 'N/A')} combinazioni | Spazio parametrico totale |\n"
         f"| Grid size (reduced) | {wfo_config.get('n_reduced_trials', 'N/A')} combinazioni | Dopo stability analysis |\n"
         f"| Stability metric | CAGR, k=3 | Metrica e sottoperiodi |\n"
-        f"| n_bootstrap OFC | {wfo_config.get('n_bootstrap_ofc', wfo_config.get('n_bootstrap', 1000))} | Test S3 random selection |\n"
+        f"| n_bootstrap OFC | {_n_bs_ofc} | Test S3 random selection |\n"
         f"| n_bootstrap MC | {wfo_config.get('n_bootstrap_mc', wfo_config.get('n_bootstrap', 1000))} | Block A (CI) + Block B (Skill Tests) |\n"
-        f"| Risk ON/OFF | True | Filtro regime di mercato |\n"
-        f"| Clustering | {use_clustering} | Se True: WFO per cluster omogenei |\n\n---\n\n"
-        f"{_cluster_section}\n\n"
+        f"| Risk ON/OFF | True | Filtro regime di mercato |\n\n---\n\n"
         f"## 3. Metriche Comparative WFO\n"
         f"*Confronto su periodo comune {period_start} → {period_end}*\n\n"
         f"| Portfolio | Cum Return | CAGR | Sharpe | MaxDD |\n"
         f"|-----------|------------|------|--------|-------|\n"
-        f"| Cluster — Risk ON/OFF | {_m('cluster_riskoff','cum')} | {_m('cluster_riskoff','cagr')} | {_m('cluster_riskoff','sharpe')} | {_m('cluster_riskoff','maxdd')} |\n"
-        f"| Cluster — Base | {_m('cluster_base','cum')} | {_m('cluster_base','cagr')} | {_m('cluster_base','sharpe')} | {_m('cluster_base','maxdd')} |\n"
-        f"| Standard — Risk ON/OFF | {_m('std_riskoff','cum')} | {_m('std_riskoff','cagr')} | {_m('std_riskoff','sharpe')} | {_m('std_riskoff','maxdd')} |\n"
-        f"| Standard — Base | {_m('std_base','cum')} | {_m('std_base','cagr')} | {_m('std_base','sharpe')} | {_m('std_base','maxdd')} |\n"
-        f"| Benchmark ({benchmark}) | {_m('benchmark','cum')} | {_m('benchmark','cagr')} | {_m('benchmark','sharpe')} | {_m('benchmark','maxdd')} |\n\n---\n\n"
-        f"## 4. Overfitting Check (OFC)\n"
-        f"*Valuta la robustezza del processo di ottimizzazione WFO. Soglia promozione: 3/4 segnali.*\n\n"
-        f"### 4a. Path Standard\n"
-        f"| Segnale | Cosa misura | Verdetto | Valore |\n|---------|-------------|---------|--------|\n"
-        f"| S1 — Plateau proxy | Diversità parametrica: il WFO converge su un unico punto? | {_vd(_s.get('S1_plateau', {}).get('pass'))} | {_s.get('S1_plateau', {}).get('value', 'N/A')} |\n"
-        f"| S2 — Flag coherence | I filtri sono stabili tra sottoperiodi? | {_vd(_s.get('S2_coherence', {}).get('pass'))} | {_s.get('S2_coherence', {}).get('value', 'N/A')} |\n"
-        f"| S3 — Random selection | Il risultato Out-Of-Sample batte {wfo_config.get('n_bootstrap_ofc', wfo_config.get('n_bootstrap', 1000))} portafogli con parametri casuali? | {_vd(_s.get('S3_bootstrap', {}).get('pass'))} | p={_s.get('S3_bootstrap', {}).get('p_value', 'N/A')} |\n"
-        f"| S4 — DSR | Lo Sharpe è significativo dopo correzione per n. trial? | {_vd(_s.get('S4_dsr', {}).get('pass'))} | {_s.get('S4_dsr', {}).get('dsr', 'N/A')} |\n"
-        f"| **OFC Verdict** | Soglia: 3/4 segnali | **{'PROMOTED' if ofc_passed_std else 'NOT PROMOTED'}** | |\n\n"
-        f"### 4b. Path Cluster\n"
-        f"| Segnale | Cosa misura | Verdetto | Valore |\n|---------|-------------|---------|--------|\n"
-        f"| S1 — Plateau proxy | Diversità parametrica: il WFO converge su un unico punto? | {_vd(_sc.get('S1_plateau', {}).get('pass')) if _sc else 'N/A'} | {_sc.get('S1_plateau', {}).get('value', 'N/A') if _sc else 'N/A'} |\n"
-        f"| S2 — Flag coherence | I filtri sono stabili tra sottoperiodi? | {_vd(_sc.get('S2_coherence', {}).get('pass')) if _sc else 'N/A'} | {_sc.get('S2_coherence', {}).get('value', 'N/A') if _sc else 'N/A'} |\n"
-        f"| S3 — Random selection | Il risultato Out-Of-Sample batte {wfo_config.get('n_bootstrap_ofc', wfo_config.get('n_bootstrap', 1000))} portafogli con parametri casuali? | {_vd(_sc.get('S3_bootstrap', {}).get('pass')) if _sc else 'N/A'} | p={_sc.get('S3_bootstrap', {}).get('p_value', 'N/A') if _sc else 'N/A'} |\n"
-        f"| S4 — DSR | Lo Sharpe è significativo dopo correzione per n. trial? | {_vd(_sc.get('S4_dsr', {}).get('pass')) if _sc else 'N/A'} | {_sc.get('S4_dsr', {}).get('dsr', 'N/A') if _sc else 'N/A'} |\n"
-        f"| **OFC Verdict** | Soglia: 3/4 segnali | **{'PROMOTED' if ofc_passed_cluster else 'NOT PROMOTED' if ofc_passed_cluster is not None else 'N/A'}** | |\n\n---\n\n"
-        f"## 5. Monte Carlo Validation\n"
-        f"*Valuta se il motore aggiunge valore rispetto al caso (analisi indipendente per path)*\n\n"
-        f"### 5a. Skill Tests (Block B) — Path Standard\n"
-        f"| Test | Cosa misura | Verdetto | p-value |\n|------|-------------|---------|----------|\n"
-        f"| B1 — Rotation Reshuffle | La rotazione batte una selezione casuale dei titoli? | {'Pass' if reshuffle_passed else 'Fail'} | {_reshuffle_pval_str} |\n"
-        f"| B2 — Rebalance Timing | Il timing mensile batte date di ribilanciamento casuali? | {'Pass' if timing_passed else 'Fail'} | {_timing_pval_str} |\n\n"
-        f"### 5a. Skill Tests (Block B) — Path Cluster\n"
-        f"| Test | Cosa misura | Verdetto | p-value |\n|------|-------------|---------|----------|\n"
-        f"| B1 — Rotation Reshuffle | La rotazione batte una selezione casuale dei titoli? | {'Pass' if reshuffle_passed_cl else 'Fail'} | {_reshuffle_pval_str_cl} |\n"
-        f"| B2 — Rebalance Timing | Il timing mensile batte date di ribilanciamento casuali? | {'Pass' if timing_passed_cl else 'Fail'} | {_timing_pval_str_cl} |\n\n"
-        f"### 5b. Confidence Intervals (Block A) — Path Standard\n"
-        f"| Metodo | CAGR p5 | CAGR p50 | CAGR p95 | Sharpe p50 | MaxDD p50 |\n"
-        f"|--------|---------|---------|---------|-----------|----------|\n"
-        f"| A1 — IID Bootstrap | {_ci('A1 · IID Bootstrap', 'CAGR_p5')} | {_ci('A1 · IID Bootstrap', 'CAGR_p50')} | {_ci('A1 · IID Bootstrap', 'CAGR_p95')} | {_ci('A1 · IID Bootstrap', 'Sharpe_p50')} | {_ci('A1 · IID Bootstrap', 'MaxDD_p50')} |\n"
-        f"| A2 — Block Bootstrap | {_ci('A2 · Block Bootstrap', 'CAGR_p5')} | {_ci('A2 · Block Bootstrap', 'CAGR_p50')} | {_ci('A2 · Block Bootstrap', 'CAGR_p95')} | {_ci('A2 · Block Bootstrap', 'Sharpe_p50')} | {_ci('A2 · Block Bootstrap', 'MaxDD_p50')} |\n\n"
-        f"### 5b. Confidence Intervals (Block A) — Path Cluster\n"
-        f"| Metodo | CAGR p5 | CAGR p50 | CAGR p95 | Sharpe p50 | MaxDD p50 |\n"
-        f"|--------|---------|---------|---------|-----------|----------|\n"
-        f"| A1 — IID Bootstrap | {_ci_cl('A1 · IID Bootstrap', 'CAGR_p5')} | {_ci_cl('A1 · IID Bootstrap', 'CAGR_p50')} | {_ci_cl('A1 · IID Bootstrap', 'CAGR_p95')} | {_ci_cl('A1 · IID Bootstrap', 'Sharpe_p50')} | {_ci_cl('A1 · IID Bootstrap', 'MaxDD_p50')} |\n"
-        f"| A2 — Block Bootstrap | {_ci_cl('A2 · Block Bootstrap', 'CAGR_p5')} | {_ci_cl('A2 · Block Bootstrap', 'CAGR_p50')} | {_ci_cl('A2 · Block Bootstrap', 'CAGR_p95')} | {_ci_cl('A2 · Block Bootstrap', 'Sharpe_p50')} | {_ci_cl('A2 · Block Bootstrap', 'MaxDD_p50')} |\n\n---\n\n"
-        f"## 6. Skill Profile\n"
-        f"*Sintesi della capacità predittiva (Standard / Cluster)*\n\n"
-        f"| Test | Cosa misura | Standard | Cluster |\n|------|-------------|---------|---------|\n"
-        f"| MC Rotation Reshuffle | La rotazione batte il caso? | {'Pass' if reshuffle_passed else 'Fail'} | {'Pass' if reshuffle_passed_cl else 'Fail'} |\n"
-        f"| MC Rebalance Timing | Il timing batte il caso? | {'Pass' if timing_passed else 'Fail'} | {'Pass' if timing_passed_cl else 'Fail'} |\n"
-        f"| OFC S3 | Il risultato Out-Of-Sample batte parametri casuali? | {_s3_str} | {_s3_str_cl} |\n\n"
-        f"**Skill Profile: {skill_profile}**\n"
-        f"*Nota: No-skill non implica PTF non deployabile — il valore può derivare\n"
-        f"dalla struttura dell'universe, dal clustering o dal Risk ON/OFF.*\n\n---\n\n"
-        f"## 7. Decisione Finale\n"
-        f"| Dimensione | Standard | Cluster |\n|-----------|---------|----------|\n"
-        f"| OFC Verdict | {'PROMOTED' if ofc_passed_std else 'NOT PROMOTED'} | {'PROMOTED' if ofc_passed_cluster else 'NOT PROMOTED' if ofc_passed_cluster is not None else 'N/A'} |\n"
-        f"| Skill Profile | {skill_profile} | {skill_profile} |\n"
-        f"| CAGR vs Benchmark | {_m('std_riskoff', 'cagr')} vs {_m('benchmark', 'cagr')} | {_m('cluster_riskoff', 'cagr')} vs {_m('benchmark', 'cagr')} |\n"
-        f"| Sharpe vs Benchmark | {_m('std_riskoff', 'sharpe')} vs {_m('benchmark', 'sharpe')} | {_m('cluster_riskoff', 'sharpe')} vs {_m('benchmark', 'sharpe')} |\n"
-        f"| MaxDD vs Benchmark | {_m('std_riskoff', 'maxdd')} vs {_m('benchmark', 'maxdd')} | {_m('cluster_riskoff', 'maxdd')} vs {_m('benchmark', 'maxdd')} |\n\n"
-        f"**Path deployato**: [ STANDARD | CLUSTER | NESSUNO ] ← compilare\n"
-        f"**Motivazione**: ← compilare\n\n---\n\n"
-        f"## 8. Note e Avvertenze\n*(compilare a mano)*\n\n---\n\n"
-        f"## 9. Plot salvati\n"
-        f"| Plot | File | Disponibile |\n|------|------|-------------|\n"
-        f"| Equity Standard | equity_std.png | {_plot_ok('equity_std.png')} |\n"
-        f"| Equity Cluster | equity_cluster.png | {_plot_ok('equity_cluster.png')} |\n"
-        f"| Equity Comparison | equity_comparison.png | {_plot_ok('equity_comparison.png')} |\n"
-        f"| MC CI Block A | mc_ci.png | {_plot_ok('mc_ci.png')} |\n"
-        f"| MC Reshuffle | mc_reshuffle.png | {_plot_ok('mc_reshuffle.png')} |\n"
-        f"| MC Timing | mc_timing.png | {_plot_ok('mc_timing.png')} |\n"
-        f"| MC Skill Summary | mc_skill_summary.png | {_plot_ok('mc_skill_summary.png')} |\n"
-        f"| Cluster Heatmap | cluster_heatmap.png | {_plot_ok('cluster_heatmap.png')} |\n"
-        f"| Cluster Dendrogram | cluster_dendrogram.png | {_plot_ok('cluster_dendrogram.png')} |\n"
-        f"| Cluster Scatter | cluster_scatter.png | {_plot_ok('cluster_scatter.png')} |\n"
-        f"| MC CI Fan Chart IID | mc_ci_fanchart_iid.png | {_plot_ok('mc_ci_fanchart_iid.png')} |\n"
-        f"| MC CI Fan Chart Block | mc_ci_fanchart_block.png | {_plot_ok('mc_ci_fanchart_block.png')} |\n\n---\n"
+        f"{_sec3_rows}\n---\n\n"
+        f"{_sec4}---\n\n"
+        f"{_sec5}---\n\n"
+        f"{_sec6}"
+        f"{_sec_llm}\n\n---\n\n"
+        f"## 8. Note e Avvertenze\n*(compilare a mano)*\n\n---\n"
     )
 
     output_path.write_text(_card)
@@ -12616,12 +12291,244 @@ def generate_ptf_card_md(
     
 
 
+def generate_relazione_llm(
+    *,
+    engines: dict,
+    wfo_config: dict,
+    portfolio_title: str,
+    year: int,
+    profile: str,
+    benchmark_title: str,
+    benchmark_pf,
+    model: str = "claude-sonnet-4-6",
+) -> str:
+    """
+    Genera in Markdown le sezioni §6 Analisi dei Segnali e §7 Decisione Finale
+    della relazione tecnica, via LLM (Anthropic API).
+
+    Le tabelle numeriche (§1-§5) restano generate deterministicamente da Python.
+    Qui si genera SOLO testo di analisi/interpretazione su dati già calcolati.
+
+    Solleva ValueError se il testo generato contiene numeri assenti dal payload
+    (guardrail anti-allucinazione). Propagare l'eccezione — non ingoiarla.
+    """
+    import anthropic as _anthropic
+    import json as _json
+    import re as _re
+
+    client = _anthropic.Anthropic()
+
+    def _pf_metrics(pf):
+        if pf is None:
+            return None
+        try:
+            return dict(pf.stats())
+        except Exception:
+            return None
+
+    payload = {
+        "portfolio_title": portfolio_title,
+        "year": year,
+        "profile": profile,
+        "benchmark_title": benchmark_title,
+        "wfo_config": wfo_config,
+        "benchmark_metrics": _pf_metrics(benchmark_pf),
+        "engines": {},
+    }
+    for name, ev in engines.items():
+        payload["engines"][name] = {
+            "skill_profile": ev.get("skill_profile"),
+            "ofc_report": ev.get("ofc_report"),
+            "mc_skill": ev.get("mc_skill"),
+            "mc_ci": ev.get("mc_ci"),
+            "ci_results": ev.get("ci_results"),
+            "pf_rot_metrics": _pf_metrics(ev.get("pf_rot")),
+            "pf_rot_base_metrics": _pf_metrics(ev.get("pf_rot_base")),
+        }
+
+    payload_json = _json.dumps(payload, indent=2, default=str)
+
+    system_prompt = """Agisci come un analista quantitativo senior con
+esperienza in risk management e validazione statistica di strategie
+sistematiche (walk-forward optimization, overfitting detection,
+bootstrap Monte Carlo). Scrivi la sezione di analisi di una relazione
+tecnica per un gestore di portafogli — uso interno, non un documento
+regolamentare.
+
+Regole non negoziabili:
+- Usa ESCLUSIVAMENTE i numeri presenti nel JSON fornito. Ogni cifra che
+  scrivi deve essere rintracciabile lì dentro. Non arrotondare in modo
+  da nascondere un risultato negativo.
+- Se un pattern nei dati contraddice un'affermazione plausibile (es.
+  un filtro di rischio con drawdown peggiore del benchmark invece che
+  migliore), scrivilo esplicitamente e senza ambiguità.
+- Confronta TUTTI gli engine presenti nel JSON — il numero non è fisso
+  a due, tratta la struttura come genuinamente variabile.
+- Non usare mai le parole "Standard" o "Cluster" — non esistono in
+  questo sistema. Usa i nomi reali degli engine.
+- Dichiara sempre esplicitamente quando un test statistico fallisce
+  (S3, B1, B2) — non minimizzare. Un p-value alto significa che il
+  risultato non è distinguibile dal caso.
+- Quando il CAGR realizzato è vicino alla mediana bootstrap, dillo: è
+  un risultato "tipico". Quando il MaxDD realizzato è peggiore del
+  MaxDD mediano bootstrap, dillo altrettanto chiaramente.
+- Nessun consiglio di investimento esplicito.
+- Stile: diretto, quantitativo, zero riempitivo.
+"""
+
+    user_prompt = (
+        f'Genera in Markdown le sezioni di analisi per\n'
+        f'"{portfolio_title}" ({year}, profilo {profile}), benchmark {benchmark_title}.\n\n'
+        f'Dati — unica fonte di verità, non usare nient\'altro:\n{payload_json}\n\n'
+        f'Struttura richiesta:\n'
+        f'## 6. Analisi dei Segnali e Diagnosi Strutturale\n'
+        f'### 6.a — Overfitting Check (per ciascun engine + confronto)\n'
+        f'### 6.b — Monte Carlo Skill Tests (per ciascun engine + confronto)\n'
+        f'### 6.c — Confidence Intervals: realizzato vs distribuzione bootstrap\n'
+        f'## 7. Decisione Finale\n'
+        f'Tabella comparativa sintetica + 3-5 osservazioni quantitative che un\n'
+        f'gestore userebbe per decidere quale engine (se uno) promuovere.\n'
+    )
+
+    response = client.messages.create(
+        model=model,
+        max_tokens=4000,
+        system=system_prompt,
+        messages=[{"role": "user", "content": user_prompt}],
+    )
+    analysis_md = response.content[0].text
+
+    payload_numbers = set(_re.findall(r"-?\d+(?:[.,]\d+)?", payload_json))
+    output_numbers  = set(_re.findall(r"-?\d+(?:[.,]\d+)?", analysis_md))
+    sospetti = output_numbers - payload_numbers - {"6", "7"}
+    if sospetti:
+        raise ValueError(
+            f"generate_relazione_llm: numeri nel testo generato assenti dal "
+            f"payload di input: {sospetti}. Output scartato — probabile "
+            f"allucinazione, non pubblicare senza revisione."
+        )
+
+    return analysis_md
+
+
+def _md_to_flowables(md_text: str, styles: dict) -> list:
+    """
+    Converte testo Markdown (output LLM) in lista di ReportLab flowables.
+
+    styles dict atteso:
+        'section'  → ParagraphStyle per ## headings
+        'subsec'   → ParagraphStyle per ### headings
+        'body'     → ParagraphStyle per testo normale
+        'caption'  → ParagraphStyle per caption
+        'mm'       → valore di mm (reportlab.lib.units)
+        'Spacer'   → reportlab Spacer class
+        'Paragraph'→ reportlab Paragraph class
+        'Table'    → reportlab Table class
+        'TableStyle' → reportlab TableStyle class
+        'HRFlowable'→ reportlab HRFlowable class
+    """
+    from reportlab.platypus import Paragraph, Spacer, Table, TableStyle, HRFlowable
+    from reportlab.lib.units import mm
+
+    st_section = styles['section']
+    st_subsec  = styles['subsec']
+    st_body    = styles['body']
+
+    def _escape_html(s):
+        return s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+    def _inline(s):
+        # **bold** → <b>bold</b>, *italic* → <i>italic</i>
+        import re
+        s = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', s)
+        s = re.sub(r'\*(.+?)\*',     r'<i>\1</i>', s)
+        return s
+
+    flowables = []
+    lines = md_text.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+
+        if not stripped:
+            flowables.append(Spacer(1, 2 * mm))
+            i += 1
+            continue
+
+        if stripped.startswith('---'):
+            flowables.append(HRFlowable(width='100%', thickness=0.5))
+            i += 1
+            continue
+
+        if stripped.startswith('### '):
+            flowables.append(Paragraph(_inline(stripped[4:]), st_subsec))
+            i += 1
+            continue
+
+        if stripped.startswith('## '):
+            flowables.append(Spacer(1, 3 * mm))
+            flowables.append(Paragraph(_inline(stripped[3:]), st_section))
+            i += 1
+            continue
+
+        if stripped.startswith('# '):
+            flowables.append(Paragraph(_inline(stripped[2:]), st_section))
+            i += 1
+            continue
+
+        # Markdown table: collect consecutive | lines
+        if stripped.startswith('|'):
+            tbl_lines = []
+            while i < len(lines) and lines[i].strip().startswith('|'):
+                tbl_lines.append(lines[i].strip())
+                i += 1
+            # Filter out separator rows (---|---)
+            data_lines = [l for l in tbl_lines
+                          if not all(c in '|-: ' for c in l)]
+            if data_lines:
+                tbl_data = []
+                for tl in data_lines:
+                    cells = [c.strip() for c in tl.strip('|').split('|')]
+                    tbl_data.append([Paragraph(_inline(c), st_body) for c in cells])
+                if tbl_data:
+                    n_cols = max(len(r) for r in tbl_data)
+                    col_w_val = styles.get('content_w', 150 * mm) / max(n_cols, 1)
+                    tbl = Table(tbl_data, colWidths=[col_w_val] * n_cols)
+                    from reportlab.lib import colors as _rlc
+                    tbl.setStyle(TableStyle([
+                        ('GRID',        (0, 0), (-1, -1), 0.4, _rlc.grey),
+                        ('BACKGROUND',  (0, 0), (-1, 0),  _rlc.HexColor('#E8ECF4')),
+                        ('FONTNAME',    (0, 0), (-1, 0),  'Helvetica-Bold'),
+                        ('FONTSIZE',    (0, 0), (-1, -1), 8),
+                        ('TOPPADDING',  (0, 0), (-1, -1), 3),
+                        ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+                        ('LEFTPADDING',  (0, 0), (-1, -1), 4),
+                        ('RIGHTPADDING', (0, 0), (-1, -1), 4),
+                    ]))
+                    flowables.append(tbl)
+                    flowables.append(Spacer(1, 2 * mm))
+            continue
+
+        # Normal paragraph
+        flowables.append(Paragraph(_inline(_escape_html(stripped)), st_body))
+        i += 1
+
+    return flowables
+
+
 # ── Private helpers per generate_relazione_tecnica ────────────────────────────
-def _diagnose_ofc(ofc_report_std: dict, ofc_report_cluster) -> tuple:
+def _diagnose_ofc(
+    ofc_report_std: dict,
+    ofc_report_cluster,
+    *,
+    names: tuple = ('Standard', 'Cluster'),
+) -> tuple:
     '''
     Genera paragrafi diagnostici OFC adattativi (sezione 6a).
 
     Returns (std_paragraph_html, cluster_paragraph_html_or_None).
+    names: etichette per i due path (default Standard/Cluster; passa engine names per output dinamico).
     '''
     def _para(report, path_name):
         if report is None:
@@ -12714,8 +12621,8 @@ def _diagnose_ofc(ofc_report_std: dict, ofc_report_cluster) -> tuple:
                 f"La promozione del path {path_name} non è giustificata."
             )
 
-    std_txt = _para(ofc_report_std, "Standard")
-    clu_txt = _para(ofc_report_cluster, "Cluster") if ofc_report_cluster is not None else None
+    std_txt = _para(ofc_report_std, names[0])
+    clu_txt = _para(ofc_report_cluster, names[1]) if ofc_report_cluster is not None else None
     return std_txt, clu_txt
 
 
@@ -13678,47 +13585,39 @@ def generate_relazione_tecnica(
     year: int,
     profile: str,
     benchmark: str,
+    benchmark_pf=None,
     period: tuple,
     universe_size: int,
     wfo_config: dict,
-    cluster_result: dict | None,
-    metrics_comparison: dict,
-    ofc_report_std: dict,
-    ofc_report_cluster: dict | None,
-    mc_skill: dict,
-    mc_ci,
-    skill_profile: str,
-    skill_profile_cluster: str | None = None,   # B-005
+    engines: dict,
     plots_dir,
     output_path,
     gen_date: str | None = None,
-    ci_results: dict | None = None,
-    mc_skill_cluster: dict | None = None,
-    mc_ci_cluster=None,
     survivorship_bias_universe: bool = False,
 ) -> _Path_doc:
-    
+
     '''
     Genera la Relazione Tecnica PDF con reportlab.
 
-    Struttura: sezione 1 Identita, 2 WFO Config, 2b Cluster,
+    Struttura: sezione 1 Identita, 2 WFO Config,
     3 Metriche, 4 OFC, 5 MC (5a skill + 5b CI),
     6 Diagnosi strutturale, 7 Decisione Finale + verdict box.
-    Incorpora 10 figure da plots_dir.
+    Incorpora figure da plots_dir (una per engine).
 
     Parameters
     ----------
-    mc_ci : pd.DataFrame
-        ci_summary_df da run_all_mc_methods_rotational.
+    engines : dict[str, dict]
+        Chiave = nome engine. Ogni valore deve contenere:
+        "ofc_report", "mc_skill", "mc_ci", "skill_profile",
+        "pf_rot" (opz.), "pf_rot_base" (opz.),
+        "plots_subdir" (opz., default = nome engine).
+    benchmark_pf : opzionale, portfolio benchmark per metriche sezione 3/7.
     plots_dir : path-like
-        Directory con i PNG salvati.
+        Directory radice PNG; immagini per engine in plots_dir/subdir/.
     output_path : path-like
         Path del PDF da generare.
     gen_date : str, optional
         Data generazione ISO (default: oggi).
-    ci_results : dict | None, optional
-        Risultato di run_mc_confidence_intervals_rotational. Se contiene la chiave 'sri',
-        aggiunge la sezione SRI/MRM PRIIPs Cat.3 nella scheda tecnica.
 
     Returns
     -------
@@ -13747,7 +13646,38 @@ def generate_relazione_tecnica(
     if gen_date is None:
         gen_date = _dt_doc.date.today().isoformat()
     period_start, period_end = (period if len(period) == 2 else (period[0], gen_date))
-    use_clustering = wfo_config.get('use_clustering', False)
+
+    # ── Per-engine aliases ────────────────────────────────────────────────────
+    _eng_list  = list(engines.items())
+    _eng_names = [n for n, _ in _eng_list]
+    # Map first engine → legacy "std" vars (used by _build_verdict_text etc.)
+    _eng1_name, _eng1 = _eng_list[0]
+    ofc_report_std     = _eng1.get('ofc_report') or {}
+    mc_skill           = _eng1.get('mc_skill')   or {}
+    mc_ci              = _eng1.get('mc_ci')
+    skill_profile      = _eng1.get('skill_profile', 'N/A')
+    # Second engine (if present) → legacy "cluster" vars
+    if len(_eng_list) >= 2:
+        _eng2_name, _eng2 = _eng_list[1]
+        ofc_report_cluster  = _eng2.get('ofc_report') or None
+        mc_skill_cluster    = _eng2.get('mc_skill')   or None
+        mc_ci_cluster       = _eng2.get('mc_ci')
+        skill_profile_cluster = _eng2.get('skill_profile', None)
+    else:
+        _eng2_name = None
+        _eng2      = None
+        ofc_report_cluster  = None
+        mc_skill_cluster    = None
+        mc_ci_cluster       = None
+        skill_profile_cluster = None
+    # Build metrics_comparison for legacy helpers
+    metrics_comparison = {'benchmark': benchmark_pf}
+    metrics_comparison['std_riskoff'] = _eng1.get('pf_rot')
+    metrics_comparison['std_base']    = _eng1.get('pf_rot_base')
+    if _eng2:
+        metrics_comparison['cluster_riskoff'] = _eng2.get('pf_rot')
+        metrics_comparison['cluster_base']    = _eng2.get('pf_rot_base')
+    # ─────────────────────────────────────────────────────────────────────────
 
     C_NAVY    = rl_colors.HexColor(_RL_NAVY)
     C_NAVY_LT = rl_colors.HexColor(_RL_NAVY_LT)
@@ -13936,16 +13866,14 @@ def generate_relazione_tecnica(
     # Cover
     story.append(Spacer(1, 8 * mm))
     story.append(Paragraph(f"Relazione Tecnica · {portfolio_title} {year}", st_title))
-    use_cl_desc = 'con clustering gerarchico e ' if use_clustering else ''
+    _eng_desc = ' · '.join(_eng_names)
     story.append(Paragraph(
-        f"R-portfolio {use_cl_desc}Risk ON/OFF · "
+        f"R-portfolio ({_eng_desc}) · Risk ON/OFF · "
         f"Benchmark {benchmark} · Profilo {profile}", st_subtitle))
     story.append(_hr())
 
     # Sezione 1: Identità
     story.append(Paragraph("1. Identità del Portafoglio", st_section))
-    cl_row = ('Attivo · gerarchico Ward · k adattivo'
-              if use_clustering else 'Non attivo')
     id_data = [
         [Paragraph('Campo', st_cell_hdr), Paragraph('Valore', st_cell_hdr)],
         ['Nome',             portfolio_title],
@@ -13955,7 +13883,6 @@ def generate_relazione_tecnica(
         ['Profilo',          profile],
         ['Periodo analisi',  f"{period_start} → {period_end}"],
         ['Data generazione', gen_date],
-        ['Clustering',       cl_row],
         ['Risk ON/OFF',      'Attivo · filtro regime di mercato'],
     ]
     id_t = Table(id_data, colWidths=[55 * mm, CONTENT_W - 55 * mm])
@@ -14015,108 +13942,33 @@ def generate_relazione_tecnica(
     wfo_t.setStyle(TableStyle(_ts_base()))
     story += [wfo_t, Spacer(1, 5 * mm)]
 
-    # Sezione 2b: Struttura Cluster (condizionale)
-    if use_clustering and cluster_result is not None:
-        _cgroups = cluster_result.get('cluster_groups', {})
-        _clabels = cluster_result.get('cluster_labels', {})
-        if _cgroups:
-            # story.append(Paragraph("2.b Struttura dei Cluster", st_subsec))
-            story.append(Paragraph("2.a Struttura dei Cluster", st_subsec))
-            
-            n_cl = len(_cgroups)
-            story.append(Paragraph(
-                "L'analisi di clustering gerarchico (linkage Ward, distanza combinata "
-                "60% correlazione + 40% feature euclidee su Vol/Mom6m/AutoCorr/MaxDD) ha "
-                f"identificato <b>{n_cl} cluster</b> sull'ultima finestra WFO. "
-                "Le etichette sono assegnate adattivamente secondo priorità "
-                "AVOID &gt; HIGH_MOMENTUM &gt; DEFENSIVE &gt; BALANCED.", st_body))
-            
-            def _fmt_t(ts):
-                ab = [t.split('.')[0] for t in ts]
-                r  = ' · '.join(ab[:10])
-                return r + (f' ... (+{len(ts)-10})' if len(ts) > 10 else '')
-
-            cl_hdr = [
-                Paragraph('Cluster', st_cell_hdrc),
-                Paragraph('Label', st_cell_hdrc),
-                Paragraph('N. Titoli', st_cell_hdrc),
-                Paragraph('Tickers', st_cell_hdr),
-            ]
-            cl_rows = [cl_hdr]
-            cl_ts   = _ts_base()
-            for ri, cid in enumerate(sorted(_cgroups.keys()), start=1):
-                lbl = _clabels.get(cid, f'C{cid}')
-                cl_rows.append([
-                    Paragraph(f'C{cid}', st_cell_ctr),
-                    Paragraph(f'<b>{lbl}</b>', st_cell_bold),
-                    Paragraph(str(len(_cgroups[cid])), st_cell_ctr),
-                    Paragraph(_fmt_t(_cgroups[cid]), st_cell),
-                ])
-                if 'AVOID' in str(lbl).upper():
-                    cl_ts += [('BACKGROUND', (1, ri), (1, ri), C_RED),
-                               ('TEXTCOLOR',  (1, ri), (1, ri), C_WHITE)]
-            # cl_t = Table(cl_rows, colWidths=[18 * mm, 30 * mm, 18 * mm, CONTENT_W - 66 * mm])
-            # Bug #4 fix: colonna Label da 30→38mm per accogliere HIGH_MOMENTUM senza wrap
-            cl_t = Table(cl_rows, colWidths=[18 * mm, 38 * mm, 18 * mm, CONTENT_W - 74 * mm])
-            cl_t.setStyle(TableStyle(cl_ts))
-            story += [cl_t, Spacer(1, 3 * mm)]
-
-            story.extend(_img('cluster_dendrogram.png',
-                # caption='Fig. 1 — Dendrogramma Ward (snapshot ultima finestra IS). Soglia di taglio produce i cluster: '
-                #         'gruppo verde = AVOID, blu = BALANCED. '
-                #         'La composizione viene ricalcolata a ogni ribilanciamento.'))
-                caption='Fig. 1 — Dendrogramma Ward (snapshot ultima finestra IS). La soglia di taglio (linea rossa tratteggiata) determina il numero di cluster; i rami sotto la soglia sono colorati per cluster di appartenenza. '
-                        'La composizione viene ricalcolata a ogni ribilanciamento.'))
-            story.extend(_img('cluster_scatter.png',
-                caption='Fig. 2 — Scatter Volatilità annualizzata vs Momentum 6 mesi (snapshot ultima finestra IS). '
-                        'Colorato per cluster. Il gruppo AVOID concentra titoli con momentum '
-                        'negativo e alta volatilità. '
-                        'La composizione viene ricalcolata a ogni ribilanciamento.'))
-            story.extend(_img('cluster_heatmap.png',
-                # caption='Fig. 3 — Matrice di correlazione su finestra coerente con WFO (snapshot ultima finestra IS). '
-                #         'Ordinata per cluster. Box blu = AVOID, box arancio = BALANCED. '
-                #         'La composizione viene ricalcolata a ogni ribilanciamento.'))
-                caption='Fig. 3 — Matrice di correlazione su finestra coerente con WFO (snapshot ultima finestra IS). '
-                        'Ordinata per cluster: i box colorati sopra la matrice delimitano i sub-gruppi e ne indicano la label. '
-                        'La composizione viene ricalcolata a ogni ribilanciamento.'))
     # Sezione 3: Metriche Comparative WFO
     story.append(Paragraph("3. Metriche Comparative WFO", st_section))
 
-    # story.append(Paragraph(
-    #     f"Confronto delle quattro varianti del motore (Standard vs Cluster, ognuna con e senza "
-    #     f"Risk ON/OFF) sul periodo comune. Il benchmark {benchmark} è riportato "
-    #     "nell'ultima riga. La variante <b>Cluster — Risk ON/OFF</b> (evidenziata) "
-    #     "è quella candidata al deploy operativo.", st_body))
-
     # §3 — tabella a 10 colonne via analyze_portfolio_metrics (coerente con JN/compare_wfo_pipelines)
     story.append(Paragraph(
-        f"Confronto delle quattro varianti del motore (Standard vs Cluster, ognuna con e senza "
+        f"Confronto delle varianti del motore ({_eng_desc}, ognuna con e senza "
         f"Risk ON/OFF) sul periodo comune. Il benchmark <b>{benchmark}</b> è riportato "
         "nell'ultima riga. Le metriche sono prodotte dalla stessa funzione usata in sviluppo "
         "(JN §5c); solo le varianti Risk ON/OFF sono sottoposte a validazione OFC e Monte Carlo (§4–§7).",
         st_body))
 
     # --- Costruisci port_cumrets (base 1.0) dalle serie equity dei portfolio ---
-    _s3_key_labels = [
-        ('cluster_riskoff', 'Cluster — Risk ON/OFF'),
-        ('cluster_base',    'Cluster — Base'),
-        ('std_riskoff',     'Standard — Risk ON/OFF'),
-        ('std_base',        'Standard — Base'),
-    ]
     _s3_cum = {}
-    for _s3k, _s3lbl in _s3_key_labels:
-        _s3pf = metrics_comparison.get(_s3k)
-        if _s3pf is not None:
-            try:
-                _s3cr = _s3pf.cumulative_returns() + 1
-                _s3_cum[_s3lbl] = _s3cr.squeeze() if hasattr(_s3cr, 'squeeze') else _s3cr
-            except Exception:
-                pass
+    for _en, _ev in engines.items():
+        for _var_lbl, _pf_key in [(f'{_en} — Risk ON/OFF', 'pf_rot'),
+                                   (f'{_en} — Base', 'pf_rot_base')]:
+            _s3pf = _ev.get(_pf_key)
+            if _s3pf is not None:
+                try:
+                    _s3cr = _s3pf.cumulative_returns() + 1
+                    _s3_cum[_var_lbl] = _s3cr.squeeze() if hasattr(_s3cr, 'squeeze') else _s3cr
+                except Exception:
+                    pass
     _s3_bm_series = None
-    _s3pf_bm = metrics_comparison.get('benchmark')
-    if _s3pf_bm is not None:
+    if benchmark_pf is not None:
         try:
-            _s3bm_cr = _s3pf_bm.cumulative_returns() + 1
+            _s3bm_cr = benchmark_pf.cumulative_returns() + 1
             _s3_bm_series = _s3bm_cr.squeeze() if hasattr(_s3bm_cr, 'squeeze') else _s3bm_cr
         except Exception:
             pass
@@ -14291,8 +14143,11 @@ def generate_relazione_tecnica(
         t.setStyle(TableStyle(_ts_base() + ts_x))
         story.extend([t, Spacer(1, 5 * mm)])
 
-    _ofc_block(_s,        ofc_passed_std,     '4.a — Path Standard')
-    _ofc_block(_sc or {}, ofc_passed_cluster, '4.b — Path Cluster')
+    for _ei, (_en, _ev) in enumerate(engines.items()):
+        _esigs    = (_ev.get('ofc_report') or {}).get('signals', {})
+        _epassed  = bool((_ev.get('ofc_report') or {}).get('promoted', False))
+        _etitle   = f"4.{chr(ord('a')+_ei)} — {_en}"
+        _ofc_block(_esigs, _epassed, _etitle)
 
     from reportlab.platypus import PageBreak as _PB
     story.append(_PB())
@@ -14327,36 +14182,28 @@ def generate_relazione_tecnica(
             story.extend([sk_t, Spacer(1, 3 * mm)])
         
     story.append(Paragraph("5.a — Skill Tests (Block B)", st_subsec))
-    
-    # ── §5.a.1 Path Standard: tabella + 3 figure ────────────────────────────
-    _sk_block("5.a.1 — Path Standard", [
-        ('B1 — Rotation Reshuffle', 'La rotazione batte una selezione casuale dei titoli?', reshuffle_pval, reshuffle_pass),
-        ('B2 — Rebalance Timing',   'Il timing mensile batte date di rebalance casuali?',   timing_pval,    timing_pass),
-    ])
-    story.extend(_img_sub('std', 'mc_reshuffle.png',
-        caption='Fig. 5a — Path Standard. Distribuzione bootstrap del CAGR sotto H0 di rotazione casuale (B1). '
-                'Linea rossa = CAGR effettivo'))
-    story.extend(_img_sub('std', 'mc_timing.png',
-        caption='Fig. 5b — Path Standard. Distribuzione bootstrap del CAGR sotto H0 di rebalance casuale (B2). '
-                'Linea rossa = CAGR effettivo'))
-    story.extend(_img_sub('std', 'mc_skill_summary.png',
-        caption='Fig. 5c — Path Standard. Skill Tests, p-value per metrica (CAGR, MaxDD, Sharpe, Calmar, Vol, Ulcer). '
-                'Soglie tratteggiate al 5% e 1%'))
 
-    # ── §5.a.2 Path Cluster: tabella + 3 figure ─────────────────────────────
-    _sk_block("5.a.2 — Path Cluster", [
-        ('B1 — Rotation Reshuffle', 'La rotazione batte una selezione casuale dei titoli?', reshuffle_pval_cl, reshuffle_pass_cl),
-        ('B2 — Rebalance Timing',   'Il timing mensile batte date di rebalance casuali?',   timing_pval_cl,    timing_pass_cl),
-    ])
-    story.extend(_img_sub('cluster', 'mc_reshuffle.png',
-        caption='Fig. 6a — Path Cluster. Distribuzione bootstrap del CAGR sotto H0 di rotazione casuale (B1). '
-                'Linea rossa = CAGR effettivo'))
-    story.extend(_img_sub('cluster', 'mc_timing.png',
-        caption='Fig. 6b — Path Cluster. Distribuzione bootstrap del CAGR sotto H0 di rebalance casuale (B2). '
-                'Linea rossa = CAGR effettivo'))
-    story.extend(_img_sub('cluster', 'mc_skill_summary.png',
-        caption='Fig. 6c — Path Cluster. Skill Tests, p-value per metrica (CAGR, MaxDD, Sharpe, Calmar, Vol, Ulcer). '
-                'Soglie tratteggiate al 5% e 1%'))
+    # ── §5.a — per-engine Skill Tests ────────────────────────────────────────
+    for _ei, (_en, _ev) in enumerate(engines.items()):
+        _emcs    = _ev.get('mc_skill') or {}
+        _esubdir = _ev.get('plots_subdir', _en)
+        _b1_pv   = _emcs.get('rotation_reshuffle', {}).get('p_values', {}).get('CAGR')
+        _b2_pv   = _emcs.get('rebalance_timing',   {}).get('p_values', {}).get('CAGR')
+        _b1_pass = (_b1_pv is not None) and (_b1_pv < 0.10)
+        _b2_pass = (_b2_pv is not None) and (_b2_pv < 0.10)
+        _sk_block(f"5.a.{_ei+1} — {_en}", [
+            ('B1 — Rotation Reshuffle', 'La rotazione batte una selezione casuale dei titoli?', _b1_pv, _b1_pass),
+            ('B2 — Rebalance Timing',   'Il timing mensile batte date di rebalance casuali?',   _b2_pv, _b2_pass),
+        ])
+        story.extend(_img_sub(_esubdir, 'mc_reshuffle.png',
+            caption=f'Fig. 5a.{_ei+1} — {_en}. Distribuzione bootstrap CAGR H0 rotazione casuale (B1). '
+                    'Linea rossa = CAGR effettivo'))
+        story.extend(_img_sub(_esubdir, 'mc_timing.png',
+            caption=f'Fig. 5b.{_ei+1} — {_en}. Distribuzione bootstrap CAGR H0 rebalance casuale (B2). '
+                    'Linea rossa = CAGR effettivo'))
+        story.extend(_img_sub(_esubdir, 'mc_skill_summary.png',
+            caption=f'Fig. 5c.{_ei+1} — {_en}. Skill Tests p-value per metrica. '
+                    'Soglie tratteggiate al 5% e 1%'))
 
     def _ci_block(title, ci_func):
             story.append(Paragraph(title, st_subsec))
@@ -14380,49 +14227,48 @@ def generate_relazione_tecnica(
             story.extend([ci_t, Spacer(1, 3 * mm)])
 
     story.append(Paragraph("5.b — Confidence Intervals (Block A)", st_subsec))
-    
-    # ── §5.b.1 Path Standard: tabella + 3 figure ────────────────────────────
-    _ci_block("5.b.1 — Path Standard", _ci)
-    story.extend(_img_sub('std', 'mc_ci_fanchart_iid.png',
-        caption='Fig. 7a — Path Standard. Fan chart equity A1 \u00b7 IID Bootstrap. '
-                'Banda p5\u2013p95 azzurro, mediana blu, Actual rosso, Benchmark grigio tratteggiato.'))
-    story.extend(_img_sub('std', 'mc_ci_fanchart_block.png',
-        caption='Fig. 7b — Path Standard. Fan chart equity A2 \u00b7 Block Bootstrap. '
-                'Banda p5\u2013p95 azzurro, mediana blu, Actual rosso, Benchmark grigio tratteggiato.'))
-    story.extend(_img_sub('std', 'mc_ci.png',
-        caption='Fig. 7c — Path Standard. Confidence Intervals cross-method per CAGR e Max Drawdown. '
-                'Linea rossa tratteggiata = valore Actual del portafoglio'))
 
-    # ── §5.b.2 Path Cluster: tabella + 3 figure ─────────────────────────────
-    _ci_block("5.b.2 — Path Cluster",  _ci_cl)
-    story.extend(_img_sub('cluster', 'mc_ci_fanchart_iid.png',
-        caption='Fig. 8a — Path Cluster. Fan chart equity A1 \u00b7 IID Bootstrap. '
-                'Banda p5\u2013p95 azzurro, mediana blu, Actual rosso, Benchmark grigio tratteggiato.'))
-    story.extend(_img_sub('cluster', 'mc_ci_fanchart_block.png',
-        caption='Fig. 8b — Path Cluster. Fan chart equity A2 \u00b7 Block Bootstrap. '
-                'Banda p5\u2013p95 azzurro, mediana blu, Actual rosso, Benchmark grigio tratteggiato.'))
-    story.extend(_img_sub('cluster', 'mc_ci.png',
-        caption='Fig. 8c — Path Cluster. Confidence Intervals cross-method per CAGR e Max Drawdown. '
-                'Linea rossa tratteggiata = valore Actual del portafoglio'))
+    # ── §5.b — per-engine CI ──────────────────────────────────────
+    for _ei, (_en, _ev) in enumerate(engines.items()):
+        _emci    = _ev.get('mc_ci')
+        _esubdir = _ev.get('plots_subdir', _en)
+        def _eng_ci(row, col, pct=True, _df=_emci):
+            try:
+                v = float(_df.loc[row, col])
+                return f"{v*100:.1f}%" if pct else f"{v:.3f}"
+            except Exception:
+                return 'N/A'
+        _ci_block(f"5.b.{_ei+1} — {_en}", _eng_ci)
+        story.extend(_img_sub(_esubdir, 'mc_ci_fanchart_iid.png',
+            caption=f'Fig. 6a.{_ei+1} — {_en}. Fan chart equity A1 · IID Bootstrap. '
+                    'Banda p5–p95 azzurro, mediana blu, Actual rosso.'))
+        story.extend(_img_sub(_esubdir, 'mc_ci_fanchart_block.png',
+            caption=f'Fig. 6b.{_ei+1} — {_en}. Fan chart equity A2 · Block Bootstrap.'))
+        story.extend(_img_sub(_esubdir, 'mc_ci.png',
+            caption=f'Fig. 6c.{_ei+1} — {_en}. CI cross-method CAGR e MaxDD. '
+                    'Linea rossa tratteggiata = valore Actual.'))
 
 
-    # ── Sezione 5.c: SRI / MRM PRIIPs ─────────────────────────────────────────
-    _sri_data = ci_results.get('sri') if ci_results else None
-    if _sri_data is not None:
+
+    # ── Sezione 5.c: SRI / MRM PRIIPs (per engine) ───────────────────────────
+    _SRI_COLORS = ['#1A7340', '#4CAF50', '#8BC34A', '#FFC107', '#FF9800', '#F44336', '#B71C1C']
+    for _ei, (_en, _ev) in enumerate(engines.items()):
+        _sri_data = (_ev.get('ci_results') or {}).get('sri')
+        if _sri_data is None:
+            continue
         _sri_iid   = _sri_data['iid']
         _sri_blk   = _sri_data['block']
         _sri_cap   = _sri_data.get('capital_base', 10_000)
         _sri_rhp   = _sri_iid['rhp_years_effective']
         _sri_mfin  = _sri_data['mrm_class_final']
-        _SRI_COLORS = ['#1A7340', '#4CAF50', '#8BC34A', '#FFC107', '#FF9800', '#F44336', '#B71C1C']
 
         story.append(Spacer(1, 4 * mm))
-        story.append(Paragraph("5.c — Indicatore di Rischio Sintetico (metodologia PRIIPs)", st_subsec))
+        story.append(Paragraph(f"5.c.{_ei+1} — {_en} · Indicatore di Rischio Sintetico (metodologia PRIIPs)", st_subsec))
 
         # Scale 1-7: colored boxes
         _box_w = CONTENT_W / 7
-        _st_snum = _st('_sri_num', fontSize=11, fontName='Helvetica-Bold', alignment=TA_CENTER)
-        _st_slbl = _st('_sri_lbl', fontSize=6.5, alignment=TA_CENTER)
+        _st_snum = _st(f'_sri_num_{_ei}', fontSize=11, fontName='Helvetica-Bold', alignment=TA_CENTER)
+        _st_slbl = _st(f'_sri_lbl_{_ei}', fontSize=6.5, alignment=TA_CENTER)
         _scale_r1 = [Paragraph(f'<b>{cls}</b>', _st_snum) for cls in range(1, 8)]
         _scale_r2 = ([Paragraph('Rischio basso', _st_slbl)]
                      + [Paragraph('', _st_slbl)] * 5
@@ -14454,7 +14300,7 @@ def generate_relazione_tecnica(
         story += [_sc_t, Spacer(1, 4 * mm)]
 
         # Technical table
-        _st_disc = _st('_sri_disc', fontSize=7.5, textColor=C_TEXT,
+        _st_disc = _st(f'_sri_disc_{_ei}', fontSize=7.5, textColor=C_TEXT,
                         alignment=TA_JUSTIFY, leading=10)
         _sri_rows = [
             [Paragraph('Parametro', st_cell_hdr),
@@ -14473,21 +14319,13 @@ def generate_relazione_tecnica(
              Paragraph(f'{_sri_rhp:.1f} anni', st_cell_ctr),
              Paragraph('—', st_cell_ctr)],
             [Paragraph('Frequenza dati', st_cell),
-             Paragraph('mensile (+1 classe penalita’ reg.)', st_cell_ctr),
+             Paragraph('mensile (+1 classe penalita\u2019 reg.)', st_cell_ctr),
              Paragraph('', st_cell_ctr)],
-            # [Paragraph('<b>Classe MRM finale</b>', st_cell_bold),
-            #  Paragraph(f'<b>{_sri_mfin} / 7</b>', st_cell_ctr),
-            #  Paragraph('(max IID, Block)', st_cell_ctr)],
             [Paragraph('Classe MRM finale', st_cell_hdr),
              Paragraph(f'{_sri_mfin} / 7', st_cell_hdrc),
              Paragraph('(max IID, Block)', st_cell_hdrc)],
         ]
         _sri_t = Table(_sri_rows, colWidths=[65 * mm, 40 * mm, 57 * mm])
-        # _sri_ts = _ts_base() + [
-        #     ('FONTNAME',   (0, 6), (-1, 6), 'Helvetica-Bold'),
-        #     ('BACKGROUND', (0, 6), (-1, 6), C_NAVY_LT),
-        #     ('TEXTCOLOR',  (0, 6), (-1, 6), C_WHITE),
-        # ]
         _sri_ts = _ts_base() + [
             ('BACKGROUND', (0, 6), (-1, 6), C_NAVY_LT),
         ]
@@ -14502,7 +14340,7 @@ def generate_relazione_tecnica(
             "registrato e questa scheda non costituisce un Key Information Document né altro "
             "documento informativo regolamentare ai sensi della normativa europea. Il calcolo "
             "segue l'approccio Category 3 (simulazione Monte Carlo) sui rendimenti mensili OOS "
-            "della Walk-Forward Optimization, applicando la penalita’ regolamentare di +1 classe "
+            "della Walk-Forward Optimization, applicando la penalita' regolamentare di +1 classe "
             "MRM prevista per dati a frequenza mensile. La regola conservativa adottata in caso "
             "di divergenza tra metodi bootstrap (IID e Block) seleziona la classe più alta. "
             "Questa scheda non costituisce consulenza in materia di investimenti.",
@@ -14512,210 +14350,76 @@ def generate_relazione_tecnica(
     from reportlab.platypus import PageBreak as _PB
     story.append(_PB())
 
-    # Sezione 6: Diagnosi strutturale
-    story.append(Paragraph("6. Analisi dei Segnali e Diagnosi Strutturale", st_section))
-    ofc_std_txt, ofc_clu_txt = _diagnose_ofc(ofc_report_std, ofc_report_cluster)
-    # sk_txt1, sk_txt2, ci_txt = _diagnose_mc(mc_skill, mc_ci, metrics_comparison)
-    # B-005: passa mc_skill_cluster e mc_ci_cluster per narrativa Opzione C
-    sk_txt1, sk_txt2, ci_txt = _diagnose_mc(
-        mc_skill, mc_ci, metrics_comparison,
-        mc_skill_cluster   = mc_skill_cluster,
-        mc_ci_cluster      = mc_ci_cluster,
-        ofc_report_std     = ofc_report_std,
-        ofc_report_cluster = ofc_report_cluster,
-        profile            = profile,
+    # Sezioni 6+7: generate via LLM (N-ario, zero riferimenti Standard/Cluster)
+    _llm_md = generate_relazione_llm(
+        engines         = engines,
+        wfo_config      = wfo_config,
+        portfolio_title = portfolio_title,
+        year            = year,
+        profile         = profile,
+        benchmark_title = benchmark,
+        benchmark_pf    = benchmark_pf,
     )
-    
-    story.append(Paragraph("6.a — Lettura dei segnali OFC", st_subsec))
-    story.append(Paragraph(ofc_std_txt, st_body))
-    if ofc_clu_txt:
-        story.append(Paragraph(ofc_clu_txt, st_body))
+    _llm_flowables = _md_to_flowables(
+        _llm_md,
+        styles={
+            'section':   st_section,
+            'subsec':    st_subsec,
+            'body':      st_body,
+            'content_w': CONTENT_W,
+        },
+    )
+    story.extend(_llm_flowables)
 
-    story.append(Paragraph("6.b — Lettura dei test Monte Carlo Skill", st_subsec))
-    story.append(Paragraph(sk_txt1, st_body))
-    if sk_txt2:
-        story.append(Paragraph(sk_txt2, st_body))
-
-    story.append(Paragraph("6.c — Confidence Intervals (Block A)", st_subsec))
-    story.append(Paragraph(ci_txt, st_body))
-
-    # Sezione 7: Decisione Finale + verdict box
+    # Sezione 7: tabella riassuntiva N-aria (deterministica) + intestazione già in LLM output
+    story.append(Spacer(1, 4 * mm))
     story.append(Paragraph("7. Decisione Finale", st_section))
-    ofc_std_v  = 'PROMOTED' if ofc_passed_std else 'NOT PROMOTED'
-    ofc_clu_v  = ('PROMOTED' if ofc_passed_cluster else
-                  'NOT PROMOTED' if ofc_passed_cluster is not None else 'N/A')
-    dec_hdr = [Paragraph('Dimensione', st_cell_hdr),
-               Paragraph('Standard', st_cell_hdrc),
-               Paragraph('Cluster', st_cell_hdrc)]
-    dec_rows = [dec_hdr,
-        ['OFC Verdict',     _vp(ofc_std_v),  _vp(ofc_clu_v)],
-        # ['Skill Profile',   skill_profile,    skill_profile],
-        ['Skill Profile',   skill_profile or 'N/A',
-                            skill_profile_cluster or skill_profile or 'N/A'],   # B-005
-        [f'CAGR vs {benchmark}',
-         f"{_m('std_riskoff','cagr')} vs {_m('benchmark','cagr')}",
-         f"{_m('cluster_riskoff','cagr')} vs {_m('benchmark','cagr')}"],
-        [f'Sharpe vs {benchmark}',
-         f"{_m('std_riskoff','sharpe')} vs {_m('benchmark','sharpe')}",
-         f"{_m('cluster_riskoff','sharpe')} vs {_m('benchmark','sharpe')}"],
-        [f'MaxDD vs {benchmark}',
-         f"{_m('std_riskoff','maxdd')} vs {_m('benchmark','maxdd')}",
-         f"{_m('cluster_riskoff','maxdd')} vs {_m('benchmark','maxdd')}"],
-    ]
+
+    # Dynamic N-column decision table
+    def _mpf_val(pf, metric):
+        if pf is None: return 'N/A'
+        try:
+            if metric == 'cagr':   return f"{pf.annualized_return()*100:.1f}%"
+            if metric == 'sharpe': return f"{pf.sharpe_ratio():.2f}"
+            if metric == 'maxdd':  return f"{abs(pf.max_drawdown())*100:.1f}%"
+        except Exception: return 'N/A'
+        return 'N/A'
+    _bm_cagr   = _mpf_val(benchmark_pf, 'cagr')
+    _bm_sharpe = _mpf_val(benchmark_pf, 'sharpe')
+    _bm_maxdd  = _mpf_val(benchmark_pf, 'maxdd')
+
+    dec_hdr = ([Paragraph('Dimensione', st_cell_hdr)]
+               + [Paragraph(_en, st_cell_hdrc) for _en in _eng_names])
+    dec_rows = [dec_hdr]
+    # OFC row
+    _ofc_row = ['OFC Verdict']
+    _ofc_vl_list = []
+    for _en, _ev in engines.items():
+        _ov = 'PROMOTED' if bool((_ev.get('ofc_report') or {}).get('promoted')) else 'NOT PROMOTED'
+        _ofc_vl_list.append(_ov)
+        _ofc_row.append(_vp(_ov))
+    dec_rows.append(_ofc_row)
+    # Skill Profile row
+    dec_rows.append(['Skill Profile'] + [_ev.get('skill_profile') or 'N/A' for _ev in engines.values()])
+    # Metric rows
+    for _mname, _mkey in [(f'CAGR vs {benchmark}', 'cagr'),
+                           (f'Sharpe vs {benchmark}', 'sharpe'),
+                           (f'MaxDD vs {benchmark}', 'maxdd')]:
+        _bm_v = {'cagr': _bm_cagr, 'sharpe': _bm_sharpe, 'maxdd': _bm_maxdd}[_mkey]
+        dec_rows.append([_mname] + [f"{_mpf_val(_ev.get('pf_rot'), _mkey)} vs {_bm_v}"
+                                     for _ev in engines.values()])
     d_ts = _ts_base() + [('ALIGN', (1, 0), (-1, -1), 'CENTER')]
-    for col_i, vl in [(1, ofc_std_v), (2, ofc_clu_v)]:
-        vc = _vc(vl)
-        if vc:
-            d_ts += [('BACKGROUND', (col_i, 1), (col_i, 1), vc),
-                     ('TEXTCOLOR',  (col_i, 1), (col_i, 1), C_WHITE)]
-    hw = (CONTENT_W - 45 * mm) / 2
-    dec_t = Table(dec_rows, colWidths=[45 * mm, hw, hw])
+    for _col_i, _vl in enumerate(_ofc_vl_list, start=1):
+        _vc_color = _vc(_vl)
+        if _vc_color:
+            d_ts += [('BACKGROUND', (_col_i, 1), (_col_i, 1), _vc_color),
+                     ('TEXTCOLOR',  (_col_i, 1), (_col_i, 1), C_WHITE)]
+    _hw = (CONTENT_W - 45 * mm) / max(len(_eng_names), 1)
+    dec_t = Table(dec_rows, colWidths=[45 * mm] + [_hw] * len(_eng_names))
     dec_t.setStyle(TableStyle(d_ts))
     story += [dec_t, Spacer(1, 5 * mm)]
 
-    # Verdict box adattivo
-    # _verdict_text = _build_verdict_text(
-    #     ofc_report_std=ofc_report_std,
-    #     ofc_report_cluster=ofc_report_cluster,
-    #     metrics_comparison=metrics_comparison,
-    #     mc_skill=mc_skill,
-    #     skill_profile=skill_profile,
-    #     wfo_config={**wfo_config, 'profile': profile},
-    # )
-    _verdict_text, _rating_result = _build_verdict_text(
-        ofc_report_std        = ofc_report_std,
-        ofc_report_cluster    = ofc_report_cluster,
-        metrics_comparison    = metrics_comparison,
-        mc_skill              = mc_skill,
-        skill_profile         = skill_profile,
-        skill_profile_cluster = skill_profile_cluster,   # B-005
-        wfo_config            = {**wfo_config, 'profile': profile},
-    )
-    _verdict_box = Table(
-        [[Paragraph(_verdict_text, st_vbox_j)]],
-        colWidths=[CONTENT_W])
-    _verdict_box.setStyle(TableStyle([
-        ('BACKGROUND',    (0, 0), (-1, -1), rl_colors.HexColor('#EAF0FB')),
-        ('BOX',           (0, 0), (-1, -1), 1.5, C_NAVY_LT),
-        ('LEFTPADDING',   (0, 0), (-1, -1), 12),
-        ('RIGHTPADDING',  (0, 0), (-1, -1), 12),
-        ('TOPPADDING',    (0, 0), (-1, -1), 10),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 10),
-    ]))
-    story.append(_verdict_box)
-    story.append(Spacer(1, 4 * mm))
-
-    # Rating table — mostrata solo nei CASI A/B/C (CASO D → _rating_result è None)
-    if _rating_result is not None:
-        _rk_keys   = _rating_result.get('eligible_keys', [])
-        _rk_scores = _rating_result.get('scores', {})
-        _rk_bkdn   = _rating_result.get('breakdown', {})
-        _rk_winner = _rating_result.get('winner')
-        _rk_wt     = _rating_result.get('weights', {})
-        _rat_hdr = [
-            Paragraph('<b>Variante</b>', st_cell_hdr),
-            Paragraph('<b>Score</b>', st_cell_hdrc),
-            Paragraph(f'<b>CAGR</b><br/><font size="7">{_rk_wt.get("cagr",0):.0%}</font>', st_cell_hdrc),
-            Paragraph(f'<b>Sharpe</b><br/><font size="7">{_rk_wt.get("sharpe",0):.0%}</font>', st_cell_hdrc),
-            Paragraph(f'<b>Sortino</b><br/><font size="7">{_rk_wt.get("sortino",0):.0%}</font>', st_cell_hdrc),
-            Paragraph(f'<b>MaxDD</b><br/><font size="7">{_rk_wt.get("maxdd",0):.0%}</font>', st_cell_hdrc),
-        ]
-        _rat_rows = [_rat_hdr]
-        for _rkey in _rk_keys:
-            _rlbl  = _VARIANT_LABELS.get(_rkey, _rkey)
-            _rsc   = _rk_scores.get(_rkey, 0.0)
-            _rbd   = _rk_bkdn.get(_rkey, {})
-            _is_w  = (_rkey == _rk_winner)
-            _rlbl_p = Paragraph(f'<b>{_rlbl}</b>' if _is_w else _rlbl, st_cell_bold if _is_w else st_cell)
-            _rat_rows.append([
-                _rlbl_p,
-                Paragraph(f'<b>{_rsc:.3f}</b>' if _is_w else f'{_rsc:.3f}', st_cell_ctr),
-                Paragraph(f'{_rbd.get("cagr",0):.2f}',    st_cell_ctr),
-                Paragraph(f'{_rbd.get("sharpe",0):.2f}',  st_cell_ctr),
-                Paragraph(f'{_rbd.get("sortino",0):.2f}', st_cell_ctr),
-                Paragraph(f'{_rbd.get("maxdd",0):.2f}',   st_cell_ctr),
-            ])
-        _cw_rat = [CONTENT_W * 0.38, CONTENT_W * 0.12,
-                   CONTENT_W * 0.125, CONTENT_W * 0.125,
-                   CONTENT_W * 0.125, CONTENT_W * 0.125]
-        _rat_ts = _ts_base() + [
-            ('ALIGN', (1, 0), (-1, -1), 'CENTER'),
-        ]
-        # Colonna 0 (Variante) — sfondo neutro per tutte le righe dati
-        for _ri in range(1, len(_rk_keys) + 1):
-            _rat_ts.append(('BACKGROUND', (0, _ri), (0, _ri),
-                            rl_colors.HexColor('#F5F5F5')))
-        # Colonne 1-5 — gradiente per-cella basato sul valore normalizzato 0-1
-        _rat_col_order = ['score', 'cagr', 'sharpe', 'sortino', 'maxdd']
-        for _ri, _rkey in enumerate(_rk_keys, start=1):
-            _rsc  = _rk_scores.get(_rkey, 0.0)
-            _rbd  = _rk_bkdn.get(_rkey, {})
-            _vals = [_rsc,
-                     _rbd.get('cagr',    None),
-                     _rbd.get('sharpe',  None),
-                     _rbd.get('sortino', None),
-                     _rbd.get('maxdd',   None)]
-            for _ci, _v in enumerate(_vals, start=1):
-                _rat_ts.append(('BACKGROUND', (_ci, _ri), (_ci, _ri),
-                                _gradient_color(_v)))
-        _rat_tbl = Table(_rat_rows, colWidths=_cw_rat)
-        _rat_tbl.setStyle(TableStyle(_rat_ts))
-        story.append(Paragraph(
-            'Tab. R — Rating ponderato delle varianti (score normalizzato 0–1 per metrica).',
-            st_caption))
-        story.append(_rat_tbl)
-        story.append(Spacer(1, 4 * mm))
-    
-    # B-005: secondo verdict box — usa il secondo classificato di _rate_variants (non coppia fissa)
-    _alt_text = None
-    if _rating_result is not None:
-        _rk_scores_all = _rating_result.get('scores', {})
-        _rk_sorted_all = sorted(_rk_scores_all.items(), key=lambda x: x[1], reverse=True)
-        if len(_rk_sorted_all) >= 2:
-            _runner_key = _rk_sorted_all[1][0]
-            _runner_ofc  = (ofc_report_cluster if _runner_key.startswith('cluster')
-                            else ofc_report_std)
-            _runner_sp   = (skill_profile_cluster if _runner_key.startswith('cluster')
-                            else skill_profile)
-            _runner_lbl  = _VARIANT_LABELS.get(_runner_key, _runner_key)
-            _alt_text = _build_verdict_text_compact(
-                alt_path_label    = _runner_lbl,
-                ofc_report_alt    = _runner_ofc,
-                metrics_comparison= metrics_comparison,
-                metrics_key       = _runner_key,
-                skill_profile_alt = _runner_sp,
-            )
-    
-    if _alt_text is not None:
-        _alt_box = Table(
-            [[Paragraph(_alt_text, st_vbox_j)]],
-            colWidths=[CONTENT_W])
-        _alt_box.setStyle(TableStyle([
-            ('BACKGROUND',    (0, 0), (-1, -1), rl_colors.HexColor('#F5F5F5')),  # grigio chiaro
-            ('BOX',           (0, 0), (-1, -1), 0.8, rl_colors.HexColor('#999999')),
-            ('LEFTPADDING',   (0, 0), (-1, -1), 12),
-            ('RIGHTPADDING',  (0, 0), (-1, -1), 12),
-            ('TOPPADDING',    (0, 0), (-1, -1), 6),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-        ]))
-        story.append(_alt_box)
-        story.append(Spacer(1, 4 * mm))
-        
-    # Placeholder manuale — compilare dopo analisi
-    vbox_data = [[Paragraph(
-        '<b>Path deployato:</b> [ STANDARD | CLUSTER | NESSUNO ] ← compilare<br/>'
-        '<b>Motivazione:</b> ← compilare a mano dopo analisi',
-        st_vbox)]]
-    vbox = Table(vbox_data, colWidths=[CONTENT_W])
-    vbox.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, -1), rl_colors.HexColor('#EAF0FB')),
-        ('BOX',        (0, 0), (-1, -1), 1.2, C_NAVY_LT),
-        ('TOPPADDING',    (0, 0), (-1, -1), 10),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 10),
-        ('LEFTPADDING',   (0, 0), (-1, -1), 12),
-        ('RIGHTPADDING',  (0, 0), (-1, -1), 12),
-    ]))
-    story.append(vbox)
+    # LLM ha già generato §6 + §7 — nessun verdict box / Tab.R / placeholder hardcoded
 
     doc = SimpleDocTemplate(
         str(output_path), pagesize=A4,
@@ -14886,7 +14590,7 @@ def run_r_portfolio_analysis(
     pipeline_start_date = first_full_year - pd.DateOffset(years=ratio_int)
 
     # 5. WFO STANDARD
-    results_std = run_wfo_pipeline(
+    results_std = run_wfo_pipeline_legacy_cluster(
         stocks_data_raw        = stocks_data_raw,
         stocks_data            = stocks_data,
         benchmark_data         = benchmark_data,
@@ -14923,7 +14627,7 @@ def run_r_portfolio_analysis(
     sel_tickers_std_base = results_std["sel_tickers_base"]
 
     # 6. WFO CLUSTER
-    results_cluster = run_wfo_pipeline(
+    results_cluster = run_wfo_pipeline_legacy_cluster(
         stocks_data_raw    = stocks_data_raw,
         stocks_data        = stocks_data,
         benchmark_data     = benchmark_data,
@@ -15045,10 +14749,31 @@ def run_r_portfolio_analysis(
     )
 
     # 11. DECISIONE
-    skill_profile_std, skill_profile_cluster = compute_skill_profile(
-        mc_skill         = skill_results,
-        mc_skill_cluster = skill_results_cluster,
-    )
+    _engines_raw = {
+        "Standard": {
+            "ofc_report":    ofc_report_std,
+            "mc_skill":      skill_results,
+            "mc_ci":         ci_summary_df,
+            "ci_results":    ci_results,
+            "pf_rot":        results_std.get("pf_rot"),
+            "pf_rot_base":   results_std.get("pf_rot_base"),
+            "plots_subdir":  "std",
+        },
+        "Cluster": {
+            "ofc_report":    ofc_report_cluster,
+            "mc_skill":      skill_results_cluster,
+            "mc_ci":         ci_summary_df_cluster,
+            "ci_results":    ci_results_cluster if results_cluster else None,
+            "pf_rot":        results_cluster.get("pf_rot") if results_cluster else None,
+            "pf_rot_base":   results_cluster.get("pf_rot_base") if results_cluster else None,
+            "plots_subdir":  "cluster",
+        },
+    }
+    _sp_map = compute_skill_profile(engines=_engines_raw)
+    for _ename, _edata in _engines_raw.items():
+        _edata["skill_profile"] = _sp_map.get(_ename, "N/A")
+    skill_profile_std     = _engines_raw["Standard"]["skill_profile"]
+    skill_profile_cluster = _engines_raw["Cluster"]["skill_profile"]
 
     # 12. OUTPUT
     _today_iso = date.today().isoformat()
@@ -15062,63 +14787,40 @@ def run_r_portfolio_analysis(
         "n_bootstrap_ofc":  1000,
         "n_bootstrap_mc":   1000,
     }
-    _cluster_result = results_cluster.get("cluster_result") if results_cluster else None
-    _metrics_comparison = {
-        "cluster_riskoff": results_cluster.get("pf_rot"),
-        "cluster_base":    results_cluster.get("pf_rot_base"),
-        "std_riskoff":     results_std.get("pf_rot"),
-        "std_base":        results_std.get("pf_rot_base"),
-        "benchmark":       results_std.get("pf_benchmark") or results_std.get("pf_benchmark_base"),
-    }
+    _benchmark_pf = results_std.get("pf_benchmark") or results_std.get("pf_benchmark_base")
 
     _card_path = output_dir / f"{portfolio_title.replace(' ', '_').lower()}_{year}_{profile}.md"
     _pdf_path  = output_dir / f"{portfolio_title}_{year}_{profile}_Relazione_Tecnica.pdf"
 
     generate_ptf_card_md(
-        portfolio_title    = portfolio_title,
-        year               = year,
-        profile            = profile,
-        benchmark          = benchmark_title,
-        period             = (str(pipeline_start_date), _today_iso),
-        universe_size      = len(tickers),
-        wfo_config         = _wfo_config,
-        cluster_result     = _cluster_result,
-        metrics_comparison = _metrics_comparison,
-        ofc_report_std     = ofc_report_std,
-        ofc_report_cluster = ofc_report_cluster,
-        mc_skill           = skill_results,
-        mc_ci              = ci_summary_df,
-        mc_skill_cluster   = skill_results_cluster,
-        mc_ci_cluster      = ci_summary_df_cluster,
-        skill_profile      = skill_profile_std,
-        output_path        = str(_card_path),
+        portfolio_title = portfolio_title,
+        year            = year,
+        profile         = profile,
+        benchmark       = benchmark_title,
+        benchmark_pf    = _benchmark_pf,
+        period          = (str(pipeline_start_date), _today_iso),
+        universe_size   = len(tickers),
+        wfo_config      = _wfo_config,
+        engines         = _engines_raw,
+        output_path     = str(_card_path),
     )
 
     # La relazione tecnica PDF è opzionale: la card .md è sempre generata
     # (sopra), mentre il PDF dipende da generate_pdf (flag --pdf di iq r-analyze).
     if generate_pdf:
         generate_relazione_tecnica(
-            portfolio_title              = portfolio_title,
-            year                         = year,
-            profile                      = profile,
-            benchmark                    = benchmark_title,
-            period                       = (str(pipeline_start_date), _today_iso),
-            universe_size                = len(tickers),
-            wfo_config                   = _wfo_config,
-            cluster_result               = _cluster_result,
-            metrics_comparison           = _metrics_comparison,
-            ofc_report_std               = ofc_report_std,
-            ofc_report_cluster           = ofc_report_cluster,
-            mc_skill                     = skill_results,
-            mc_ci                        = ci_summary_df,
-            skill_profile                = skill_profile_std,
-            skill_profile_cluster        = skill_profile_cluster,
-            plots_dir                    = str(plots_dir),
-            output_path                  = str(_pdf_path),
-            mc_skill_cluster             = skill_results_cluster,
-            mc_ci_cluster                = ci_summary_df_cluster,
-            ci_results                   = ci_results,
-            survivorship_bias_universe   = survivorship_bias_universe,
+            portfolio_title            = portfolio_title,
+            year                       = year,
+            profile                    = profile,
+            benchmark                  = benchmark_title,
+            benchmark_pf               = _benchmark_pf,
+            period                     = (str(pipeline_start_date), _today_iso),
+            universe_size              = len(tickers),
+            wfo_config                 = _wfo_config,
+            engines                    = _engines_raw,
+            plots_dir                  = str(plots_dir),
+            output_path                = str(_pdf_path),
+            survivorship_bias_universe = survivorship_bias_universe,
         )
     else:
         _pdf_path = None
@@ -15219,7 +14921,7 @@ class EngineParamsV2:
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Ogni entry documenta il nome del parametro peso nella griglia.
-# Le funzioni di calcolo sono centralizzate in precompute_signals_v2.
+# Le funzioni di calcolo sono centralizzate in precompute_signals.
 FACTOR_REGISTRY_V2: dict[str, dict] = {
     "momentum": {"weight_param": "momentum_weight"},
     "ivol":     {"weight_param": "ivol_weight"},
@@ -15227,7 +14929,7 @@ FACTOR_REGISTRY_V2: dict[str, dict] = {
     "idio":     {"weight_param": "idio_weight"},
 }
 
-# Ogni entry documenta flag e parametri extra usati in apply_filters_v2.
+# Ogni entry documenta flag e parametri extra usati in apply_filters.
 FILTER_REGISTRY_V2: dict[str, dict] = {
     "ema":          {"flag_param": "filter_ema",          "extra_params": ["ema_span"]},
     "volatility":   {"flag_param": "filter_volatility",   "extra_params": ["volatility_quantile"]},
@@ -15239,7 +14941,7 @@ FILTER_REGISTRY_V2: dict[str, dict] = {
 # Funzioni core v2
 # ─────────────────────────────────────────────────────────────────────────────
 
-def precompute_signals_v2(
+def precompute_signals(
     prices:           pd.DataFrame,
     returns:          pd.DataFrame,
     params:           "EngineParamsV2",
@@ -15281,7 +14983,7 @@ def precompute_signals_v2(
     if sp.idio_weight > 0:
         if benchmark_prices is None:
             raise ValueError(
-                "precompute_signals_v2: idio_weight > 0 ma benchmark_prices=None. "
+                "precompute_signals: idio_weight > 0 ma benchmark_prices=None. "
                 "Passare la serie dei prezzi del benchmark."
             )
         bench = benchmark_prices.reindex(prices.index).ffill().bfill()
@@ -15306,7 +15008,7 @@ def precompute_signals_v2(
     return signals
 
 
-def compute_combo_score_v2(
+def compute_combo_score(
     signals: dict[str, pd.DataFrame],
     weights: dict[str, float],
 ) -> pd.DataFrame:
@@ -15323,21 +15025,21 @@ def compute_combo_score_v2(
     total_w = sum(active.values())
     if total_w == 0.0:
         raise ValueError(
-            "compute_combo_score_v2: sum(weights) == 0. "
+            "compute_combo_score: sum(weights) == 0. "
             "Almeno un fattore deve avere peso > 0."
         )
 
     combo: pd.DataFrame | None = None
     for fname, w in active.items():
         if fname not in signals:
-            raise KeyError(f"compute_combo_score_v2: fattore '{fname}' non in signals")
+            raise KeyError(f"compute_combo_score: fattore '{fname}' non in signals")
         rank_i = signals[fname].rank(pct=True, axis=1, na_option="bottom")
         combo  = w * rank_i if combo is None else combo + w * rank_i
 
     return combo / total_w
 
 
-def apply_filters_v2(
+def apply_filters(
     prices:       pd.DataFrame,
     signals:      dict[str, pd.DataFrame],
     sel_params:   "SelectionParams",
@@ -15380,7 +15082,7 @@ def apply_filters_v2(
     return mask
 
 
-def select_top_n_v2(
+def select_top_n(
     combo_score: pd.Series,
     mask:        pd.Series,
     n_top:       int,
@@ -15400,7 +15102,7 @@ def select_top_n_v2(
 # Engine entry-point v2
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_rotational_engine_v2(
+def run_rotational_engine(
     prices:           pd.DataFrame,
     params:           "EngineParamsV2",
     benchmark_prices: pd.Series | None = None,
@@ -15408,8 +15110,8 @@ def run_rotational_engine_v2(
     debug:            bool = False,
 ) -> "RotationalResult":
     """
-    Motore rotazionale v2 multi-fattore. Stesso contratto di run_rotational_engine()
-    ma usa precompute_signals_v2 + compute_combo_score_v2 + apply_filters_v2.
+    Motore rotazionale v2 multi-fattore. Stesso contratto di run_rotational_engine_legacy_cluster()
+    ma usa precompute_signals + compute_combo_score + apply_filters.
 
     benchmark_prices : pd.Series | None
         Obbligatorio se params.score.idio_weight > 0.
@@ -15447,7 +15149,7 @@ def run_rotational_engine_v2(
         )
 
     returns = prices.pct_change().fillna(0.0)
-    signals = precompute_signals_v2(prices, returns, params, benchmark_prices)
+    signals = precompute_signals(prices, returns, params, benchmark_prices)
 
     sp = params.score
     factor_weights = {
@@ -15456,7 +15158,7 @@ def run_rotational_engine_v2(
         "sortino":  sp.sortino_weight,
         "idio":     sp.idio_weight,
     }
-    combo_df  = compute_combo_score_v2(signals, factor_weights)
+    combo_df  = compute_combo_score(signals, factor_weights)
     sel_params = params.selection
 
     sel_records:  list[dict]                       = []
@@ -15466,7 +15168,7 @@ def run_rotational_engine_v2(
     for d in rebal_dates:
         d = pd.Timestamp(d).normalize()
 
-        mask         = apply_filters_v2(prices, signals, sel_params, sp, d)
+        mask         = apply_filters(prices, signals, sel_params, sp, d)
         combo_masked = combo_df.loc[d].where(mask)
         n_passed     = int(mask.sum())
 
@@ -15532,7 +15234,7 @@ def run_rotational_engine_v2(
 # VBT entry-point v2
 # ─────────────────────────────────────────────────────────────────────────────
 
-def build_rotational_portfolios_vbt_v2(
+def build_rotational_portfolios_vbt(
     stocks_data:              pd.DataFrame,
     benchmark_data:           pd.Series | None = None,
     # ── frequenza e lookback ─────────────────────────────────────────────────
@@ -15566,7 +15268,7 @@ def build_rotational_portfolios_vbt_v2(
     debug:                    bool  = False,
 ) -> "RotationalVbtResult":
     """
-    VBT entry-point v2: identico a build_rotational_portfolios_vbt() ma usa
+    VBT entry-point v2: identico a build_rotational_portfolios_vbt_legacy_cluster() ma usa
     il motore multi-fattore v2 (4 fattori, no use_acceleration).
 
     benchmark_data   : prezzi benchmark per il B&H nel plot/stats.
@@ -15604,7 +15306,7 @@ def build_rotational_portfolios_vbt_v2(
         bench_px.index = pd.to_datetime(bench_px.index).normalize()
         bench_px = bench_px.sort_index()
 
-    eng = run_rotational_engine_v2(
+    eng = run_rotational_engine(
         prices           = prices,
         params           = params,
         benchmark_prices = benchmark_prices,
@@ -15656,10 +15358,10 @@ def build_rotational_portfolios_vbt_v2(
 # Walk-forward v2
 # ─────────────────────────────────────────────────────────────────────────────
 
-def walk_forward_rotational_v2(
+def walk_forward_rotational(
     stocks_data:            pd.DataFrame,
     benchmark_data:         pd.Series,
-    param_grid:             Dict[str, List[Any]],
+    param_grid:             List[Dict[str, Any]],
     ratio:                  str = "3:1",
     metric:                 str = "Sharpe Ratio",
     verbose:                bool = True,
@@ -15675,7 +15377,7 @@ def walk_forward_rotational_v2(
     """
     Walk-Forward Optimization v2 — usa il motore multi-fattore v2.
 
-    Scelta architetturale: funzione parallela a walk_forward_rotational() (non
+    Scelta architetturale: funzione parallela a walk_forward_rotational_legacy_cluster() (non
     aggiunta di engine_version all'esistente), per non toccare _optimize_window()
     e garantire la regola "nessuna funzione v1 modificata".
 
@@ -15728,7 +15430,7 @@ def walk_forward_rotational_v2(
 
     # ── Buffer e finestre ────────────────────────────────────────────────────
     def _max_grid(key):
-        vals = [int(v) for v in param_grid.get(key, []) if v is not None and np.isfinite(float(v))]
+        vals = [int(c[key]) for c in param_grid if key in c and c[key] is not None and np.isfinite(float(c[key]))]
         return max(vals) if vals else 0
 
     max_lb      = max(_max_grid(k) for k in ["momentum_lookback_days", "riskparity_lookback_days", "ema_span"])
@@ -15744,8 +15446,7 @@ def walk_forward_rotational_v2(
         test_periods.append(test_periods[-1] + test_y)
 
     n_windows  = len(test_periods)
-    param_keys = list(param_grid.keys())
-    all_combos = list(product(*param_grid.values()))
+    all_combos = param_grid
     n_combo    = len(all_combos)
 
     # ── Helper score ─────────────────────────────────────────────────────────
@@ -15785,19 +15486,20 @@ def walk_forward_rotational_v2(
 
         # ── Raccoglie lookback distinti ───────────────────────────────────
         mom_lbs = sorted(set(
-            int(dict(zip(param_keys, c)).get('momentum_lookback_days', 126))
+            int(c.get('momentum_lookback_days', 126))
             for c in all_combos
-        )) if 'momentum_lookback_days' in param_keys else [126]
+        )) or [126]
 
         rp_lbs = sorted(set(
-            int(dict(zip(param_keys, c)).get('riskparity_lookback_days', 20))
+            int(c.get('riskparity_lookback_days', 20))
             for c in all_combos
-        )) if 'riskparity_lookback_days' in param_keys else [20]
+        )) or [20]
 
         ema_spans_v2 = sorted(set(
-            int(dict(zip(param_keys, c)).get('ema_span', 200))
+            int(c['ema_span'])
             for c in all_combos
-        )) if 'ema_span' in param_keys else []
+            if 'ema_span' in c
+        ))
 
         # ── Precomputo rank (UNA VOLTA per finestra) ──────────────────────
         # momentum rank
@@ -15827,7 +15529,7 @@ def walk_forward_rotational_v2(
         # idio rank
         rank_idio_cache: dict[int, np.ndarray] = {}
         has_idio = any(
-            float(dict(zip(param_keys, c)).get('idio_weight', 0)) > 0
+            float(c.get('idio_weight', 0)) > 0
             for c in all_combos
         )
         if has_idio:
@@ -15854,7 +15556,7 @@ def walk_forward_rotational_v2(
         # momentum raw per filter_min_momentum
         mom_raw_cache: dict[int, np.ndarray] = {}
         has_fmom = any(
-            bool(dict(zip(param_keys, c)).get('filter_min_momentum', False))
+            bool(c.get('filter_min_momentum', False))
             for c in all_combos
         )
         if has_fmom:
@@ -15864,8 +15566,7 @@ def walk_forward_rotational_v2(
         # ── Rebal dates ───────────────────────────────────────────────────
         tr_idx     = tr_px.loc[train_start:train_end].index
         rebal_freq = next(
-            (c[param_keys.index('rebalance_frequency')] for c in all_combos
-             if 'rebalance_frequency' in param_keys),
+            (c['rebalance_frequency'] for c in all_combos if 'rebalance_frequency' in c),
             'ME'
         )
         try:
@@ -15908,8 +15609,7 @@ def walk_forward_rotational_v2(
                 bar_format='{desc}: {percentage:3.0f}%|{bar}|{n_fmt}/{total_fmt} [{elapsed},{rate_fmt}]',
             )
 
-        for combo in all_combos:
-            params_c = dict(zip(param_keys, combo))
+        for params_c in all_combos:
             try:
                 mom_lb  = int(params_c.get('momentum_lookback_days', 126))
                 rp_lb   = int(params_c.get('riskparity_lookback_days', 20))
@@ -16043,7 +15743,7 @@ def walk_forward_rotational_v2(
                     benchmark_prices.loc[buf_s:test_end]
                     if benchmark_prices is not None else None
                 )
-                pf_te_result = build_rotational_portfolios_vbt_v2(
+                pf_te_result = build_rotational_portfolios_vbt(
                     stocks_data      = te_px,
                     benchmark_data   = te_bch,
                     benchmark_prices = te_bench_px,
@@ -16250,7 +15950,7 @@ def build_cluster_grids_v2(
 # V2 GAP FUNCTIONS  (additive — no v1 code modified)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def collect_wfo_selections_v2(
+def collect_wfo_selections(
     summary_df: pd.DataFrame,
     stocks_data: pd.DataFrame,
     benchmark_data: pd.Series | None = None,
@@ -16259,19 +15959,19 @@ def collect_wfo_selections_v2(
     per_window_universe: dict | None = None,
 ) -> pd.DataFrame:
     """
-    V2 counterpart of collect_wfo_selections() (riga 737).
+    V2 counterpart of collect_wfo_selections_legacy_cluster() (riga 737).
 
     Replays OOS selections from a v2 WFO summary_df using EngineParamsV2
-    and run_rotational_engine_v2.  All logic is identical to v1 except:
+    and run_rotational_engine.  All logic is identical to v1 except:
       - EngineParamsV2.from_dict() deserialises ivol_weight / sortino_weight /
         idio_weight from the summary row (v1 silently ignored these).
-      - run_rotational_engine_v2() is called instead of run_rotational_engine().
+      - run_rotational_engine() is called instead of run_rotational_engine_legacy_cluster().
       - benchmark_prices is forwarded when idio_weight > 0 is in use.
 
     Parameters
     ----------
     summary_df : pd.DataFrame
-        Output of walk_forward_rotational_v2(); index = strings "start→end".
+        Output of walk_forward_rotational(); index = strings "start→end".
     stocks_data : pd.DataFrame
         Full daily price history.
     benchmark_data : pd.Series, optional
@@ -16285,7 +15985,7 @@ def collect_wfo_selections_v2(
     Returns
     -------
     pd.DataFrame
-        Same structure as collect_wfo_selections():
+        Same structure as collect_wfo_selections_legacy_cluster():
         index 'rebal_date', columns 'tickers' (list[str]), 'carried' (bool),
         'n_passed_filters' (int).
     """
@@ -16334,7 +16034,7 @@ def collect_wfo_selections_v2(
                         print(f"[WFO-v2] pool ristretto | window={window} | "
                               f"{len(keep)}/{len(stocks.columns)} ticker")
 
-        engine_result = run_rotational_engine_v2(
+        engine_result = run_rotational_engine(
             prices=slice_prices,
             params=params,
             benchmark_prices=benchmark_prices,
@@ -16379,7 +16079,7 @@ def collect_wfo_selections_v2(
     return combined
 
 
-def _evaluate_ptf_on_period_v2(
+def _evaluate_ptf_on_period(
     ptf_config: dict,
     params: "EngineParamsV2",
     start_date,
@@ -16390,7 +16090,7 @@ def _evaluate_ptf_on_period_v2(
     """
     V2 counterpart of _evaluate_ptf_on_period() (riga 11322).
 
-    Runs run_rotational_engine_v2() instead of run_rotational_engine(), then
+    Runs run_rotational_engine() instead of run_rotational_engine_legacy_cluster(), then
     delegates portfolio construction and metric computation to build_portfolio()
     and _mc_compute_metrics() — both engine-agnostic (work on RotationalResult).
 
@@ -16436,7 +16136,7 @@ def _evaluate_ptf_on_period_v2(
             f"{buf_start.date()} → {end.date()}."
         )
 
-    rot_result = run_rotational_engine_v2(
+    rot_result = run_rotational_engine(
         slice_prices, params, benchmark_prices=benchmark_prices
     )
 
@@ -16460,7 +16160,7 @@ def _evaluate_ptf_on_period_v2(
     return float(_mc_compute_metrics(equity)[metric])
 
 
-def _evaluate_flag_stability_v2(
+def _evaluate_flag_stability(
     ptf_config: dict,
     base_params: dict,
     flag_name: str,
@@ -16475,7 +16175,7 @@ def _evaluate_flag_stability_v2(
     V2 counterpart of _evaluate_flag_stability() (riga 11430).
 
     Identical logic to v1 but uses EngineParamsV2.from_dict() and
-    _evaluate_ptf_on_period_v2(), so the flag delta is evaluated against the
+    _evaluate_ptf_on_period(), so the flag delta is evaluated against the
     v2 engine (momentum + ivol + sortino + idio weighted score).
 
     The guard on _STABILITY_FLAGS is intentionally kept: 'use_acceleration' is
@@ -16505,18 +16205,18 @@ def _evaluate_flag_stability_v2(
             params_true  = {**base_params, flag_name: True,  "n_top": anchor}
             params_false = {**base_params, flag_name: False, "n_top": anchor}
 
-            val_true  = _evaluate_ptf_on_period_v2(
+            val_true  = _evaluate_ptf_on_period(
                 ptf_config, EngineParamsV2.from_dict(params_true),  s, e, metric,
                 benchmark_prices=benchmark_prices,
             )
-            val_false = _evaluate_ptf_on_period_v2(
+            val_false = _evaluate_ptf_on_period(
                 ptf_config, EngineParamsV2.from_dict(params_false), s, e, metric,
                 benchmark_prices=benchmark_prices,
             )
 
             if np.isnan(val_true) or np.isnan(val_false):
                 warnings.warn(
-                    f"_evaluate_flag_stability_v2: NaN for {flag_name}, "
+                    f"_evaluate_flag_stability: NaN for {flag_name}, "
                     f"anchor={anchor}, period={s.date()}→{e.date()} "
                     f"(true={val_true:.4f} false={val_false:.4f}). "
                     f"Delta set to NaN.",
@@ -16594,7 +16294,7 @@ def compare_wfo_pipelines(
     apply_gradient  : bool = True,
 ) -> "Union[pd.DataFrame, pd.io.formats.style.Styler]":
     """
-    Confronta N portafogli prodotti da N run di run_wfo_pipeline/run_wfo_pipeline_v2,
+    Confronta N portafogli prodotti da N run di run_wfo_pipeline_legacy_cluster/run_wfo_pipeline,
     ciascuno identificato da un nome scelto dall'utente.
 
     Genera:
@@ -16605,7 +16305,7 @@ def compare_wfo_pipelines(
     Parameters
     ----------
     results : dict[str, dict]
-        Mapping nome → dict di ritorno di run_wfo_pipeline / run_wfo_pipeline_v2.
+        Mapping nome → dict di ritorno di run_wfo_pipeline_legacy_cluster / run_wfo_pipeline.
         Esempio: {"v1": results_std, "v2": results_std_v2}
         Per ciascuna entry vengono mostrati 'pf_rot' (Risk ON/OFF) e 'pf_rot_base',
         se presenti e non None.
@@ -16756,7 +16456,7 @@ def compare_wfo_pipelines(
     return metrics_df
 
 
-def run_wfo_pipeline_v2(
+def run_wfo_pipeline(
     stocks_data_raw: pd.DataFrame,
     stocks_data: pd.DataFrame,
     benchmark_data,
@@ -16788,18 +16488,18 @@ def run_wfo_pipeline_v2(
     """
     Entry point unificato per entrambi gli engine WFO.
 
-    engine='Momentum'     → usa walk_forward_rotational (v1, mono-fattore).
-    engine='Multifactor'  → usa walk_forward_rotational_v2 (4 pesi).
+    engine='Momentum'     → usa walk_forward_rotational_legacy_cluster (v1, mono-fattore).
+    engine='Multifactor'  → usa walk_forward_rotational (4 pesi).
     autoreduce=True       → chiama reduce_grid_via_stability sulla griglia
                             prima del WFO (usa il periodo start_date/end_date).
 
-    Mirror del path use_clustering=False di run_wfo_pipeline() (riga 7967)
+    Mirror del path use_clustering=False di run_wfo_pipeline_legacy_cluster() (riga 7967)
     per engine='Momentum'; motore v2 multi-fattore per engine='Multifactor'.
 
-    Sostituzioni rispetto al Path B di run_wfo_pipeline:
-      - walk_forward_rotational()           → walk_forward_rotational_v2()
+    Sostituzioni rispetto al Path B di run_wfo_pipeline_legacy_cluster:
+      - walk_forward_rotational_legacy_cluster()           → walk_forward_rotational()
       - build_rotational_portfolios_from_wfo_result() →
-            collect_wfo_selections_v2() + build_portfolio_from_selections()
+            collect_wfo_selections() + build_portfolio_from_selections()
       - audit suffix "std_raw"              → "std_raw_v2"
 
     Struttura di ritorno identica al Path B (13 chiavi):
@@ -16811,13 +16511,13 @@ def run_wfo_pipeline_v2(
     Parameters
     ----------
     stocks_data_raw : pd.DataFrame
-        Prezzi grezzi (passati a walk_forward_rotational_v2 come universo WFO).
+        Prezzi grezzi (passati a walk_forward_rotational come universo WFO).
     stocks_data : pd.DataFrame
         Prezzi normalizzati (usati per il replay selezioni OOS in STEP 6).
     benchmark_data : pd.Series
         Prezzi benchmark per build_portfolio_from_selections.
     benchmark_data_raw : pd.Series
-        Prezzi benchmark grezzi passati a walk_forward_rotational_v2.
+        Prezzi benchmark grezzi passati a walk_forward_rotational.
     tickers : list
         Lista ticker dell'universo.
     risk_off_data : pd.DataFrame, optional
@@ -16825,7 +16525,7 @@ def run_wfo_pipeline_v2(
     ratio : str
         Rapporto train:test per WFO, es. "3:1".
     metric : str
-        Metrica di ottimizzazione per walk_forward_rotational_v2,
+        Metrica di ottimizzazione per walk_forward_rotational,
         es. "Sharpe Ratio".
     start_date, end_date : str, optional
         Finestra temporale WFO.
@@ -16863,13 +16563,13 @@ def run_wfo_pipeline_v2(
     """
     if engine not in ("Momentum", "Multifactor"):
         raise ValueError(
-            f"run_wfo_pipeline_v2: engine={engine!r} non riconosciuto. "
+            f"run_wfo_pipeline: engine={engine!r} non riconosciuto. "
             "Valori validi: 'Momentum' | 'Multifactor'."
         )
 
-    if param_grid is None:
+    if not param_grid:
         raise ValueError(
-            "run_wfo_pipeline_v2: param_grid è obbligatorio."
+            "run_wfo_pipeline: param_grid è obbligatorio e non può essere vuoto."
         )
 
     results = {}
@@ -16890,51 +16590,48 @@ def run_wfo_pipeline_v2(
             "stocks_data": stocks_data_raw[tickers],
             "init_cash": init_cash,
         }
-        param_grid, _ = reduce_grid_via_stability(
+        # Converti list[dict] → dict[str, list] solo per reduce_grid_via_stability
+        _dict_grid: dict = {}
+        for key in param_grid[0]:
+            _dict_grid[key] = list(dict.fromkeys(c[key] for c in param_grid))
+        _reduced_dict, _ = reduce_grid_via_stability(
             ptf_config=_ptf_config_auto,
-            full_grid=param_grid,
+            full_grid=_dict_grid,
             full_start_date=start_date,
             full_end_date=end_date,
-            benchmark_prices=benchmark_prices if engine == "Multifactor" else None,
+            benchmark_prices=benchmark_prices,
             verbose=verbose,
         )
+        # Applica i flag fissi alla lista pre-espansa
+        _fixed_flags = {k: v[0] for k, v in _reduced_dict.items()
+                        if len(v) == 1 and k in _STABILITY_FLAGS}
+        if _fixed_flags:
+            _n_before = len(param_grid)
+            param_grid = [c for c in param_grid
+                          if all(c.get(k) == v for k, v in _fixed_flags.items())]
+            if verbose:
+                print(f"[autoreduce] {_n_before} → {len(param_grid)} combinazioni "
+                      f"(flag fissi: {_fixed_flags})")
 
     print("\n=======================================================")
     print(f"STEP 1 — WFO Standard ({engine})")
     print("=======================================================")
-    if engine == "Momentum":
-        summary_df_final = walk_forward_rotational(
-            stocks_data=stocks_data_raw[tickers],
-            param_grid=param_grid,
-            ratio=ratio,
-            metric=metric,
-            start_date=start_date,
-            end_date=end_date,
-            benchmark_data=benchmark_data_raw,
-            n_jobs=cores,
-            backend='loky',
-            plot=False,
-            verbose=verbose,
-            debug=False,
-            force_next_year_params=force_next_year_params,
-        )
-    else:  # Multifactor
-        summary_df_final = walk_forward_rotational_v2(
-            stocks_data=stocks_data_raw[tickers],
-            benchmark_data=benchmark_data_raw,
-            param_grid=param_grid,
-            ratio=ratio,
-            metric=metric,
-            start_date=start_date,
-            end_date=end_date,
-            n_jobs=cores,
-            backend='loky',
-            plot=False,
-            verbose=verbose,
-            debug=False,
-            force_next_year_params=force_next_year_params,
-            benchmark_prices=benchmark_prices,
-        )
+    summary_df_final = walk_forward_rotational(
+        stocks_data=stocks_data_raw[tickers],
+        benchmark_data=benchmark_data_raw,
+        param_grid=param_grid,
+        ratio=ratio,
+        metric=metric,
+        start_date=start_date,
+        end_date=end_date,
+        n_jobs=cores,
+        backend='loky',
+        plot=False,
+        verbose=verbose,
+        debug=False,
+        force_next_year_params=force_next_year_params,
+        benchmark_prices=benchmark_prices,
+    )
 
     results['summary_df'] = summary_df_final
 
@@ -16960,7 +16657,7 @@ def run_wfo_pipeline_v2(
                 ),
             ),
         )
-        print(f"[run_wfo_pipeline_v2] Audit trail salvato ({engine}): {_audit_path}")
+        print(f"[run_wfo_pipeline] Audit trail salvato ({engine}): {_audit_path}")
         my_display(summary_df_final, title=f"WFO Results {engine} — {portfolio_title}")
 
     print("\n=======================================================")
@@ -16984,35 +16681,22 @@ def run_wfo_pipeline_v2(
             dup_cols = oos_data.columns[oos_data.columns.duplicated()].tolist()
             raise ValueError(f"Duplicate columns in oos_data after concat: {dup_cols}")
 
-        if engine == "Momentum":
-            pf_rot, pf_bm, sel = build_rotational_portfolios_from_wfo_result(
-                summary_df=summary_df_final,
-                stocks_data=oos_data,
-                benchmark_data=benchmark_data,
-                benchmark_title=benchmark_title,
-                portfolio_name=f"{portfolio_title} – Standard OOS WFO - Total Return (Risk on/off)",
-                init_cash=init_cash,
-                start_date=analisys_start_date,
-                end_date=analisys_end_date,
-                plot=plot,
-            )
-        else:  # Multifactor
-            sel = collect_wfo_selections_v2(
-                summary_df=summary_df_final,
-                stocks_data=oos_data,
-                benchmark_prices=benchmark_prices,
-            )
-            pf_rot, pf_bm = build_portfolio_from_selections(
-                selections=sel,
-                stocks_data=oos_data,
-                benchmark_data=benchmark_data,
-                benchmark_title=benchmark_title,
-                init_cash=init_cash,
-                start_date=analisys_start_date,
-                end_date=analisys_end_date,
-                plot=plot,
-                portfolio_name=f"{portfolio_title} – Standard v2 OOS WFO - Total Return (Risk on/off)",
-            )
+        sel = collect_wfo_selections(
+            summary_df=summary_df_final,
+            stocks_data=oos_data,
+            benchmark_prices=benchmark_prices,
+        )
+        pf_rot, pf_bm = build_portfolio_from_selections(
+            selections=sel,
+            stocks_data=oos_data,
+            benchmark_data=benchmark_data,
+            benchmark_title=benchmark_title,
+            init_cash=init_cash,
+            start_date=analisys_start_date,
+            end_date=analisys_end_date,
+            plot=plot,
+            portfolio_name=f"{portfolio_title} – Standard OOS WFO - Total Return (Risk on/off, {engine})",
+        )
 
         results['pf_rot'] = pf_rot
         results['pf_benchmark'] = pf_bm
@@ -17040,35 +16724,22 @@ def run_wfo_pipeline_v2(
 
     print(f"\n▶ Portafoglio SENZA Risk ON/OFF ({engine})...")
 
-    if engine == "Momentum":
-        pf_rot_base, pf_bm_base, sel_base = build_rotational_portfolios_from_wfo_result(
-            summary_df=summary_df_final,
-            stocks_data=stocks_data,
-            benchmark_data=benchmark_data,
-            benchmark_title=benchmark_title,
-            portfolio_name=f"{portfolio_title} – Standard OOS WFO - Total Return",
-            init_cash=init_cash,
-            start_date=analisys_start_date,
-            end_date=analisys_end_date,
-            plot=plot,
-        )
-    else:  # Multifactor
-        sel_base = collect_wfo_selections_v2(
-            summary_df=summary_df_final,
-            stocks_data=stocks_data,
-            benchmark_prices=benchmark_prices,
-        )
-        pf_rot_base, pf_bm_base = build_portfolio_from_selections(
-            selections=sel_base,
-            stocks_data=stocks_data,
-            benchmark_data=benchmark_data,
-            benchmark_title=benchmark_title,
-            init_cash=init_cash,
-            start_date=analisys_start_date,
-            end_date=analisys_end_date,
-            plot=plot,
-            portfolio_name=f"{portfolio_title} – Standard v2 OOS WFO - Total Return",
-        )
+    sel_base = collect_wfo_selections(
+        summary_df=summary_df_final,
+        stocks_data=stocks_data,
+        benchmark_prices=benchmark_prices,
+    )
+    pf_rot_base, pf_bm_base = build_portfolio_from_selections(
+        selections=sel_base,
+        stocks_data=stocks_data,
+        benchmark_data=benchmark_data,
+        benchmark_title=benchmark_title,
+        init_cash=init_cash,
+        start_date=analisys_start_date,
+        end_date=analisys_end_date,
+        plot=plot,
+        portfolio_name=f"{portfolio_title} – Standard OOS WFO - Total Return ({engine})",
+    )
 
     results['pf_rot_base'] = pf_rot_base
     results['pf_benchmark_base'] = pf_bm_base
@@ -17103,7 +16774,7 @@ def run_wfo_pipeline_v2(
         'wfo_results', 'engine',
     }
     assert set(results.keys()) == _expected_keys, (
-        f"run_wfo_pipeline_v2: chiavi mancanti o in eccesso: "
+        f"run_wfo_pipeline: chiavi mancanti o in eccesso: "
         f"{set(results.keys()) ^ _expected_keys}"
     )
 
