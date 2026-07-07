@@ -12249,6 +12249,16 @@ def generate_ptf_card_md(
     # ── Sezioni 6+7: testo LLM passato dall'esterno (generato una sola volta dal chiamante) ─
     _sec_llm = analysis_md
 
+    # ── §2 grid rows per-engine ───────────────────────────────────────────────
+    _sec2_grid = ''
+    for _geng, _gdata in engines.items():
+        _nf = _gdata.get('n_full_trials', 'N/A')
+        _nr = _gdata.get('n_reduced_trials', 'N/A')
+        _sec2_grid += (
+            f"| Grid size full — {_geng} | {_nf} combinazioni | Spazio parametrico totale |\n"
+            f"| Grid size reduced — {_geng} | {_nr} combinazioni | Dopo stability analysis |\n"
+        )
+
     _card = (
         f"# PTF Card — {portfolio_title} {year}\n\n---\n\n"
         f"## 1. Identità\n"
@@ -12265,8 +12275,7 @@ def generate_ptf_card_md(
         f"| Parametro | Valore | Nota |\n|-----------|--------|------|\n"
         f"| WFO ratio | {wfo_config.get('ratio', 'N/A')} | Rapporto IS/OOS |\n"
         f"| WFO metric | {wfo_config.get('metric', 'N/A')} | Metrica ottimizzazione IS |\n"
-        f"| Grid size (full) | {wfo_config.get('n_full_trials', 'N/A')} combinazioni | Spazio parametrico totale |\n"
-        f"| Grid size (reduced) | {wfo_config.get('n_reduced_trials', 'N/A')} combinazioni | Dopo stability analysis |\n"
+        f"{_sec2_grid}"
         f"| Stability metric | CAGR, k=3 | Metrica e sottoperiodi |\n"
         f"| n_bootstrap OFC | {_n_bs_ofc} | Test S3 random selection |\n"
         f"| n_bootstrap MC | {wfo_config.get('n_bootstrap_mc', wfo_config.get('n_bootstrap', 1000))} | Block A (CI) + Block B (Skill Tests) |\n"
@@ -12389,6 +12398,8 @@ def generate_relazione_llm(
             "ci_results": ev.get("ci_results"),
             "pf_rot_metrics": _pf_metrics(ev.get("pf_rot")),
             "pf_rot_base_metrics": _pf_metrics(ev.get("pf_rot_base")),
+            "n_full_trials": ev.get("n_full_trials"),
+            "n_reduced_trials": ev.get("n_reduced_trials"),
         }
 
     payload_json = _json.dumps(payload, indent=2, default=str)
@@ -12422,6 +12433,14 @@ Regole non negoziabili:
   prima o dopo verdetti (PASS/FAIL/Sì/No) o valori numerici nelle
   tabelle — scrivi solo il testo/numero, la formattazione visiva è
   gestita dal renderer.
+- Usa sempre la terminologia italiana per i test di significatività:
+  'Significativo' / 'Non significativo' — mai i termini inglesi
+  'significant' / 'NOT significant', anche quando i dati di input li
+  usano.
+- Scrivi i numeri interi grandi SENZA separatore delle migliaia:
+  62208, non 62.208 né 62 208 né 62,208.
+- Non usare mai un trattino (-, –, —, −) per esprimere un intervallo
+  numerico. Scrivi sempre 'tra X e Y' per esteso, mai 'X-Y' o 'X–Y'.
 - Stile: diretto, quantitativo, zero riempitivo.
 """
 
@@ -12442,11 +12461,22 @@ Regole non negoziabili:
     analysis_md = _call_claude(system_prompt, user_prompt, max_tokens=64000)
 
     # ── Guardrail anti-allucinazione (numericamente consapevole) ────────────
-    # Normalizza il segno meno unicode prima di estrarre i token numerici.
-    _NORM = str.maketrans({'−': '-', '–': '-'})
+    def _norm_text(text: str) -> str:
+        # 1. Collassa "X YYY" (migliaia con spazio) in "XYYY".
+        #      = non-breaking space; `\b` impedisce di toccare "3 items" ecc.
+        text = re.sub(
+            r'\b(\d{1,3})[\s ]+(\d{3})\b',
+            lambda m: m.group(1) + m.group(2),
+            text,
+        )
+        # 2. Converte unicode-minus (U+2212) e EN DASH (U+2013) in trattino ASCII
+        #    SOLO quando NON sono preceduti da una cifra: "93–98" è un range, non
+        #    un numero negativo; "−62.02" è un numero negativo (spazio/inizio prima).
+        text = re.sub(r'(?<!\d)[−–]', '-', text)
+        return text
 
     def _numtokens(text: str) -> list[str]:
-        return re.findall(r"-?\d+(?:[.,]\d+)?", text.translate(_NORM))
+        return re.findall(r"-?\d+(?:[.,]\d+)?", _norm_text(text))
 
     def _accettabile(token: str, payload_floats: frozenset, tol: float = 0.01) -> bool:
         cleaned = token.replace(',', '.')
@@ -12488,6 +12518,60 @@ Regole non negoziabili:
         )
 
     return analysis_md
+
+
+def _test_guardrail_numtokens() -> None:
+    """
+    Suite di test per normalizzazione numerica del guardrail anti-allucinazione.
+    Eseguire manualmente: _test_guardrail_numtokens()
+    """
+    import re as _re
+
+    def _norm(text: str) -> str:
+        text = _re.sub(
+            r'\b(\d{1,3})[\s ]+(\d{3})\b',
+            lambda m: m.group(1) + m.group(2),
+            text,
+        )
+        text = _re.sub(r'(?<!\d)[−–]', '-', text)
+        return text
+
+    def _tok(text: str) -> list[str]:
+        return _re.findall(r"-?\d+(?:[.,]\d+)?", _norm(text))
+
+    # ── Migliaia con spazio (3 nuovi casi — Message 5) ────────────────────
+    assert _tok("n = 2 304 trial") == ["2304"],          f"fail: {_tok('n = 2 304 trial')}"
+    assert _tok("62 208 trial") == ["62208"],             f"fail: {_tok('62 208 trial')}"
+    assert _tok("1 260 giorni di trading") == ["1260"],   f"fail: {_tok('1 260 giorni di trading')}"
+
+    # ── EN DASH come separatore di range (non produce negativi) ──────────
+    _r = _tok("93–98%")
+    assert "-98" not in _r,   f"phantom negative: {_r}"
+    assert "93" in _r and "98" in _r, f"range perso: {_r}"
+
+    # ── Non-breaking space come separatore di migliaia ────────────────────
+    assert _tok("1 260") == ["1260"], f"fail nbsp: {_tok(chr(0x31)+chr(0x00A0)+chr(0x32)+chr(0x36)+chr(0x30))}"
+
+    # ── Unicode minus all'inizio (segno negativo legittimo) ───────────────
+    assert _tok("−62.02") == ["-62.02"],           f"fail: {_tok('−62.02')}"
+    assert _tok("rendimento −12.5%") == ["-12.5"], f"fail: {_tok('rendimento −12.5%')}"
+    assert _tok("da −10 a +10") == ["-10", "10"],  f"fail: {_tok('da −10 a +10')}"
+
+    # ── Punto come separatore migliaia italiano (pass-through a _accettabile) ─
+    assert _tok("62.208") == ["62.208"], f"fail: {_tok('62.208')}"
+    assert _tok("2.304") == ["2.304"],   f"fail: {_tok('2.304')}"
+
+    # ── EM DASH (U+2014) non presente in _norm: non crea negativi ─────────
+    _r = _tok("93—98%")
+    assert "-98" not in _r, f"em-dash phantom negative: {_r}"
+
+    # ── Trattino ASCII ordinario = meno legittimo ─────────────────────────
+    assert _tok("-5.3%") == ["-5.3"], f"fail: {_tok('-5.3%')}"
+
+    # ── Migliaia >4 cifre: "10 000" ────────────────────────────────────────
+    assert _tok("10 000 trail") == ["10000"], f"fail: {_tok('10 000 trail')}"
+
+    print("_test_guardrail_numtokens: tutti i 15 casi OK")
 
 
 def _md_to_flowables(md_text: str, styles: dict) -> list:
@@ -12646,19 +12730,27 @@ def _md_to_flowables(md_text: str, styles: dict) -> list:
                                     ('BACKGROUND', (ci, ri), (ci, ri), bg)
                                 )
 
-                    # FIX 3: floor verdict-only columns to width of "PROMOTED"
+                    # Floor per colonna: max(larghezza header, floor verdetto se applicabile).
+                    # Evita word-wrap su qualsiasi header E garantisce spazio minimo
+                    # per token verdetto (PASS/FAIL/PROMOTED/…).
                     from reportlab.pdfbase.pdfmetrics import stringWidth as _sw
-                    _VERDICT_FLOOR = _sw("PROMOTED", "Helvetica", 8) + 8  # +8pt padding
-                    _verdict_adj = False
+                    _PAD = 8  # somma left+right padding ReportLab
+                    _VERDICT_FLOOR = _sw("PROMOTED", "Helvetica", 8) + _PAD
+                    _adj = False
                     for _j in range(n_cols):
                         _vcells = [raw_rows[_ri][_j]
                                    for _ri in range(1, len(raw_rows))
                                    if _j < len(raw_rows[_ri])]
-                        if _vcells and all(_vbg(c) is not None for c in _vcells):
-                            if col_widths[_j] < _VERDICT_FLOOR:
-                                col_widths[_j] = _VERDICT_FLOOR
-                                _verdict_adj = True
-                    if _verdict_adj:
+                        _is_verdict = _vcells and all(_vbg(c) is not None for c in _vcells)
+                        _hdr_txt = (raw_rows[0][_j].replace('✅', '').replace('❌', '').strip()
+                                    if _j < len(raw_rows[0]) else '')
+                        _hdr_floor = (_sw(_hdr_txt, 'Helvetica-Bold', 8) + _PAD
+                                      if _hdr_txt else 0)
+                        _floor = max(_VERDICT_FLOOR if _is_verdict else 0, _hdr_floor)
+                        if _floor and col_widths[_j] < _floor:
+                            col_widths[_j] = _floor
+                            _adj = True
+                    if _adj:
                         _cw2 = sum(col_widths)
                         col_widths = [w * content_w / _cw2 for w in col_widths]
 
@@ -14093,8 +14185,11 @@ def generate_relazione_tecnica(
          Paragraph('Note', st_cell_hdr)],
         ['WFO ratio',              (lambda r: str(r).replace(':', ' : ') if ':' in str(r) else f'{r} : 1')(wfo_config.get('ratio', 'N/A')),              'Rapporto IS / OOS'],
         ['Metrica ottimizzazione', str(wfo_config.get('metric', 'N/A')),                'Selezione parametri In-Sample'],
-        ['Grid size (full)',        f"{wfo_config.get('n_full_trials','N/A')} comb.",   'Spazio parametrico totale'],
-        ['Grid size (reduced)',     f"{wfo_config.get('n_reduced_trials','N/A')} comb.",'Dopo stability analysis (k=3, CAGR)'],
+        *[row for _geng, _gdata in engines.items()
+          for row in [
+              [f'Grid size full — {_geng}',    f"{_gdata.get('n_full_trials',   'N/A')} comb.", 'Spazio parametrico totale'],
+              [f'Grid size reduced — {_geng}', f"{_gdata.get('n_reduced_trials','N/A')} comb.", 'Dopo stability analysis (k=3, CAGR)'],
+          ]],
         ['Stability metric',       'CAGR · k = 3',                                'Metrica e numero di sottoperiodi'],
         ['n_bootstrap OFC',  str(wfo_config.get('n_bootstrap_ofc', wfo_config.get('n_bootstrap', 1000))),  'Test S3 random selection'],
         ['n_bootstrap MC',   str(wfo_config.get('n_bootstrap_mc',  wfo_config.get('n_bootstrap', 1000))),  'Block A (CI) + Block B (Skill Tests)'],
@@ -14586,6 +14681,221 @@ def generate_relazione_tecnica(
     return output_path
 
 
+def generate_final_report(
+    *,
+    results_pipeline: dict,
+    portfolio_title: str,
+    year: int,
+    profile: str,
+    benchmark_title: str,
+    tickers: list,
+    pipeline_start_date,
+    wfo_file_save: str,
+    survivorship_bias_universe: bool,
+    reports_dir,
+    plots_dir,
+    ratio: str,
+    metric: str,
+) -> dict | None:
+    """
+    Genera la decisione finale, la PTF Card Markdown e la Relazione
+    Tecnica PDF per una run R-portfolio multi-engine (Momentum +
+    Multifactor).
+
+    Raccoglie i dati OFC/MC dai risultati già calcolati in
+    ``results_pipeline``, costruisce il dict ``engines`` per-engine
+    con le grid-size reali esposte da ``run_wfo_pipeline``, chiama
+    ``generate_relazione_llm`` una sola volta e distribuisce l'output
+    a entrambi i documenti.
+
+    Parameters
+    ----------
+    results_pipeline : dict[str, dict]
+        Output di ``run_wfo_pipeline`` per ciascun engine ("Momentum",
+        "Multifactor"). Ogni valore deve contenere le chiavi:
+        ``ofc``, ``mc``, ``pf_rot``, ``pf_rot_base``,
+        ``n_full_trials``, ``n_reduced_trials``.
+    portfolio_title : str
+        Nome leggibile del portafoglio (es. "Germany Plan — 2026").
+    year : int
+        Anno di selezione WFO (es. 2026).
+    profile : str
+        Profilo di rischio: ``"satellite"`` oppure ``"core"``.
+        Determina le soglie OFC.
+    benchmark_title : str
+        Ticker o label del benchmark (es. ``"^GDAXI"``).
+    tickers : list[str]
+        Lista completa dei ticker dell'universo; ``len(tickers)``
+        viene passato come ``universe_size`` alle funzioni di output.
+    pipeline_start_date : pd.Timestamp | str
+        Data di inizio del periodo OOS della pipeline WFO.
+    wfo_file_save : str
+        Path del file CSV WFO summary salvato su disco (incluso nella
+        §1 Identità della PTF Card e della Relazione Tecnica).
+    survivorship_bias_universe : bool
+        True se l'universo è stato risolto dinamicamente da un indice
+        (survivorship bias presente); propagato alla Relazione Tecnica.
+    reports_dir : Path | str
+        Directory di output per i file generati (PTF Card .md e
+        Relazione Tecnica .pdf). Viene creata se non esiste.
+    plots_dir : Path | str
+        Directory contenente i PNG già generati nelle celle precedenti
+        del notebook; passata a ``generate_relazione_tecnica``.
+    ratio : str
+        Rapporto IS:OOS usato per la WFO (es. ``"3:1"``).
+    metric : str
+        Metrica di ottimizzazione IS (es. ``"Sharpe Ratio"``).
+
+    Returns
+    -------
+    dict | None
+        ``None`` se nessun engine ha completato la pipeline OFC+MC.
+        Altrimenti un dict con le chiavi:
+        ``"card_path"`` (Path, PTF Card Markdown),
+        ``"pdf_path"`` (Path, Relazione Tecnica PDF),
+        ``"engines"`` (dict, struttura engines passata agli output).
+
+    Side Effects
+    ------------
+    Scrive su ``reports_dir``:
+      - ``{ptf_name}_{year}_{profile}.md``  — PTF Card Markdown
+      - ``{portfolio_title}_{year}_{profile}_Relazione_Tecnica.pdf``
+    Chiama l'API Anthropic (``generate_relazione_llm``) una volta per
+    generare le sezioni §6–§7 della relazione.
+    Stampa su stdout il riepilogo della Decisione Finale e i path dei
+    file generati.
+    """
+    from datetime import date as _date
+    from pathlib import Path as _Path
+
+    _today_iso = _date.today().isoformat()
+    _ptf_name  = portfolio_title.replace(' ', '_').lower()
+    reports_dir = _Path(reports_dir)
+    plots_dir   = _Path(plots_dir)
+
+    # ── Raccolta dati per tutti gli engine ───────────────────────────────────
+    engines = {}
+    for _eng in ["Momentum", "Multifactor"]:
+        _rp = results_pipeline.get(_eng, {})
+        if not _rp:
+            print(f"[{_eng}] SKIP — risultato non trovato in results_pipeline")
+            continue
+        if _rp.get('mc') is None:
+            print(f"[{_eng}] SKIP — MC non disponibile (OFC non promosso o sanity fallita)")
+            continue
+
+        _mc      = _rp['mc']
+        _ofc_rep = _rp['ofc']['report']
+
+        # Leggi grid-sizes da results_pipeline; se mancanti (results_pipeline
+        # precedente alla fix — stato kernel stale, non un bug di wiring),
+        # fallback su ofc_report per n_full_trials (OFC usa il full grid →
+        # stessa cardinalità). Per n_reduced_trials NON usare n_full_trials
+        # come proxy: sarebbe silenziosamente sbagliato. Mostrare 'N/A'.
+        _nf = _rp.get('n_full_trials')
+        _nr = _rp.get('n_reduced_trials')
+        if _nf is None:
+            _nf = _ofc_rep.get('resolved', {}).get('n_total_trials_used')
+        if _nr is None:
+            _nr = 'N/A'
+
+        engines[_eng] = {
+            'ofc_report':      _ofc_rep,
+            'mc_skill':        _mc['skill_results'],
+            'mc_ci':           _mc['ci_summary_df'],
+            'ci_results':      _mc.get('ci_results'),
+            'pf_rot':          _rp.get('pf_rot'),
+            'pf_rot_base':     _rp.get('pf_rot_base'),
+            'plots_subdir':    _eng.lower(),
+            'n_full_trials':   _nf,
+            'n_reduced_trials': _nr,
+        }
+        engines[_eng]['skill_profile'] = compute_skill_profile(
+            engines={_eng: engines[_eng]}
+        ).get(_eng, 'N/A')
+
+    if not engines:
+        print("[generate_final_report] Nessun engine disponibile — output non generato.")
+        return None
+
+    # ── Configurazione WFO (parametri comuni; grid sizes sono per-engine) ────
+    _wfo_config = {
+        'ratio':           ratio,
+        'metric':          metric,
+        'wfo_file_save':   wfo_file_save,
+        'use_clustering':  False,
+        'n_bootstrap_ofc': 1000,
+        'n_bootstrap_mc':  1000,
+    }
+
+    _rp0          = results_pipeline[next(iter(engines))]
+    _benchmark_pf = _rp0.get('pf_benchmark') or _rp0.get('pf_benchmark_base')
+
+    _card_path = reports_dir / f"{_ptf_name}_{year}_{profile}.md"
+    _pdf_path  = reports_dir / f"{portfolio_title}_{year}_{profile}_Relazione_Tecnica.pdf"
+    _card_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # ── Decisione finale ──────────────────────────────────────────────────────
+    print(f"\n{'='*60}\n  Decisione Finale — {portfolio_title} ({year})\n{'='*60}")
+    print_final_decision(
+        portfolio_title = portfolio_title,
+        year            = year,
+        profile         = profile,
+        engines         = engines,
+    )
+
+    # ── Generazione LLM una sola volta (§6–§7) ────────────────────────────────
+    _analysis_md = generate_relazione_llm(
+        engines         = engines,
+        wfo_config      = _wfo_config,
+        portfolio_title = portfolio_title,
+        year            = year,
+        profile         = profile,
+        benchmark_title = benchmark_title,
+        benchmark_pf    = _benchmark_pf,
+    )
+
+    # ── PTF Card Markdown ─────────────────────────────────────────────────────
+    generate_ptf_card_md(
+        portfolio_title = portfolio_title,
+        year            = year,
+        profile         = profile,
+        benchmark       = benchmark_title,
+        benchmark_pf    = _benchmark_pf,
+        period          = (str(pipeline_start_date), _today_iso),
+        universe_size   = len(tickers),
+        wfo_config      = _wfo_config,
+        engines         = engines,
+        output_path     = _card_path,
+        analysis_md     = _analysis_md,
+    )
+    print(f"PTF Card MD: {_card_path}")
+
+    # ── Relazione Tecnica PDF ─────────────────────────────────────────────────
+    generate_relazione_tecnica(
+        portfolio_title            = portfolio_title,
+        year                       = year,
+        profile                    = profile,
+        benchmark                  = benchmark_title,
+        benchmark_pf               = _benchmark_pf,
+        period                     = (str(pipeline_start_date), _today_iso),
+        universe_size              = len(tickers),
+        wfo_config                 = _wfo_config,
+        engines                    = engines,
+        plots_dir                  = plots_dir,
+        output_path                = _pdf_path,
+        analysis_md                = _analysis_md,
+        survivorship_bias_universe = survivorship_bias_universe,
+    )
+    print(f"Relazione tecnica PDF: {_pdf_path}")
+
+    return {
+        "card_path": _card_path,
+        "pdf_path":  _pdf_path,
+        "engines":   engines,
+    }
+
+
 def run_r_portfolio_analysis(
     portfolio_cfg: dict,
     output_dir,
@@ -14905,22 +15215,26 @@ def run_r_portfolio_analysis(
     # 11. DECISIONE
     _engines_raw = {
         "Standard": {
-            "ofc_report":    ofc_report_std,
-            "mc_skill":      skill_results,
-            "mc_ci":         ci_summary_df,
-            "ci_results":    ci_results,
-            "pf_rot":        results_std.get("pf_rot"),
-            "pf_rot_base":   results_std.get("pf_rot_base"),
-            "plots_subdir":  "std",
+            "ofc_report":      ofc_report_std,
+            "mc_skill":        skill_results,
+            "mc_ci":           ci_summary_df,
+            "ci_results":      ci_results,
+            "pf_rot":          results_std.get("pf_rot"),
+            "pf_rot_base":     results_std.get("pf_rot_base"),
+            "plots_subdir":    "std",
+            "n_full_trials":   n_full_trials,
+            "n_reduced_trials": n_reduced_trials,
         },
         "Cluster": {
-            "ofc_report":    ofc_report_cluster,
-            "mc_skill":      skill_results_cluster,
-            "mc_ci":         ci_summary_df_cluster,
-            "ci_results":    ci_results_cluster if results_cluster else None,
-            "pf_rot":        results_cluster.get("pf_rot") if results_cluster else None,
-            "pf_rot_base":   results_cluster.get("pf_rot_base") if results_cluster else None,
-            "plots_subdir":  "cluster",
+            "ofc_report":      ofc_report_cluster,
+            "mc_skill":        skill_results_cluster,
+            "mc_ci":           ci_summary_df_cluster,
+            "ci_results":      ci_results_cluster if results_cluster else None,
+            "pf_rot":          results_cluster.get("pf_rot") if results_cluster else None,
+            "pf_rot_base":     results_cluster.get("pf_rot_base") if results_cluster else None,
+            "plots_subdir":    "cluster",
+            "n_full_trials":   n_full_trials,
+            "n_reduced_trials": n_reduced_trials,
         },
     }
     _sp_map = compute_skill_profile(engines=_engines_raw)
@@ -14932,14 +15246,12 @@ def run_r_portfolio_analysis(
     # 12. OUTPUT
     _today_iso = date.today().isoformat()
     _wfo_config = {
-        "ratio":            ratio,
-        "metric":           metric,
-        "n_full_trials":    n_full_trials,
-        "n_reduced_trials": n_reduced_trials,
-        "wfo_file_save":    wfo_file_save,
-        "use_clustering":   True,
-        "n_bootstrap_ofc":  1000,
-        "n_bootstrap_mc":   1000,
+        "ratio":          ratio,
+        "metric":         metric,
+        "wfo_file_save":  wfo_file_save,
+        "use_clustering": True,
+        "n_bootstrap_ofc": 1000,
+        "n_bootstrap_mc":  1000,
     }
     _benchmark_pf = results_std.get("pf_benchmark") or results_std.get("pf_benchmark_base")
 
@@ -16748,6 +17060,8 @@ def run_wfo_pipeline(
         selected_k=None,
     ))
 
+    _n_full_trials = len(param_grid)
+
     if autoreduce:
         print("\n=======================================================")
         print("STEP 0 — Stability Analysis (autoreduce=True)")
@@ -16778,6 +17092,8 @@ def run_wfo_pipeline(
             if verbose:
                 print(f"[autoreduce] {_n_before} → {len(param_grid)} combinazioni "
                       f"(flag fissi: {_fixed_flags})")
+
+    _n_reduced_trials = len(param_grid)
 
     print("\n=======================================================")
     print(f"STEP 1 — WFO Standard ({engine})")
@@ -16928,6 +17244,8 @@ def run_wfo_pipeline(
         )
 
     results['engine'] = engine
+    results['n_full_trials'] = _n_full_trials
+    results['n_reduced_trials'] = _n_reduced_trials
 
     print("\n=======================================================")
     print(f"PIPELINE {engine} COMPLETATA")
@@ -16937,7 +17255,7 @@ def run_wfo_pipeline(
         'selected_k', 'sel_tickers_base', 'merged_summary', 'sel_tickers',
         'summary_df', 'cluster_grids', 'pf_rot', 'cluster_result',
         'pf_rot_base', 'pf_benchmark_base', 'regime', 'pf_benchmark',
-        'wfo_results', 'engine',
+        'wfo_results', 'engine', 'n_full_trials', 'n_reduced_trials',
     }
     assert set(results.keys()) == _expected_keys, (
         f"run_wfo_pipeline: chiavi mancanti o in eccesso: "
