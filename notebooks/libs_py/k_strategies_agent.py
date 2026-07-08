@@ -4688,3 +4688,106 @@ def strategy_hmm_regime_gold(data: pd.DataFrame, params: dict, year: int | None 
     shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
     shifted_exits = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
     return shifted_entries, shifted_exits
+
+
+# ─────────────────────────────────────
+# Fonte: The Regime Report: How to Find the Strategy Inside Your Strategy
+# URL:   https://medium.com/@Kryptera/the-regime-report-how-to-find-the-strategy-inside-your-strategy-1fa10a6ae4d1
+# Data:  2026-07-08 02:00
+# ─────────────────────────────────────
+
+############################
+# Strategy bears_power_cts_regime
+############################
+
+import pandas as pd
+import numpy as np
+
+
+def ind_bears_power_cts_regime_bears_power(df: pd.DataFrame, bp_period: int = 13) -> pd.Series:
+    close = df['Close']
+    ema = close.ewm(span=bp_period, adjust=False, min_periods=1).mean()
+    bears_power = df['Low'] - ema
+    return bears_power
+
+
+def ind_bears_power_cts_regime_cts(df: pd.DataFrame, cts_period: int = 20, cts_mult: float = 1.5) -> tuple:
+    close = df['Close']
+    ma = close.rolling(cts_period, min_periods=1).mean()
+    std = close.rolling(cts_period, min_periods=1).std(ddof=0)
+    lower = ma - cts_mult * std
+    return ma, lower
+
+
+def ind_bears_power_cts_regime_regime(df: pd.DataFrame, vol_lookback: int = 20, trend_lookback: int = 200) -> pd.Series:
+    close = df['Close']
+    sma200 = close.rolling(trend_lookback, min_periods=1).mean()
+    is_trending = close > sma200
+
+    ret = close.pct_change()
+    realized_vol = ret.rolling(vol_lookback, min_periods=1).std()
+    vol_median = realized_vol.expanding(min_periods=60).median()
+
+    safe_med = np.where(vol_median.notna() & (vol_median != 0), vol_median, np.nan)
+    is_high_vol = realized_vol > pd.Series(safe_med, index=realized_vol.index)
+
+    conditions = [
+        (is_trending & is_high_vol),
+        (is_trending & ~is_high_vol),
+        (~is_trending & is_high_vol),
+        (~is_trending & ~is_high_vol),
+    ]
+    regime = np.select(conditions,
+                       ['trend_highvol', 'trend_lowvol', 'chop_highvol', 'chop_lowvol'],
+                       default='unknown')
+    return pd.Series(regime, index=df.index)
+
+
+strategy_bears_power_cts_regime_param_ranges = {
+    'bp_period_range'     : range(10, 21, 5),
+    'cts_period_range'    : range(15, 31, 5),
+    'cts_mult_range'      : range(10, 25, 5),
+    'vol_lookback_range'  : range(15, 31, 5),
+    'trend_lookback_range': range(150, 251, 50),
+}
+
+
+def strategy_bears_power_cts_regime(data: pd.DataFrame, params: dict, year: int | None = None):
+    bp_period      = params.get('bp_period_range')
+    cts_period     = params.get('cts_period_range')
+    cts_mult       = params.get('cts_mult_range') / 10.0
+    vol_lookback   = params.get('vol_lookback_range')
+    trend_lookback = params.get('trend_lookback_range')
+
+    df = data.copy()
+
+    bears_power = ind_bears_power_cts_regime_bears_power(df, bp_period=bp_period)
+    cts_ma, cts_lower = ind_bears_power_cts_regime_cts(df, cts_period=cts_period, cts_mult=cts_mult)
+    regime = ind_bears_power_cts_regime_regime(df, vol_lookback=vol_lookback, trend_lookback=trend_lookback)
+
+    df['BearsPower']  = bears_power
+    df['CTS_MA']      = cts_ma
+    df['CTS_Lower']   = cts_lower
+    df['regime']      = regime
+
+    # Bears Power is falling: current value < previous value
+    bp_falling = df['BearsPower'] < df['BearsPower'].shift(1)
+
+    # CTS cross above lower: close crosses above lower band
+    cts_cross_above_lower = (df['Close'] > df['CTS_Lower']) & (df['Close'].shift(1) <= df['CTS_Lower'].shift(1))
+
+    # Regime gate: allow entries only in trend_lowvol or chop_highvol
+    ALLOWED_REGIMES = {'trend_lowvol', 'chop_highvol'}
+    regime_gate = df['regime'].shift(1).isin(ALLOWED_REGIMES)
+
+    entries = bp_falling & regime_gate
+    exits   = cts_cross_above_lower
+
+    if year is not None:
+        df_year = df[df.index.year == int(year)]
+        entries = entries[df_year.index]
+        exits   = exits[df_year.index]
+
+    shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    shifted_exits   = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    return shifted_entries, shifted_exits
