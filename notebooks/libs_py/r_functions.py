@@ -2965,7 +2965,7 @@ def analyze_portfolio_metrics(
                 df_norm[col] = df[col]
         return df_norm.clip(0, 1)
 
-    print(f'{Emoji.SETUP} Analisi Portfolio Rotazionale ({BOLD}{portfolio_name}{RESET}):\n')
+    # print(f'{Emoji.SETUP} Analisi Portfolio Rotazionale ({BOLD}{portfolio_name}{RESET}):\n')
     
     # -----------------------------------------------------------------
     # Prepara dataframe input
@@ -11701,7 +11701,9 @@ def _ofc_s3_bootstrap(
 
     p_value = sum(r >= actual_score for r in random_scores) / len(random_scores)
     passed  = p_value <= threshold
-    note    = (f"S3 ({m_norm}): actual={actual_score:.4f}, "
+    note    = (f"S3: {m_norm} nella finestra OOS ricostruita = {actual_score:.4f} "
+               f"(non è il {m_norm} realizzato canonico — è il punteggio calcolato "
+               f"sulla concatenazione OOS per il test bootstrap); "
                f"p={p_value:.3f} <=threshold={threshold:.2f}, "
                f"n={len(random_scores)} sims")
     return p_value, passed, note
@@ -12098,10 +12100,6 @@ def print_final_decision(
     print('=' * 76)
     print(_df.to_string(index=False))
     print('=' * 76)
-    print(f'  User decision: quale path deployare? [ {_dec_opts} ]')
-    print('  (compilare a mano nella scheda PTF con motivazione)')
-    print('=' * 76)
-
 
 def generate_ptf_card_md(
     *,
@@ -12213,6 +12211,116 @@ def generate_ptf_card_md(
             f"| A2 — Block Bootstrap | {_civ('A2 · Block Bootstrap','CAGR_p5')} | {_civ('A2 · Block Bootstrap','CAGR_p50')} | {_civ('A2 · Block Bootstrap','CAGR_p95')} | {_civ('A2 · Block Bootstrap','Sharpe_p50')} | {_civ('A2 · Block Bootstrap','MaxDD_p50')} |\n\n"
         )
 
+    def _ofc6_md(eng_name, eng):
+        ofc_rep  = eng.get('ofc_report') or {}
+        sigs     = ofc_rep.get('signals', {})
+        promoted = bool(ofc_rep.get('promoted', False))
+        minsig_l = ofc_rep.get('resolved', {}).get('min_signals_to_pass', 3)
+        n_p      = sum(1 for k in ('S1_plateau', 'S2_coherence', 'S3_bootstrap', 'S4_dsr')
+                       if sigs.get(k, {}).get('pass'))
+
+        def _sval(sk):
+            sd = sigs.get(sk, {})
+            if sk == 'S3_bootstrap':
+                raw = sd.get('p_value')
+                return f"p={raw:.3f}" if isinstance(raw, float) else 'N/A'
+            if sk == 'S4_dsr':
+                raw = sd.get('dsr')
+                return f"{raw:.3f}" if isinstance(raw, float) else 'N/A'
+            raw = sd.get('value')
+            return f"{raw:.3f}" if isinstance(raw, float) else 'N/A'
+
+        def _sthr(sk):
+            thr = sigs.get(sk, {}).get('threshold')
+            return f"{thr:.3f}" if isinstance(thr, float) else (str(thr) if thr is not None else '—')
+
+        lines = [
+            f'**{eng_name}**\n',
+            '| Segnale | Esito | Valore | Soglia | Note |',
+            '|---------|-------|--------|--------|------|',
+        ]
+        for sk, slbl in [
+            ('S1_plateau',   'S1 — Plateau'),
+            ('S2_coherence', 'S2 — Coherence'),
+            ('S3_bootstrap', 'S3 — Bootstrap'),
+            ('S4_dsr',       'S4 — DSR'),
+        ]:
+            sd  = sigs.get(sk, {})
+            pss = sd.get('pass')
+            vl  = 'PASS' if pss else ('FAIL' if pss is not None else 'N/A')
+            note = str(sd.get('note') or '—')
+            lines.append(f'| {slbl} | {vl} | {_sval(sk)} | {_sthr(sk)} | {note} |')
+        vrd = 'PROMOTED' if promoted else 'NOT PROMOTED'
+        lines.append(f'| **Verdetto OFC** | **{vrd}** | {n_p}/4 | ≥{minsig_l}/4 | |')
+        return '\n'.join(lines) + '\n\n'
+
+    def _sk6_md(eng_name, eng):
+        mcs = eng.get('mc_skill') or {}
+        lines = [
+            f'**{eng_name}**\n',
+            '| Test | CAGR Realizzato | p-value | Significativo? |',
+            '|------|-----------------|---------|----------------|',
+        ]
+        for mck, lbl in [
+            ('rotation_reshuffle', 'B1 — Rotation Reshuffle'),
+            ('rebalance_timing',   'B2 — Rebalance Timing'),
+        ]:
+            d    = mcs.get(mck, {})
+            pv   = d.get('p_values', {}).get('CAGR')
+            act  = d.get('actual_metrics', {}).get('CAGR')
+            pv_s  = f"{pv:.3f}"       if isinstance(pv,  float) else 'N/A'
+            act_s = f"{act*100:.1f}%" if isinstance(act, float) else 'N/A'
+            sig_lbl = 'Significativo' if (pv is not None and pv < 0.10) else 'Non significativo'
+            lines.append(f'| {lbl} | {act_s} | {pv_s} | {sig_lbl} |')
+        return '\n'.join(lines) + '\n\n'
+
+    def _ci6_md(eng_name, eng):
+        mc_ci = eng.get('mc_ci')
+        if mc_ci is None:
+            return f'**{eng_name}**: N/A\n\n'
+
+        def _qtl(p5, p25, p50, p75, p95, act):
+            try:
+                v = float(act)
+                if v < float(p5):  return '< p5'
+                if v < float(p25): return 'p5-p25'
+                if v < float(p50): return 'p25-p50'
+                if v < float(p75): return 'p50-p75'
+                if v < float(p95): return 'p75-p95'
+                return '> p95'
+            except (TypeError, ValueError):
+                return '—'
+
+        lines = [
+            f'**{eng_name}**\n',
+            '| Metodo / Metrica | p5 | p25 | p50 | p75 | p95 | Realizzato | ~Quantile |',
+            '|------------------|-----|-----|-----|-----|-----|------------|-----------|',
+        ]
+        for mkey, mlbl in [
+            ('A1 · IID Bootstrap',   'A1 IID'),
+            ('A2 · Block Bootstrap', 'A2 Block'),
+        ]:
+            if mkey not in mc_ci.index:
+                continue
+            rd = mc_ci.loc[mkey]
+            for met, is_pct in [('CAGR', True), ('Sharpe', False), ('MaxDD', True)]:
+                def _fv(col, _rd=rd):
+                    try: return float(_rd[col])
+                    except Exception: return float('nan')
+                def _fs(col, _ip=is_pct, _rd=rd):
+                    try:
+                        v = float(_rd[col])
+                        return f"{v*100:.1f}%" if _ip else f"{v:.3f}"
+                    except Exception: return 'N/A'
+                qtl = _qtl(_fv(f'{met}_p5'), _fv(f'{met}_p25'), _fv(f'{met}_p50'),
+                            _fv(f'{met}_p75'), _fv(f'{met}_p95'), _fv(f'Actual_{met}'))
+                lines.append(
+                    f'| {mlbl} / {met} | {_fs(f"{met}_p5")} | {_fs(f"{met}_p25")} '
+                    f'| {_fs(f"{met}_p50")} | {_fs(f"{met}_p75")} | {_fs(f"{met}_p95")} '
+                    f'| {_fs(f"Actual_{met}")} | {qtl} |'
+                )
+        return '\n'.join(lines) + '\n\n'
+
     _sec5 = '## 5. Monte Carlo Validation\n*Valuta se il motore aggiunge valore rispetto al caso (analisi indipendente per engine)*\n\n'
     sl2 = [chr(ord('a') + i) for i in range(len(_eng_names))]
     for i, (eng_name, eng) in enumerate(engines.items()):
@@ -12246,9 +12354,6 @@ def generate_ptf_card_md(
         'dalla struttura dell\'universe o dal Risk ON/OFF.*\n\n---\n\n'
     )
 
-    # ── Sezioni 6+7: testo LLM passato dall'esterno (generato una sola volta dal chiamante) ─
-    _sec_llm = analysis_md
-
     # ── §2 grid rows per-engine ───────────────────────────────────────────────
     _sec2_grid = ''
     for _geng, _gdata in engines.items():
@@ -12258,6 +12363,26 @@ def generate_ptf_card_md(
             f"| Grid size full — {_geng} | {_nf} combinazioni | Spazio parametrico totale |\n"
             f"| Grid size reduced — {_geng} | {_nr} combinazioni | Dopo stability analysis |\n"
         )
+
+    # ── §7 Analisi + §8 Decisione: tabelle Python intercalate con testo LLM ──
+    _secs = _parse_llm_sections(analysis_md)
+    _sec7 = '## 7. Analisi dei Segnali e Diagnosi Strutturale\n\n'
+    _sec7 += '### 7.a — Overfitting Check\n\n'
+    for _en, _ev in engines.items():
+        _sec7 += _ofc6_md(_en, _ev)
+    if _secs.get('6a'):
+        _sec7 += f'{_secs["6a"]}\n\n'
+    _sec7 += '### 7.b — Monte Carlo Skill Tests\n\n'
+    for _en, _ev in engines.items():
+        _sec7 += _sk6_md(_en, _ev)
+    if _secs.get('6b'):
+        _sec7 += f'{_secs["6b"]}\n\n'
+    _sec7 += '### 7.c — Confidence Intervals\n\n'
+    for _en, _ev in engines.items():
+        _sec7 += _ci6_md(_en, _ev)
+    if _secs.get('6c'):
+        _sec7 += f'{_secs["6c"]}\n\n'
+    _sec8 = f'## 8. Decisione Finale\n\n{_secs.get("7", "")}\n\n'
 
     _card = (
         f"# PTF Card — {portfolio_title} {year}\n\n---\n\n"
@@ -12288,8 +12413,9 @@ def generate_ptf_card_md(
         f"{_sec4}---\n\n"
         f"{_sec5}---\n\n"
         f"{_sec6}"
-        f"{_sec_llm}\n\n---\n\n"
-        f"## 8. Note e Avvertenze\n*(compilare a mano)*\n\n---\n"
+        f"{_sec7}\n\n---\n\n"
+        f"{_sec8}\n\n---\n\n"
+        f"## 9. Note e Avvertenze\n*(compilare a mano)*\n\n---\n"
     )
 
     output_path.write_text(_card)
@@ -12396,6 +12522,8 @@ def generate_relazione_llm(
             "mc_skill": ev.get("mc_skill"),
             "mc_ci": ev.get("mc_ci"),
             "ci_results": ev.get("ci_results"),
+            "realized": ev.get("realized"),
+            "realized_base": ev.get("realized_base"),
             "pf_rot_metrics": _pf_metrics(ev.get("pf_rot")),
             "pf_rot_base_metrics": _pf_metrics(ev.get("pf_rot_base")),
             "n_full_trials": ev.get("n_full_trials"),
@@ -12415,6 +12543,20 @@ Regole non negoziabili:
 - Usa ESCLUSIVAMENTE i numeri presenti nel JSON fornito. Ogni cifra che
   scrivi deve essere rintracciabile lì dentro. Non arrotondare in modo
   da nascondere un risultato negativo.
+- Per ogni engine, quando menzioni "CAGR realizzato", "Sharpe realizzato",
+  "MaxDD realizzato" o "Calmar realizzato", usa SEMPRE e SOLO i valori in
+  engines[engine]["realized"] (fonte canonica: vectorbt pf_rot). Non usare
+  mai i campi "actual_metrics" in mc_skill o "Actual_*" in mc_ci per
+  esporre metriche "realizzate" nel testo — quelli sono valori di calcolo
+  interno dei test statistici e possono differire metodologicamente.
+  Se devi confrontare con la variante base, usa engines[engine]["realized_base"].
+- Il campo "note" del segnale S3_bootstrap in ofc_report contiene un valore
+  di metrica calcolato sulla concatenazione delle finestre OOS ricostruite
+  per il test bootstrap. Questo NON è il CAGR/Sharpe realizzato del portafoglio:
+  è il punteggio usato internamente dal test S3 per confrontarsi con i
+  portafogli casuali. Non citarlo mai come "CAGR realizzato" o "Sharpe
+  realizzato" — se menzioni questo valore, chiamalo esplicitamente
+  "CAGR/Sharpe nella finestra OOS ricostruita (test S3)".
 - Se un pattern nei dati contraddice un'affermazione plausibile (es.
   un filtro di rischio con drawdown peggiore del benchmark invece che
   migliore), scrivilo esplicitamente e senza ambiguità.
@@ -12441,6 +12583,10 @@ Regole non negoziabili:
   62208, non 62.208 né 62 208 né 62,208.
 - Non usare mai un trattino (-, –, —, −) per esprimere un intervallo
   numerico. Scrivi sempre 'tra X e Y' per esteso, mai 'X-Y' o 'X–Y'.
+- Non costruire tabelle Markdown. Le tabelle numeriche di §6 sono già
+  generate deterministicamente da Python — scrivi SOLO testo di analisi,
+  osservazioni e diagnosi. Per ciascuna sotto-sezione (6.a, 6.b, 6.c)
+  e per §7: 2-5 frasi quantitative di commento, in prosa.
 - Stile: diretto, quantitativo, zero riempitivo.
 """
 
@@ -12448,14 +12594,20 @@ Regole non negoziabili:
         f'Genera in Markdown le sezioni di analisi per\n'
         f'"{portfolio_title}" ({year}, profilo {profile}), benchmark {benchmark_title}.\n\n'
         f'Dati — unica fonte di verità, non usare nient\'altro:\n{payload_json}\n\n'
-        f'Struttura richiesta:\n'
+        f'Struttura richiesta (SOLO testo di analisi — nessuna tabella Markdown):\n'
         f'## 6. Analisi dei Segnali e Diagnosi Strutturale\n'
-        f'### 6.a — Overfitting Check (per ciascun engine + confronto)\n'
-        f'### 6.b — Monte Carlo Skill Tests (per ciascun engine + confronto)\n'
-        f'### 6.c — Confidence Intervals: realizzato vs distribuzione bootstrap\n'
+        f'### 6.a — Overfitting Check\n'
+        f'2-5 frasi: interpreta i segnali S1-S4 per ciascun engine, confronta, '
+        f'identifica pattern rilevanti.\n'
+        f'### 6.b — Monte Carlo Skill Tests\n'
+        f'2-5 frasi: commenta i p-value B1/B2 per ciascun engine, confronta, '
+        f'valuta la robustezza statistica.\n'
+        f'### 6.c — Confidence Intervals\n'
+        f'2-5 frasi: posiziona il realizzato rispetto alla distribuzione bootstrap '
+        f'(p5-p95), confronta gli engine.\n'
         f'## 7. Decisione Finale\n'
-        f'Tabella comparativa sintetica + 3-5 osservazioni quantitative che un\n'
-        f'gestore userebbe per decidere quale engine (se uno) promuovere.\n'
+        f'3-5 osservazioni quantitative che un gestore userebbe per decidere '
+        f'quale engine (se uno) promuovere. Solo testo, nessuna tabella.\n'
     )
 
     analysis_md = _call_claude(system_prompt, user_prompt, max_tokens=64000)
@@ -12478,7 +12630,9 @@ Regole non negoziabili:
     def _numtokens(text: str) -> list[str]:
         return re.findall(r"-?\d+(?:[.,]\d+)?", _norm_text(text))
 
-    def _accettabile(token: str, payload_floats: frozenset, tol: float = 0.01) -> bool:
+    def _accettabile(token: str, payload_floats: frozenset,
+                     realized_diffs: frozenset = frozenset(),
+                     tol: float = 0.01) -> bool:
         cleaned = token.replace(',', '.')
         try:
             v = float(cleaned)
@@ -12494,7 +12648,15 @@ Regole non negoziabili:
                 sign = -1.0 if cleaned.startswith('-') else 1.0
                 big = sign * float(parts[0] + parts[1])
                 candidati.update({big, big / 100, big * 100})
-        return any(abs(c - p) < tol * max(abs(p), 1.0) for c in candidati for p in payload_floats)
+        if any(abs(c - p) < tol * max(abs(p), 1.0) for c in candidati for p in payload_floats):
+            return True
+        # Accetta anche se il valore è una differenza (raw, ×100, ×10000) tra coppie
+        # di metriche realized/realized_base dello stesso tipo metrico. NON cartesiano
+        # completo su tutto il payload (troppo permissivo): solo le coppie semanticamente
+        # significative estratte da payload["engines"][*]["realized"/"realized_base"].
+        if realized_diffs:
+            return any(abs(v - d) < tol * max(abs(d), 1.0) for d in realized_diffs)
+        return False
 
     _pf_raw: list[float] = []
     for _t in _numtokens(payload_json):
@@ -12504,9 +12666,36 @@ Regole non negoziabili:
             pass
     payload_floats = frozenset(_pf_raw)
 
+    # Precomputa differenze semantiche tra realized/realized_base (stesso nome metrico,
+    # qualsiasi coppia di engine o varianti ON/Base). Espressi come raw, ×100, ×10000
+    # (punti percentuali e punti base) per coprire il modo in cui il testo le esprime.
+    # Non usa il prodotto cartesiano completo del payload per non rendere il guardrail
+    # troppo permissivo (vedi analisi nel commit di introduzione).
+    _realized_raw: dict[tuple, float] = {}
+    for _eng_name, _ev in payload.get("engines", {}).items():
+        for _rv_key in ("realized", "realized_base"):
+            _rv = _ev.get(_rv_key) or {}
+            if isinstance(_rv, dict):
+                for _met, _val in _rv.items():
+                    try:
+                        _realized_raw[(_eng_name, _rv_key, _met)] = float(_val)
+                    except (TypeError, ValueError):
+                        pass
+    _rv_items = list(_realized_raw.items())
+    _diff_set: set[float] = set()
+    for _i in range(len(_rv_items)):
+        (_ei, _ki, _mi), _vi = _rv_items[_i]
+        for _j in range(_i + 1, len(_rv_items)):
+            (_ej, _kj, _mj), _vj = _rv_items[_j]
+            if _mi != _mj:  # solo coppie dello stesso tipo di metrica
+                continue
+            _d = abs(_vi - _vj)
+            _diff_set.update({_d, _d * 100, _d * 10000})
+    realized_diffs = frozenset(_diff_set)
+
     _ALWAYS_ACCEPT = {"6", "7"}
     sospetti = {t for t in _numtokens(analysis_md)
-                if t not in _ALWAYS_ACCEPT and not _accettabile(t, payload_floats)}
+                if t not in _ALWAYS_ACCEPT and not _accettabile(t, payload_floats, realized_diffs)}
     if sospetti:
         debug_path = Path("/tmp/relazione_llm_debug.md")
         debug_path.write_text(analysis_md)
@@ -12571,7 +12760,89 @@ def _test_guardrail_numtokens() -> None:
     # ── Migliaia >4 cifre: "10 000" ────────────────────────────────────────
     assert _tok("10 000 trail") == ["10000"], f"fail: {_tok('10 000 trail')}"
 
-    print("_test_guardrail_numtokens: tutti i 15 casi OK")
+    # ── Differenze realized/realized_base espresse in punti base ─────────
+    # Simula: realized CAGR Momentum=0.1218, realized_base CAGR Momentum=0.1408
+    # → differenza = 0.019 → 190 punti base
+    # "190" non è nel payload direttamente, ma è abs(0.1408-0.1218)*10000.
+    import re as _re2, json as _json2
+    _pf_test = {"engines": {
+        "Momentum":    {"realized": {"cagr": 0.1218}, "realized_base": {"cagr": 0.1408}},
+        "Multifactor": {"realized": {"cagr": 0.1091}, "realized_base": {"cagr": 0.1631}},
+    }}
+    _pf_json_test = _json2.dumps(_pf_test, indent=2)
+
+    def _norm2(text):
+        text = _re2.sub(r'\b(\d{1,3})[\s ]+(\d{3})\b', lambda m: m.group(1)+m.group(2), text)
+        text = _re2.sub(r'(?<!\d)[−–]', '-', text)
+        return text
+    def _tok2(text): return _re2.findall(r"-?\d+(?:[.,]\d+)?", _norm2(text))
+
+    _pf_raw_test = []
+    for _t in _tok2(_pf_json_test):
+        try: _pf_raw_test.append(float(_t.replace(',', '.')))
+        except ValueError: pass
+    _pf_floats_test = frozenset(_pf_raw_test)
+
+    _rv_raw_test: dict = {}
+    for _eng, _ev in _pf_test["engines"].items():
+        for _rk in ("realized", "realized_base"):
+            for _m, _v in (_ev.get(_rk) or {}).items():
+                _rv_raw_test[(_eng, _rk, _m)] = float(_v)
+    _rv_items_test = list(_rv_raw_test.items())
+    _diffs_test: set = set()
+    for _i in range(len(_rv_items_test)):
+        (_ei, _ki, _mi), _vi = _rv_items_test[_i]
+        for _j in range(_i+1, len(_rv_items_test)):
+            (_ej, _kj, _mj), _vj = _rv_items_test[_j]
+            if _mi != _mj: continue
+            _d = abs(_vi - _vj)
+            _diffs_test.update({_d, _d*100, _d*10000})
+    _rd_test = frozenset(_diffs_test)
+
+    def _acc_test(token):
+        cleaned = token.replace(',', '.')
+        try: v = float(cleaned)
+        except ValueError: return True
+        candidati = {v, v/100, v*100}
+        if any(abs(c-p) < 0.01*max(abs(p), 1.0) for c in candidati for p in _pf_floats_test):
+            return True
+        if _rd_test:
+            return any(abs(v-d) < 0.01*max(abs(d), 1.0) for d in _rd_test)
+        return False
+
+    assert _acc_test("190"), "fail: 190 punti base (diff realized Momentum CAGR) non accettato"
+    assert _acc_test("540"), "fail: 540 punti base (diff realized Multifactor CAGR) non accettato"
+    assert not _acc_test("999"), "fail: 999 non dovrebbe essere accettato (non è diff realized)"
+
+    print("_test_guardrail_numtokens: tutti i 18 casi OK")
+
+
+def _parse_llm_sections(md: str) -> dict:
+    """
+    Estrae le sezioni dall'output LLM (§6.a, §6.b, §6.c, §7) in un dict.
+    Chiavi: '6a', '6b', '6c', '7'. Valori: testo senza l'intestazione.
+    Robusto rispetto al livello di heading (##/###/####) e alla capitalizzazione.
+    """
+    import re as _re
+    _HDRS = [
+        ('6a', _re.compile(r'^#{1,4}\s+6\.a\b', _re.MULTILINE | _re.IGNORECASE)),
+        ('6b', _re.compile(r'^#{1,4}\s+6\.b\b', _re.MULTILINE | _re.IGNORECASE)),
+        ('6c', _re.compile(r'^#{1,4}\s+6\.c\b', _re.MULTILINE | _re.IGNORECASE)),
+        ('7',  _re.compile(r'^#{1,4}\s+7\.', _re.MULTILINE | _re.IGNORECASE)),
+    ]
+    hits = []
+    for key, pat in _HDRS:
+        m = pat.search(md)
+        if m:
+            hits.append((m.start(), key, m.end()))
+    hits.sort()
+    result = {}
+    for i, (start, key, hdr_end) in enumerate(hits):
+        end = hits[i + 1][0] if i + 1 < len(hits) else len(md)
+        body_start = md.find('\n', hdr_end)
+        body_start = body_start + 1 if body_start != -1 else hdr_end
+        result[key] = md[body_start:end].strip()
+    return result
 
 
 def _md_to_flowables(md_text: str, styles: dict) -> list:
@@ -14606,23 +14877,214 @@ def generate_relazione_tecnica(
     from reportlab.platypus import PageBreak as _PB
     story.append(_PB())
 
-    # Sezioni 6+7: testo LLM passato dall'esterno (generato una sola volta dal chiamante)
-    _llm_md = analysis_md
-    _llm_flowables = _md_to_flowables(
-        _llm_md,
-        styles={
-            'section':    st_section,
-            'subsec':     st_subsec,
-            'subsubsec':  st_subsubsec,
-            'body':       st_body,
-            'content_w':  CONTENT_W,
-        },
-    )
-    story.extend(_llm_flowables)
+    # ── §6 table closures ────────────────────────────────────────────────────
+    def _ofc6_block(title, ofc_report):
+        story.append(Paragraph(title, st_subsec))
+        ofc_rep  = ofc_report or {}
+        sigs     = ofc_rep.get('signals', {})
+        ofc_pass = ofc_rep.get('promoted')
+        n_p      = sum(1 for k in ('S1_plateau', 'S2_coherence', 'S3_bootstrap', 'S4_dsr')
+                       if (sigs or {}).get(k, {}).get('pass'))
+        ofc_lbl  = ('PROMOTED'     if ofc_pass
+                    else 'NOT PROMOTED' if ofc_pass is not None
+                    else 'N/A')
+        rows  = [[Paragraph('Segnale',  st_cell_hdr),
+                  Paragraph('Esito',    st_cell_hdrc),
+                  Paragraph('Valore',   st_cell_hdrc),
+                  Paragraph('Soglia',   st_cell_hdrc),
+                  Paragraph('Note',     st_cell_hdr)]]
+        ts_x  = []
+        for ri, (sk, slbl) in enumerate([
+            ('S1_plateau',   'S1 — Plateau'),
+            ('S2_coherence', 'S2 — Coherence'),
+            ('S3_bootstrap', 'S3 — Bootstrap'),
+            ('S4_dsr',       'S4 — DSR'),
+        ], start=1):
+            sd  = (sigs or {}).get(sk, {})
+            pss = sd.get('pass')
+            if sk == 'S3_bootstrap':
+                vs = f"p = {sd['p_value']:.3f}" if isinstance(sd.get('p_value'), float) else 'N/A'
+            elif sk == 'S4_dsr':
+                vs = f"{sd['dsr']:.3f}"          if isinstance(sd.get('dsr'),     float) else 'N/A'
+            else:
+                vs = f"{sd['value']:.3f}"         if isinstance(sd.get('value'),   float) else 'N/A'
+            thr   = sd.get('threshold')
+            thr_s = (f"{thr:.3f}" if isinstance(thr, float)
+                     else (str(thr) if thr is not None else '—'))
+            note  = str(sd.get('note') or '—')
+            vl    = 'PASS' if pss else ('FAIL' if pss is not None else 'N/A')
+            vc    = _vc(vl)
+            rows.append([
+                Paragraph(slbl,  st_cell),
+                _vp(vl),
+                Paragraph(vs,    st_cell_ctr),
+                Paragraph(thr_s, st_cell_ctr),
+                Paragraph(note,  st_cell),
+            ])
+            if vc:
+                ts_x += [('BACKGROUND', (1, ri), (1, ri), vc),
+                          ('TEXTCOLOR',  (1, ri), (1, ri), C_WHITE)]
+        ov_vc = _vc(ofc_lbl)
+        rows.append([
+            Paragraph('<b>Verdetto OFC</b>', st_cell_bold),
+            Paragraph(
+                f'<b>{"NOT<br/>PROMOTED" if ofc_lbl == "NOT PROMOTED" else ofc_lbl}</b>',
+                st_verd),
+            Paragraph(f'{n_p} / 4', st_cell_ctr),
+            Paragraph(f'≥ {minsig}/4', st_cell_ctr),
+            Paragraph('', st_cell),
+        ])
+        if ov_vc:
+            ts_x += [('BACKGROUND', (1, 5), (1, 5), ov_vc),
+                     ('TEXTCOLOR',  (1, 5), (1, 5), C_WHITE)]
+        ts_x.append(('FONTNAME', (0, 5), (-1, 5), 'Helvetica-Bold'))
+        t = Table(rows, colWidths=[32*mm, 28*mm, 22*mm, 22*mm, 66*mm])
+        t.setStyle(TableStyle(_ts_base() + ts_x))
+        story.extend([t, Spacer(1, 4*mm)])
 
-    # Sezione 7: tabella riassuntiva N-aria (deterministica) + intestazione già in LLM output
+    def _sk6_block(title, mc_skill, realized=None):
+        story.append(Paragraph(title, st_subsec))
+        mcs   = mc_skill or {}
+        _rlzd = realized or {}
+        _cagr_r = _rlzd.get('cagr')
+        rows = [[Paragraph('Test',            st_cell_hdr),
+                 Paragraph('CAGR Realizzato', st_cell_hdrc),
+                 Paragraph('p-value',         st_cell_hdrc),
+                 Paragraph('Significativo?',  st_cell_hdrc)]]
+        ts_x = []
+        for ri, (mck, lbl) in enumerate([
+            ('rotation_reshuffle', 'B1 — Rotation Reshuffle'),
+            ('rebalance_timing',   'B2 — Rebalance Timing'),
+        ], start=1):
+            d    = mcs.get(mck, {})
+            pv   = d.get('p_values', {}).get('CAGR')
+            pv_s  = f"{pv:.3f}"             if isinstance(pv,     float) else 'N/A'
+            act_s = f"{_cagr_r*100:.1f}%"   if isinstance(_cagr_r, float) else 'N/A'
+            sig   = (pv is not None) and (pv < 0.10)
+            sig_lbl = 'Significativo' if sig else 'Non significativo'
+            vc    = _vc('PASS' if sig else 'FAIL')
+            rows.append([
+                Paragraph(lbl,     st_cell),
+                Paragraph(act_s,   st_cell_ctr),
+                Paragraph(pv_s,    st_cell_ctr),
+                Paragraph(sig_lbl, st_verd),
+            ])
+            if vc:
+                ts_x += [('BACKGROUND', (3, ri), (3, ri), vc),
+                          ('TEXTCOLOR',  (3, ri), (3, ri), C_WHITE)]
+        t = Table(rows, colWidths=[60*mm, 32*mm, 28*mm, 50*mm])
+        t.setStyle(TableStyle(_ts_base() + ts_x +
+                               [('ALIGN', (1, 0), (-1, -1), 'CENTER')]))
+        story.extend([t, Spacer(1, 4*mm)])
+
+    def _ci6_block(title, mc_ci, realized=None):
+        story.append(Paragraph(title, st_subsec))
+        if mc_ci is None:
+            story.append(Paragraph('N/A', st_body))
+            return
+
+        _rlzd = realized or {}
+        _met_key = {'CAGR': 'cagr', 'Sharpe': 'sharpe', 'MaxDD': 'maxdd'}
+
+        def _qtl(p5, p25, p50, p75, p95, act):
+            try:
+                v = float(act)
+                if v < float(p5):  return '< p5'
+                if v < float(p25): return 'p5–p25'
+                if v < float(p50): return 'p25–p50'
+                if v < float(p75): return 'p50–p75'
+                if v < float(p95): return 'p75–p95'
+                return '> p95'
+            except (TypeError, ValueError):
+                return '—'
+
+        rows = [[Paragraph('Metodo / Metrica',  st_cell_hdr),
+                 Paragraph('p5',                st_cell_hdrc),
+                 Paragraph('p25',               st_cell_hdrc),
+                 Paragraph('p50',               st_cell_hdrc),
+                 Paragraph('p75',               st_cell_hdrc),
+                 Paragraph('p95',               st_cell_hdrc),
+                 Paragraph('Realizzato',         st_cell_hdrc),
+                 Paragraph('Quantile',           st_cell_hdrc)]]
+        ts_x = [('ALIGN', (1, 0), (-1, -1), 'CENTER')]
+        for mkey, mlbl in [
+            ('A1 · IID Bootstrap',   'A1 — IID'),
+            ('A2 · Block Bootstrap', 'A2 — Block'),
+        ]:
+            if mkey not in mc_ci.index:
+                continue
+            rd = mc_ci.loc[mkey]
+            for met, is_pct in [('CAGR', True), ('Sharpe', False), ('MaxDD', True)]:
+                def _fv(col, _rd=rd):
+                    try:    return float(_rd[col])
+                    except Exception: return float('nan')
+                def _fs(col, _ip=is_pct, _rd=rd):
+                    try:
+                        v = float(_rd[col])
+                        return f"{v*100:.1f}%" if _ip else f"{v:.3f}"
+                    except Exception: return 'N/A'
+                _act_r = _rlzd.get(_met_key[met])
+                def _fs_r(_v=_act_r, _ip=is_pct):
+                    if not isinstance(_v, float): return 'N/A'
+                    return f"{_v*100:.1f}%" if _ip else f"{_v:.3f}"
+                qtl = _qtl(_fv(f'{met}_p5'), _fv(f'{met}_p25'), _fv(f'{met}_p50'),
+                            _fv(f'{met}_p75'), _fv(f'{met}_p95'), _act_r)
+                rows.append([
+                    Paragraph(f'{mlbl} / {met}',    st_cell),
+                    Paragraph(_fs(f'{met}_p5'),      st_cell_ctr),
+                    Paragraph(_fs(f'{met}_p25'),     st_cell_ctr),
+                    Paragraph(_fs(f'{met}_p50'),     st_cell_ctr),
+                    Paragraph(_fs(f'{met}_p75'),     st_cell_ctr),
+                    Paragraph(_fs(f'{met}_p95'),     st_cell_ctr),
+                    Paragraph(_fs_r(),               st_cell_ctr),
+                    Paragraph(qtl,                   st_cell_ctr),
+                ])
+        cw = [40*mm, 16*mm, 16*mm, 16*mm, 16*mm, 16*mm, 22*mm, 28*mm]
+        t = Table(rows, colWidths=cw)
+        t.setStyle(TableStyle(_ts_base() + ts_x))
+        story.extend([t, Spacer(1, 4*mm)])
+
+    # Parse LLM commentary into per-section text
+    _llm_secs = _parse_llm_sections(analysis_md)
+    _llm_stys = {
+        'section':   st_section,
+        'subsec':    st_subsec,
+        'subsubsec': st_subsubsec,
+        'body':      st_body,
+        'content_w': CONTENT_W,
+    }
+
+    def _llm_block(key):
+        txt = _llm_secs.get(key, '')
+        if txt:
+            story.extend(_md_to_flowables(txt, styles=_llm_stys))
+
+    # § 6 Analisi dei Segnali e Diagnosi Strutturale
+    story.append(Paragraph("6. Analisi dei Segnali e Diagnosi Strutturale", st_section))
+
+    # § 6.a — Overfitting Check
+    for _ei, (_en, _ev) in enumerate(engines.items()):
+        _ofc6_block(f"6.a.{_ei+1} — {_en}", _ev.get('ofc_report'))
+    _llm_block('6a')
+    story.append(Spacer(1, 3*mm))
+
+    # § 6.b — Monte Carlo Skill Tests
+    for _ei, (_en, _ev) in enumerate(engines.items()):
+        _sk6_block(f"6.b.{_ei+1} — {_en}", _ev.get('mc_skill'), _ev.get('realized'))
+    _llm_block('6b')
+    story.append(Spacer(1, 3*mm))
+
+    # § 6.c — Confidence Intervals
+    for _ei, (_en, _ev) in enumerate(engines.items()):
+        _ci6_block(f"6.c.{_ei+1} — {_en}", _ev.get('mc_ci'), _ev.get('realized'))
+    _llm_block('6c')
+
     story.append(Spacer(1, 4 * mm))
+
+    # § 7 Decisione Finale — LLM commentary first, then Python decision table
     story.append(Paragraph("7. Decisione Finale", st_section))
+    _llm_block('7')
+    story.append(Spacer(1, 3 * mm))
 
     # Dynamic N-column decision table
     def _mpf_val(pf, metric):
@@ -14650,12 +15112,21 @@ def generate_relazione_tecnica(
     dec_rows.append(_ofc_row)
     # Skill Profile row
     dec_rows.append(['Skill Profile'] + [_ev.get('skill_profile') or 'N/A' for _ev in engines.values()])
-    # Metric rows
+    # Metric rows — use pre-computed realized dict for engine metrics (canonical source)
+    def _fmt_realized(ev, mkey):
+        r = ev.get('realized') or {}
+        v = r.get(mkey)
+        if not isinstance(v, float):
+            return _mpf_val(ev.get('pf_rot'), mkey)
+        if mkey == 'cagr':   return f"{v*100:.1f}%"
+        if mkey == 'sharpe': return f"{v:.2f}"
+        if mkey == 'maxdd':  return f"{abs(v)*100:.1f}%"
+        return 'N/A'
     for _mname, _mkey in [(f'CAGR vs {benchmark}', 'cagr'),
                            (f'Sharpe vs {benchmark}', 'sharpe'),
                            (f'MaxDD vs {benchmark}', 'maxdd')]:
         _bm_v = {'cagr': _bm_cagr, 'sharpe': _bm_sharpe, 'maxdd': _bm_maxdd}[_mkey]
-        dec_rows.append([_mname] + [f"{_mpf_val(_ev.get('pf_rot'), _mkey)} vs {_bm_v}"
+        dec_rows.append([_mname] + [f"{_fmt_realized(_ev, _mkey)} vs {_bm_v}"
                                      for _ev in engines.values()])
     d_ts = _ts_base() + [('ALIGN', (1, 0), (-1, -1), 'CENTER')]
     for _col_i, _vl in enumerate(_ofc_vl_list, start=1):
@@ -14668,8 +15139,6 @@ def generate_relazione_tecnica(
     dec_t.setStyle(TableStyle(d_ts))
     story += [dec_t, Spacer(1, 5 * mm)]
 
-    # LLM ha già generato §6 + §7 — nessun verdict box / Tab.R / placeholder hardcoded
-
     doc = SimpleDocTemplate(
         str(output_path), pagesize=A4,
         topMargin=18 * mm, bottomMargin=18 * mm,
@@ -14679,6 +15148,238 @@ def generate_relazione_tecnica(
     )
     doc.build(story, onFirstPage=_draw_hf, onLaterPages=_draw_hf)
     return output_path
+
+
+def run_ofc_mc_pipeline(
+    results_pipeline: dict,
+    profile: str,
+    portfolio: dict,
+    stocks_data,
+    benchmark_data,
+    benchmark_data_raw,
+    tickers: list,
+    init_cash: float,
+    plots_dir,
+) -> dict:
+    """
+    Esegue la pipeline OFC + Monte Carlo per ogni engine in results_pipeline.
+
+    Per ciascun engine ("Momentum", "Multifactor") costruisce il wfo_runs dict,
+    esegue quick_sanity_check, overfitting_check_rotational e (se OFC promosso)
+    run_all_mc_methods_rotational. Aggiorna results_pipeline in place con le
+    chiavi "sanity", "ofc", "mc" per ogni engine.
+
+    Parameters
+    ----------
+    results_pipeline : dict[str, dict]
+        Output di run_wfo_pipeline per ciascun engine. Modificato in place:
+        a ogni chiave engine viene aggiunto il sotto-dict con
+        ``sanity``, ``ofc``, ``mc``.
+    profile : str
+        Profilo di rischio (``"satellite"`` o ``"core"``); determina le
+        soglie OFC.
+    portfolio : dict
+        Dict di configurazione portafoglio; usato per
+        ``portfolio.get('asset_type', 'stock')``.
+    stocks_data : pd.DataFrame
+        Prezzi giornalieri degli asset dell'universo.
+    benchmark_data : pd.DataFrame
+        Prezzi giornalieri del benchmark (adjusted close).
+    benchmark_data_raw : pd.DataFrame
+        Prezzi grezzi del benchmark; passati a overfitting_check_rotational
+        come ``benchmark_prices``.
+    tickers : list[str]
+        Lista completa dei ticker dell'universo; passata a
+        run_all_mc_methods_rotational come ``tickers_master``.
+    init_cash : float
+        Capitale iniziale; passato a run_all_mc_methods_rotational.
+    plots_dir : path-like
+        Directory radice per i plot MC. Ogni engine riceve una sub-directory
+        ``plots_dir/<engine_name>/`` creata automaticamente.
+
+    Returns
+    -------
+    dict[str, dict]
+        ``wfo_runs``: per ogni engine, contiene ``summary_df``, ``param_grid``,
+        ``pf_rot``, ``pf_rot_base``, ``sel_tickers``, ``sel_tickers_base``,
+        ``regime``. Utile per save_wfo_for_runtime.
+
+    Side Effects
+    ------------
+    - Modifica results_pipeline in place (aggiunge sanity/ofc/mc per engine).
+    - Salva PNG dei plot MC in sotto-directory di plots_dir.
+    - Stampa riepilogo su stdout.
+    """
+    from pathlib import Path as _Path
+
+    wfo_runs = {}
+    for _eng in ("Momentum", "Multifactor"):
+        _rp = results_pipeline.get(_eng)
+        if _rp is None:
+            continue
+        wfo_runs[_eng] = dict(
+            summary_df       = _rp["summary_df"],
+            param_grid       = build_wfo_grid(
+                                   engine=_eng, profile=profile,
+                                   asset_type=portfolio.get("asset_type", "stock")),
+            pf_rot           = _rp["pf_rot"],
+            pf_rot_base      = _rp["pf_rot_base"],
+            sel_tickers      = _rp["sel_tickers"],
+            sel_tickers_base = _rp["sel_tickers_base"],
+            regime           = _rp.get("regime") if _eng == "Momentum" else None,
+        )
+
+    for name, cfg in wfo_runs.items():
+        print(f"\n{'#'*60}\n  {name}\n{'#'*60}")
+
+        check = quick_sanity_check(cfg["pf_rot"], cfg["pf_rot_base"], label=name)
+
+        if not check["proceed"]:
+            print(f"  [{name}] SKIP OFC/MC — sanity check fallito ({check['n_flags']} flag)")
+            results_pipeline[name].update(dict(sanity=check, ofc=None, mc=None))
+            continue
+
+        ofc_passed, ofc_report = overfitting_check_rotational(
+            wfo_summary      = cfg["summary_df"],
+            stocks_data      = stocks_data,
+            benchmark_data   = benchmark_data,
+            param_grid       = cfg["param_grid"],
+            profile          = profile,
+            benchmark_prices = benchmark_data_raw,
+            seed             = 42,
+            verbose          = True,
+        )
+
+        mc_out = None
+        if ofc_passed:
+            plots_dir_run = _Path(plots_dir) / name
+            plots_dir_run.mkdir(parents=True, exist_ok=True)
+            ci_results, ci_summary_df, skill_results, skill_summary_df = \
+                run_all_mc_methods_rotational(
+                    pf_rot                = cfg["pf_rot"],
+                    pf_rot_base           = cfg["pf_rot_base"],
+                    regime                = cfg["regime"],
+                    sel_tickers           = cfg["sel_tickers"],
+                    sel_tickers_base      = cfg["sel_tickers_base"],
+                    stocks_data           = stocks_data,
+                    benchmark_data        = benchmark_data,
+                    tickers_master        = tickers,
+                    init_cash             = init_cash,
+                    n_simulations         = 1000,
+                    seed                  = 42,
+                    block_size            = 10,
+                    vol_window            = 60,
+                    n_vol_quantiles       = 3,
+                    show_method_plots     = True,
+                    show_method_summaries = True,
+                    save_plots            = True,
+                    plots_dir             = plots_dir_run,
+                )
+            mc_out = dict(
+                ci_results      = ci_results,
+                ci_summary_df   = ci_summary_df,
+                skill_results   = skill_results,
+                skill_summary_df= skill_summary_df,
+            )
+        else:
+            print(f"  [{name}] SKIP MC — OFC non promosso")
+
+        results_pipeline[name].update(dict(
+            sanity = check,
+            ofc    = dict(passed=ofc_passed, report=ofc_report),
+            mc     = mc_out,
+        ))
+
+    print(f"\n{'='*60}\n  RIEPILOGO\n{'='*60}")
+    for name, r in results_pipeline.items():
+        sanity_ok = r.get("sanity", {}).get("proceed")
+        ofc_ok    = r.get("ofc", {}).get("passed") if r.get("ofc") else None
+        mc_done   = r.get("mc") is not None
+        print(f"  {name:12s} | sanity={sanity_ok} | ofc={ofc_ok} | mc_eseguito={mc_done}")
+
+    return wfo_runs
+
+
+def save_wfo_for_runtime(
+    engine_scelto: str,
+    results_pipeline: dict,
+    wfo_runs: dict,
+    start_date,
+    end_date,
+    wfo_file_save: str,
+    metric: str,
+    ratio: str,
+    force_next_year_params: bool,
+) -> None:
+    """
+    Salva il WFO summary dell'engine scelto per l'uso in produzione (runtime).
+
+    Legge summary_df e param_grid dall'engine selezionato e chiama
+    save_rotational_wfo_summary, aggiungendo nei metadati la chiave
+    ``deployed_engine`` con il nome dell'engine scelto.
+
+    Parameters
+    ----------
+    engine_scelto : str
+        Nome dell'engine da promuovere (es. ``"Momentum"`` o ``"Multifactor"``).
+        Deve essere una chiave presente in results_pipeline; se non lo è,
+        viene sollevato un ValueError che elenca le chiavi valide disponibili.
+    results_pipeline : dict[str, dict]
+        Risultati della pipeline per engine. Deve contenere
+        ``results_pipeline[engine_scelto]["summary_df"]``.
+    wfo_runs : dict[str, dict]
+        Dict costruito da run_ofc_mc_pipeline. Deve contenere
+        ``wfo_runs[engine_scelto]["param_grid"]``.
+    start_date : str | pd.Timestamp
+        Data di inizio del periodo dati WFO.
+    end_date : str | pd.Timestamp
+        Data di fine del periodo dati WFO.
+    wfo_file_save : str
+        Path del file CSV di output (letto dal runtime in r_run_portfolio).
+    metric : str
+        Metrica di ottimizzazione IS (es. ``"Sharpe Ratio"``).
+    ratio : str
+        Rapporto IS:OOS (es. ``"3:1"``).
+    force_next_year_params : bool
+        Se True, forza i parametri dell'anno successivo.
+
+    Returns
+    -------
+    None
+
+    Side Effects
+    ------------
+    - Scrive il file CSV su wfo_file_save.
+    - Stampa conferma su stdout.
+    """
+    valid_keys = list(results_pipeline.keys())
+    if engine_scelto not in results_pipeline:
+        raise ValueError(
+            f"engine_scelto='{engine_scelto}' non è una chiave valida in results_pipeline. "
+            f"Chiavi disponibili: {valid_keys}"
+        )
+    if engine_scelto not in wfo_runs:
+        raise ValueError(
+            f"engine_scelto='{engine_scelto}' non trovato in wfo_runs. "
+            f"Chiavi disponibili: {list(wfo_runs.keys())}"
+        )
+
+    _summary_df_runtime = results_pipeline[engine_scelto]["summary_df"]
+    _param_grid_runtime = wfo_runs[engine_scelto]["param_grid"]
+
+    save_rotational_wfo_summary(
+        summary_df             = _summary_df_runtime,
+        start_date             = start_date,
+        end_date               = end_date,
+        file_path              = wfo_file_save,
+        param_grid             = _param_grid_runtime,
+        metric                 = metric,
+        ratio                  = ratio,
+        force_next_year_params = force_next_year_params,
+        extra_meta             = {"deployed_engine": engine_scelto},
+    )
+    print(f"[§8] Engine scelto per il RUNTIME: {engine_scelto}")
+    print(f"[§8] WFO summary salvato su (letto da r_run_portfolio): {wfo_file_save}")
 
 
 def generate_final_report(
@@ -14799,6 +15500,29 @@ def generate_final_report(
         if _nr is None:
             _nr = 'N/A'
 
+        def _safe_realized(pf):
+            if pf is None:
+                return {}
+            try:
+                s = dict(pf.stats())
+                sharpe = float(s["Sharpe Ratio"])
+                calmar = float(s["Calmar Ratio"])
+                # stats() gives MaxDD as positive percentage — convert to negative fraction
+                # to match the sign convention used by _mc_compute_metrics (MaxDD < 0)
+                maxdd = -float(s["Max Drawdown [%]"]) / 100.0
+                # CAGR: not directly in stats(); try "Annualized Return [%]" first,
+                # then compute from Start/End Value and Period (365.25-day year convention)
+                if "Annualized Return [%]" in s:
+                    cagr = float(s["Annualized Return [%]"]) / 100.0
+                else:
+                    sv      = float(s["Start Value"])
+                    ev_     = float(s["End Value"])
+                    n_years = s["Period"].days / 365.25
+                    cagr = (ev_ / sv) ** (1.0 / n_years) - 1.0 if (sv > 0 and n_years > 0) else float('nan')
+                return {'cagr': cagr, 'sharpe': sharpe, 'maxdd': maxdd, 'calmar': calmar}
+            except Exception:
+                return {}
+
         engines[_eng] = {
             'ofc_report':      _ofc_rep,
             'mc_skill':        _mc['skill_results'],
@@ -14806,6 +15530,8 @@ def generate_final_report(
             'ci_results':      _mc.get('ci_results'),
             'pf_rot':          _rp.get('pf_rot'),
             'pf_rot_base':     _rp.get('pf_rot_base'),
+            'realized':        _safe_realized(_rp.get('pf_rot')),
+            'realized_base':   _safe_realized(_rp.get('pf_rot_base')),
             'plots_subdir':    _eng.lower(),
             'n_full_trials':   _nf,
             'n_reduced_trials': _nr,
@@ -14836,7 +15562,7 @@ def generate_final_report(
     _card_path.parent.mkdir(parents=True, exist_ok=True)
 
     # ── Decisione finale ──────────────────────────────────────────────────────
-    print(f"\n{'='*60}\n  Decisione Finale — {portfolio_title} ({year})\n{'='*60}")
+    # print(f"\n{'='*60}\n  Decisione Finale — {portfolio_title} ({year})\n{'='*60}")
     print_final_decision(
         portfolio_title = portfolio_title,
         year            = year,
@@ -14845,6 +15571,8 @@ def generate_final_report(
     )
 
     # ── Generazione LLM una sola volta (§6–§7) ────────────────────────────────
+    print("\n[generate_final_report] Generazione analisi via LLM in corso "
+          "(può richiedere alcuni minuti)...")
     _analysis_md = generate_relazione_llm(
         engines         = engines,
         wfo_config      = _wfo_config,
@@ -14854,6 +15582,7 @@ def generate_final_report(
         benchmark_title = benchmark_title,
         benchmark_pf    = _benchmark_pf,
     )
+    print("[generate_final_report] Analisi LLM completata.")
 
     # ── PTF Card Markdown ─────────────────────────────────────────────────────
     generate_ptf_card_md(
@@ -14869,7 +15598,8 @@ def generate_final_report(
         output_path     = _card_path,
         analysis_md     = _analysis_md,
     )
-    print(f"PTF Card MD: {_card_path}")
+    
+    print(f"\nPTF Card MD: {_card_path}")
 
     # ── Relazione Tecnica PDF ─────────────────────────────────────────────────
     generate_relazione_tecnica(
@@ -17263,3 +17993,87 @@ def run_wfo_pipeline(
     )
 
     return results
+
+def quick_sanity_check(pf_rot, pf_rot_base=None, label="Portfolio", min_flags_to_fail=2):
+    """
+    Controllo qualitativo veloce su un Portfolio VBT, prima di spendere
+    tempo su OFC/MC. Usa solo pf.stats(), nessun bootstrap aggiuntivo.
+    Segnala soglie d'allarme empiriche — non sono verità statistica,
+    solo euristiche per decidere se vale la pena procedere oltre.
+
+    Returns
+    -------
+    dict con:
+        'proceed' : bool  — True se consigliato procedere a OFC/MC
+        'flags'   : list[str] — segnali d'allarme raccolti
+        'n_flags' : int
+
+    Verdetto: 'proceed' = False se il numero di segnali d'allarme
+    raggiunge o supera min_flags_to_fail (default 2). Soglia empirica,
+    non statisticamente derivata — pensata come euristica di pre-filtro,
+    non come sostituto di OFC/MC.
+    """
+    print(f"\n{'='*60}")
+    print(f"  Quick Sanity Check — {label}")
+    print(f"{'='*60}")
+
+    flags = []
+
+    def _check(pf, sublabel):
+        if pf is None:
+            print(f"  [{sublabel}] non disponibile, skip")
+            return
+        s = pf.stats()
+
+        total_trades = s.get('Total Trades', float('nan'))
+        win_rate     = s.get('Win Rate [%]', float('nan'))
+        profit_factor= s.get('Profit Factor', float('nan'))
+        expectancy   = s.get('Expectancy', float('nan'))
+        worst_trade  = s.get('Worst Trade [%]', float('nan'))
+        best_trade   = s.get('Best Trade [%]', float('nan'))
+        sharpe       = s.get('Sharpe Ratio', float('nan'))
+        max_dd       = s.get('Max Drawdown [%]', float('nan'))
+
+        print(f"\n  --- {sublabel} ---")
+        print(f"  Total Trades     : {total_trades}")
+        print(f"  Win Rate [%]     : {win_rate:.2f}")
+        print(f"  Profit Factor    : {profit_factor:.3f}")
+        print(f"  Expectancy       : {expectancy:.4f}")
+        print(f"  Sharpe Ratio     : {sharpe:.3f}")
+        print(f"  Max Drawdown [%] : {max_dd:.2f}")
+        print(f"  Best/Worst Trade : {best_trade:.2f}% / {worst_trade:.2f}%")
+
+        if profit_factor < 1.0:
+            flags.append(f"[{sublabel}] Profit Factor < 1.0 ({profit_factor:.3f}) — perdite superano i guadagni in valore assoluto")
+        if expectancy < 0:
+            flags.append(f"[{sublabel}] Expectancy negativa ({expectancy:.4f}) — il sistema perde in media per trade")
+        if sharpe < 0.3:
+            flags.append(f"[{sublabel}] Sharpe Ratio basso ({sharpe:.3f}) — rendimento risk-adjusted debole")
+        if best_trade and abs(worst_trade) > 3 * abs(best_trade):
+            flags.append(f"[{sublabel}] Worst Trade ({worst_trade:.2f}%) >> Best Trade ({best_trade:.2f}%) — possibile outlier di coda pesante")
+        if not pd.isna(total_trades) and not pd.isna(win_rate):
+            if win_rate > 55 and profit_factor < 1.05:
+                flags.append(f"[{sublabel}] Win Rate alto ({win_rate:.1f}%) ma Profit Factor vicino/sotto 1 — pattern 'tanti piccoli vincenti, poche grandi perdite'")
+
+    _check(pf_rot,      "Risk ON/OFF")
+    _check(pf_rot_base, "Base")
+
+    proceed = len(flags) < min_flags_to_fail
+
+    print(f"\n{'-'*60}")
+    if flags:
+        print(f"  ⚠ {len(flags)} segnali d'allarme:")
+        for f in flags:
+            print(f"    - {f}")
+    else:
+        print(f"  ✓ Nessun segnale d'allarme evidente.")
+
+    print(f"\n  VERDETTO: {'✓ PROCEDI con OFC/MC' if proceed else '✗ SCONSIGLIATO procedere — rivedere turnover/griglia prima'}")
+    print(f"  (soglia: {min_flags_to_fail}+ segnali = sconsigliato; trovati: {len(flags)})")
+    print(f"{'='*60}\n")
+
+    return {
+        'proceed': proceed,
+        'flags':   flags,
+        'n_flags': len(flags),
+    }
