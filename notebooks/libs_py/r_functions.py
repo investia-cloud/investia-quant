@@ -1353,7 +1353,7 @@ def save_rotational_wfo_summary(
 
     # --- Stampa finale di conferma ---
     print(
-        f"File salvato correttamente: '{file_path}' | "
+        f"File salvato correttamente: '{file_path}'"
         f"\nRighe: {len(summary_df)}"
         f"\nMetric: {metric}"
         f"\nRatio: {ratio}"
@@ -12582,6 +12582,11 @@ Regole non negoziabili:
   62208, non 62.208 né 62 208 né 62,208.
 - Non usare mai un trattino (-, –, —, −) per esprimere un intervallo
   numerico. Scrivi sempre 'tra X e Y' per esteso, mai 'X-Y' o 'X–Y'.
+  Questo vale ANCHE per i percentili ordinali con simbolo di grado:
+  ❌ NON scrivere: "al 5°–95° percentile", "5-95 percentile"
+  ✅ SCRIVERE: "tra il 5° e il 95° percentile"
+  La regola si applica a qualunque coppia di numeri unita da trattino,
+  non solo a percentuali: percentili, range di date, bps, ecc.
 - Non costruire tabelle Markdown. Le tabelle numeriche di §6 sono già
   generate deterministicamente da Python — scrivi SOLO testo di analisi,
   osservazioni e diagnosi. Per ciascuna sotto-sezione (6.a, 6.b, 6.c)
@@ -12654,7 +12659,7 @@ Regole non negoziabili:
         # completo su tutto il payload (troppo permissivo): solo le coppie semanticamente
         # significative estratte da payload["engines"][*]["realized"/"realized_base"].
         if realized_diffs:
-            return any(abs(v - d) < tol * max(abs(d), 1.0) for d in realized_diffs)
+            return any(abs(abs(v) - d) < tol * max(d, 1.0) for d in realized_diffs)
         return False
 
     _pf_raw: list[float] = []
