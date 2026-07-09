@@ -1,3 +1,3 @@
 rebal_date,tickers,carried,n_passed_filters,universe
-2026-03-31,"['ADV.DE', 'DHL.DE', 'HEI.DE', 'FRA.DE', 'KBX.DE']",False,11,"['ADV.DE', 'DHL.DE', 'ENR.DE', 'FRA.DE', 'GBF.DE', 'HEI.DE', 'HOT.DE', 'IFX.DE', 'KBX.DE', 'LEG.DE', 'VOS.DE']"
-2026-06-26,"['LEG.DE', 'VNA.DE', 'MTX.DE', 'SIE.DE', 'FRA.DE']",False,14,"['ENR.DE', 'FRA.DE', 'GBF.DE', 'HEI.DE', 'HOT.DE', 'IFX.DE', 'KBX.DE', 'LEG.DE', 'MTX.DE', 'NDX1.DE', 'SIE.DE', 'VNA.DE', 'VOS.DE', 'WAF.DE']"
+2026-03-31,"['1U1.DE', 'ADV.DE', 'DHL.DE']",False,6,"['1U1.DE', 'ADV.DE', 'DHL.DE', 'FRA.DE', 'IFX.DE', 'KBX.DE']"
+2026-06-30,"['MTX.DE', 'DHL.DE', 'SIE.DE']",False,5,"['ADV.DE', 'DHL.DE', 'MTX.DE', 'RWE.DE', 'SIE.DE']"

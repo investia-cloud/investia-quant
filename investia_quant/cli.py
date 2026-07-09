@@ -174,7 +174,30 @@ def _resolve_recipient(mail_args, ptf_recipients: list) -> list:
     # deduplicazione mantenendo ordine
     seen = set()
     return [x for x in result if not (x in seen or seen.add(x))]
-    
+
+
+def _expand_ptf_names(ptf_str: str, registry: dict):
+    """
+    Espande una stringa --ptf in una lista di nomi portafoglio.
+    Supporta: singolo nome, lista separata da spazi, pattern glob (*, ?, []).
+    Ritorna (names: list[str], errors: list[str]).
+    """
+    import fnmatch
+    tokens = ptf_str.split()
+    seen = {}
+    errors = []
+    for token in tokens:
+        if any(c in token for c in '*?['):
+            matches = [name for name in registry if fnmatch.fnmatch(name, token)]
+            if not matches:
+                errors.append(f"Pattern '{token}' non ha trovato nessun Lazy portfolio corrispondente.")
+            for m in matches:
+                seen[m] = None
+        else:
+            seen[token] = None
+    return list(seen.keys()), errors
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -516,7 +539,7 @@ def report(ptf, all_portfolios, rotational, trading, recipient, start_date, end_
 @click.option("--universe", default=None,
               help="CSV con colonna 'ticker' — universo ad hoc")
 @click.option("--output-dir", default=None,
-              help="Directory output PDF + PNG (default: outputs/reports/<nome>/<data>/)")
+              help="Directory output PDF + PNG (default: outputs/r_analysis/<nome>/<timestamp>/)")
 @click.option("--profile", default="satellite",
               type=click.Choice(["satellite", "core"]),
               help="Profilo OFC: satellite (default) o core")
@@ -582,10 +605,8 @@ def r_analyze(ptf, universe, output_dir, profile, year, start_date, gen_pdf, run
 
     # Risolvi output_dir
     if output_dir is None:
-        import datetime
-        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        today = datetime.date.today().isoformat()
-        output_dir = os.path.join(root, "outputs", "reports", ptf_name, today)
+        _get_dir = ns.get("get_analysis_output_dir")
+        output_dir = str(_get_dir("r_analysis", ptf_name=ptf_name))
 
     click.echo(f"[iq r-analyze] Portafoglio: {portfolio_obj.get('Title', ptf_name)}")
     click.echo(f"[iq r-analyze] Output dir:  {output_dir}")
@@ -635,7 +656,7 @@ def r_analyze(ptf, universe, output_dir, profile, year, start_date, gen_pdf, run
 @click.option("--ptf", default=None,
     help="Nome K-portfolio (es. us_trading_2026) — estrae tickers automaticamente")
 @click.option("--output-dir", default=None,
-    help="Directory output (default: outputs/k_analysis/<data>/)")
+    help="Directory output (default: outputs/k_analysis/<timestamp>/)")
 @click.option("--start-date", default="2015-01-01", show_default=True,
     help="Inizio storico download")
 @click.option("--end-date", default=None, help="Fine storico (default: oggi)")
@@ -711,11 +732,8 @@ def k_analyze(strategies, tickers, ptf, output_dir, start_date, end_date,
     else:
         print(f"Panel: {len(s)} strategie × {len(t)} ticker")
 
-    from datetime import datetime as _dt
-    out_dir = output_dir or str(
-        Path(__file__).parent.parent / "outputs" / "k_analysis" /
-        _dt.now().strftime("%Y%m%d_%H%M%S")
-    )
+    _get_dir = ns.get("get_analysis_output_dir")
+    out_dir = output_dir or str(_get_dir("k_analysis"))
     import importlib.util, sys as _sys
     lib = Path(__file__).parent.parent / "notebooks" / "libs_py" / "k_functions.py"
     spec = importlib.util.spec_from_file_location("k_functions", lib)
@@ -765,7 +783,7 @@ def k_analyze(strategies, tickers, ptf, output_dir, start_date, end_date,
 @click.option("--ptf", default=None,
     help="Nome Lazy portfolio, oppure 'all' per tutti i PTF nel registry")
 @click.option("--output-dir", default=None,
-    help="Directory output (default: outputs/lazy_analysis/<data>/)")
+    help="Directory output (default: outputs/l_analysis/<timestamp>/)")
 @click.option("--start-date", default="2016-01-01", show_default=True,
     help="Inizio storico backtest")
 @click.option("--end-date", default=None, help="Fine storico (default: oggi)")
@@ -791,7 +809,7 @@ def l_analyze(ptf, output_dir, start_date, end_date, benchmark,
     """Pipeline Lazy portfolio: frontiera + backtest + stability + MC A/B + DSR.
 
     Batch (--ptf all) o singolo. Con --pdf genera la relazione tecnica per
-    ogni PTF in outputs/lazy_reports/<ptf>_relazione_tecnica.pdf.
+    ogni PTF in outputs/l_analysis/<timestamp>/<ptf>_relazione_tecnica.pdf.
     """
     import warnings
     warnings.filterwarnings("ignore", category=RuntimeWarning)
@@ -820,19 +838,20 @@ def l_analyze(ptf, output_dir, start_date, end_date, benchmark,
         if verbose:
             click.echo(f"[iq l-analyze] --ptf all userà solo categoria 'lazy_': {len(ptf_names)} PTF.")
     else:
-        portfolio_obj, kind = _resolve_portfolio(ptf, ns)
-        if kind != "L":
-            raise click.ClickException(f"'{ptf}' non è un Lazy portfolio (kind={kind}).")
-        ptf_names = [ptf]
+        _lazy_reg_for_glob = ns.get("L_PORTFOLIO_LAZY") or l_registry
+        ptf_names, _glob_errors = _expand_ptf_names(ptf, _lazy_reg_for_glob)
+        if _glob_errors:
+            raise click.ClickException("\n".join(_glob_errors))
+        for _name in ptf_names:
+            _obj, _kind = _resolve_portfolio(_name, ns)
+            if _kind != "L":
+                raise click.ClickException(f"'{_name}' non è un Lazy portfolio (kind={_kind}).")
 
     if verbose:
         print(f"Lazy-analyze: {len(ptf_names)} PTF -> {ptf_names}")
 
-    from datetime import datetime as _dt
-    out_dir = output_dir or str(
-        Path(__file__).parent.parent / "outputs" / "lazy_analysis" /
-        _dt.now().strftime("%Y%m%d_%H%M%S")
-    )
+    _get_dir = ns.get("get_analysis_output_dir")
+    out_dir = output_dir or str(_get_dir("l_analysis"))
 
     run_lazy_batch_analysis_fn = ns.get("run_lazy_batch_analysis")
     if run_lazy_batch_analysis_fn is None:
@@ -886,9 +905,8 @@ def l_analyze(ptf, output_dir, start_date, end_date, benchmark,
         if generate_relazione_tecnica_lazy is None:
             raise click.ClickException(
                 "generate_relazione_tecnica_lazy non trovata in mc_functions.py.")
-        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        reports_dir = os.path.join(root, "outputs", "lazy_reports")
-        os.makedirs(reports_dir, exist_ok=True)
+        from datetime import datetime as _dt
+        os.makedirs(out_dir, exist_ok=True)
 
         for ptf_name, rich in details.items():
             try:
@@ -914,7 +932,7 @@ def l_analyze(ptf, output_dir, start_date, end_date, benchmark,
                         if verbose:
                             print(f"[WARN] proiezione capitale {ptf_name} fallita: {_pe}")
 
-                out_pdf = os.path.join(reports_dir, f"{ptf_name}_relazione_tecnica.pdf")
+                out_pdf = os.path.join(out_dir, f"{ptf_name}_relazione_tecnica.pdf")
                 generate_relazione_tecnica_lazy(
                     portfolio_title=ptf_name,
                     asset_allocation=asset_allocation,
