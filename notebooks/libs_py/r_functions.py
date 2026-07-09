@@ -1353,14 +1353,13 @@ def save_rotational_wfo_summary(
 
     # --- Stampa finale di conferma ---
     print(
-        "[WFO SAVE OK] "
         f"File salvato correttamente: '{file_path}' | "
-        f"Righe: {len(summary_df)} | "
-        f"Metric: {metric} | "
-        f"Ratio: {ratio} | "
-        f"Data start: {start_date} | "
-        f"Data end: {end_date} | "
-        f"Force next year params: {force_next_year_params}"
+        f"\nRighe: {len(summary_df)}"
+        f"\nMetric: {metric}"
+        f"\nRatio: {ratio}"
+        f"\nData start: {start_date}"
+        f"\nData end: {end_date}"
+        f"\nForce next year params: {force_next_year_params}"
     )
 
 def load_wfo_summary(file_path: str) -> pd.DataFrame:
@@ -15363,6 +15362,8 @@ def save_wfo_for_runtime(
             f"engine_scelto='{engine_scelto}' non trovato in wfo_runs. "
             f"Chiavi disponibili: {list(wfo_runs.keys())}"
         )
+        
+    print(f"Engine scelto per il RUNTIME: {engine_scelto}")
 
     _summary_df_runtime = results_pipeline[engine_scelto]["summary_df"]
     _param_grid_runtime = wfo_runs[engine_scelto]["param_grid"]
@@ -15378,8 +15379,6 @@ def save_wfo_for_runtime(
         force_next_year_params = force_next_year_params,
         extra_meta             = {"deployed_engine": engine_scelto},
     )
-    print(f"[§8] Engine scelto per il RUNTIME: {engine_scelto}")
-    print(f"[§8] WFO summary salvato su (letto da r_run_portfolio): {wfo_file_save}")
 
 
 def generate_final_report(

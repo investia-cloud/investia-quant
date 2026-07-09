@@ -4791,3 +4791,99 @@ def strategy_bears_power_cts_regime(data: pd.DataFrame, params: dict, year: int 
     shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
     shifted_exits   = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
     return shifted_entries, shifted_exits
+
+
+# ─────────────────────────────────────
+# Fonte: Does Volume Actually Time the Crowd? I Tested It on the One Stock Where the Crowd Is Loudest.
+# URL:   https://medium.com/@Kryptera/does-volume-actually-time-the-crowd-i-tested-it-on-the-one-stock-where-the-crowd-is-loudest-91135a89aa0b
+# Data:  2026-07-09 02:00
+# ─────────────────────────────────────
+
+############################
+# Strategy crowd_timer
+############################
+
+import numpy as np
+import pandas as pd
+
+
+def ind_crowd_timer_signals(
+    df: pd.DataFrame,
+    run_window: int = 20,
+    vol_baseline: int = 60,
+    z_threshold_scaled: int = 20,
+    quantile_window: int = 252,
+    run_pctl_scaled: int = 90,
+) -> tuple:
+    close = df['Close']
+    volume = df['Volume']
+
+    z_threshold = z_threshold_scaled / 10.0
+    run_pctl = run_pctl_scaled / 100.0
+
+    # N-day cumulative price run
+    price_run = close.pct_change(run_window)
+
+    # Volume z-score
+    vol_mean = volume.rolling(vol_baseline, min_periods=1).mean()
+    vol_std = volume.rolling(vol_baseline, min_periods=1).std(ddof=1)
+    vol_std_arr = vol_std.values
+    vol_mean_arr = vol_mean.values
+    volume_arr = volume.values
+    safe_std = np.where(vol_std_arr != 0, vol_std_arr, 1.0)
+    volz_arr = np.where(vol_std_arr != 0, (volume_arr - vol_mean_arr) / safe_std, 0.0)
+    vol_z = pd.Series(volz_arr, index=df.index)
+
+    # Rolling quantile thresholds (no look-ahead)
+    up_run_th = price_run.rolling(quantile_window, min_periods=max(1, quantile_window // 4)).quantile(run_pctl)
+    down_run_th = price_run.rolling(quantile_window, min_periods=max(1, quantile_window // 4)).quantile(1.0 - run_pctl)
+
+    # SignalTop: extended up run + volume spike -> expect pullback (contrarian: go short / exit long)
+    signal_top = (price_run > up_run_th) & (vol_z > z_threshold)
+
+    # SignalBottom: extended down run + volume spike -> expect bounce (contrarian: go long)
+    signal_bottom = (price_run < down_run_th) & (vol_z > z_threshold)
+
+    return signal_top, signal_bottom
+
+
+strategy_crowd_timer_param_ranges = {
+    'run_window_range': range(10, 31, 10),
+    'vol_baseline_range': range(40, 81, 20),
+    'z_threshold_scaled_range': range(15, 26, 5),
+    'run_pctl_scaled_range': range(80, 96, 5),
+}
+
+
+def strategy_crowd_timer(data: pd.DataFrame, params: dict, year: int | None = None):
+    run_window = params.get('run_window_range')
+    vol_baseline = params.get('vol_baseline_range')
+    z_threshold_scaled = params.get('z_threshold_scaled_range')
+    run_pctl_scaled = params.get('run_pctl_scaled_range')
+
+    df = data.copy()
+
+    signal_top, signal_bottom = ind_crowd_timer_signals(
+        df,
+        run_window=run_window,
+        vol_baseline=vol_baseline,
+        z_threshold_scaled=z_threshold_scaled,
+        quantile_window=252,
+        run_pctl_scaled=run_pctl_scaled,
+    )
+
+    df['SignalTop'] = signal_top
+    df['SignalBottom'] = signal_bottom
+
+    if year is not None:
+        df = df[df.index.year == int(year)]
+
+    # Entry: SignalBottom (contrarian long on capitulation)
+    entries = df['SignalBottom']
+
+    # Exit: SignalTop fires (crowd-top / extended up run with volume spike)
+    exits = df['SignalTop']
+
+    shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    shifted_exits = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    return shifted_entries, shifted_exits
