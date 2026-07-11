@@ -12474,6 +12474,109 @@ def _call_claude(system_prompt: str, user_message: str, max_tokens: int = 4096) 
     raise RuntimeError("generate_relazione_llm: API irraggiungibile dopo 3 tentativi") from last_exc
 
 
+
+def _run_numeric_guardrail(analysis_md: str, payload: dict, *,
+                            debug_path: str = "/tmp/relazione_llm_debug.md",
+                            tol: float = 0.01) -> None:
+    """
+    Guardrail anti-allucinazione numerico condiviso tra generate_relazione_llm
+    e generate_relazione_investitore_llm. Solleva ValueError se analysis_md
+    contiene numeri non rintracciabili nel payload (raw, /100, *100, o come
+    differenza tra coppie realized/realized_base dello stesso nome metrico,
+    se il payload contiene una struttura payload["engines"][*]["realized"/
+    "realized_base"] — altrimenti quella parte e' semplicemente vuota/no-op).
+
+    Propagare l'eccezione — non ingoiarla.
+    """
+    import json as _json
+
+    payload_json = _json.dumps(payload, indent=2, default=str)
+
+    def _norm_text(text: str) -> str:
+        text = re.sub(
+            r'\b(\d{1,3})[\s\xa0]+(\d{3})\b',
+            lambda m: m.group(1) + m.group(2),
+            text,
+        )
+        text = re.sub(r'(?<!\d)[\u2212\u2013]', '-', text)
+        return text
+
+    def _numtokens(text: str) -> list[str]:
+        return re.findall(r"-?\d+(?:[.,]\d+)?", _norm_text(text))
+
+    def _accettabile(token: str, payload_floats: frozenset,
+                     realized_diffs: frozenset = frozenset(),
+                     tol: float = tol) -> bool:
+        cleaned = token.replace(',', '.')
+        try:
+            v = float(cleaned)
+        except ValueError:
+            return True
+        candidati = {v, v / 100, v * 100}
+        if cleaned.count('.') == 1:
+            base = cleaned.lstrip('-')
+            parts = base.split('.')
+            if parts[0] != '0' and len(parts[1]) == 3 and parts[1].isdigit():
+                sign = -1.0 if cleaned.startswith('-') else 1.0
+                big = sign * float(parts[0] + parts[1])
+                candidati.update({big, big / 100, big * 100})
+        if any(abs(c - p) < tol * max(abs(p), 1.0) for c in candidati for p in payload_floats):
+            return True
+        if realized_diffs:
+            return any(abs(abs(v) - d) < tol * max(d, 1.0) for d in realized_diffs)
+        return False
+
+    _pf_raw: list[float] = []
+    for _t in _numtokens(payload_json):
+        try:
+            _pf_raw.append(float(_t.replace(',', '.')))
+        except ValueError:
+            pass
+    # Include anche il valore assoluto di ogni token: le date ISO nel payload
+    # (es. "2026-07-10") vengono tokenizzate come numeri negativi per via del
+    # trattino interpretato come segno meno ("-07", "-10"), ma quando l'LLM
+    # scrive la stessa data per esteso in prosa ("10 luglio 2026") il numero
+    # e' positivo. Senza questo fix, riferimenti a date reali nel testo
+    # vengono segnalati come falsi positivi dal guardrail.
+    payload_floats = frozenset(_pf_raw) | frozenset(abs(x) for x in _pf_raw)
+
+    _realized_raw: dict[tuple, float] = {}
+    for _eng_name, _ev in payload.get("engines", {}).items():
+        for _rv_key in ("realized", "realized_base"):
+            _rv = _ev.get(_rv_key) or {}
+            if isinstance(_rv, dict):
+                for _met, _val in _rv.items():
+                    try:
+                        _realized_raw[(_eng_name, _rv_key, _met)] = float(_val)
+                    except (TypeError, ValueError):
+                        pass
+    _rv_items = list(_realized_raw.items())
+    _diff_set: set[float] = set()
+    for _i in range(len(_rv_items)):
+        (_ei, _ki, _mi), _vi = _rv_items[_i]
+        for _j in range(_i + 1, len(_rv_items)):
+            (_ej, _kj, _mj), _vj = _rv_items[_j]
+            if _mi != _mj:
+                continue
+            _d = abs(_vi - _vj)
+            _diff_set.update({_d, _d * 100, _d * 10000})
+    realized_diffs = frozenset(_diff_set)
+
+    _ALWAYS_ACCEPT = {"6", "7"}
+    sospetti = {t for t in _numtokens(analysis_md)
+                if t not in _ALWAYS_ACCEPT and not _accettabile(t, payload_floats, realized_diffs)}
+    if sospetti:
+        from pathlib import Path as _Path
+        _dp = _Path(debug_path)
+        _dp.write_text(analysis_md)
+        print(f"[DEBUG] Testo generato salvato in {_dp} per ispezione")
+        raise ValueError(
+            f"guardrail numerico: numeri nel testo generato assenti dal "
+            f"payload di input: {sospetti}. Output scartato — probabile "
+            f"allucinazione, non pubblicare senza revisione."
+        )
+
+
 def generate_relazione_llm(
     *,
     engines: dict,
@@ -12616,101 +12719,514 @@ Regole non negoziabili:
 
     analysis_md = _call_claude(system_prompt, user_prompt, max_tokens=64000)
 
-    # ── Guardrail anti-allucinazione (numericamente consapevole) ────────────
-    def _norm_text(text: str) -> str:
-        # 1. Collassa "X YYY" (migliaia con spazio) in "XYYY".
-        #      = non-breaking space; `\b` impedisce di toccare "3 items" ecc.
-        text = re.sub(
-            r'\b(\d{1,3})[\s ]+(\d{3})\b',
-            lambda m: m.group(1) + m.group(2),
-            text,
-        )
-        # 2. Converte unicode-minus (U+2212) e EN DASH (U+2013) in trattino ASCII
-        #    SOLO quando NON sono preceduti da una cifra: "93–98" è un range, non
-        #    un numero negativo; "−62.02" è un numero negativo (spazio/inizio prima).
-        text = re.sub(r'(?<!\d)[−–]', '-', text)
-        return text
-
-    def _numtokens(text: str) -> list[str]:
-        return re.findall(r"-?\d+(?:[.,]\d+)?", _norm_text(text))
-
-    def _accettabile(token: str, payload_floats: frozenset,
-                     realized_diffs: frozenset = frozenset(),
-                     tol: float = 0.01) -> bool:
-        cleaned = token.replace(',', '.')
-        try:
-            v = float(cleaned)
-        except ValueError:
-            return True
-        candidati = {v, v / 100, v * 100}
-        # Separatore migliaia italiano: "62.208" → 62208, "2.304" → 2304
-        # Solo se parte intera != "0" e parte decimale esattamente 3 cifre.
-        if cleaned.count('.') == 1:
-            base = cleaned.lstrip('-')
-            parts = base.split('.')
-            if parts[0] != '0' and len(parts[1]) == 3 and parts[1].isdigit():
-                sign = -1.0 if cleaned.startswith('-') else 1.0
-                big = sign * float(parts[0] + parts[1])
-                candidati.update({big, big / 100, big * 100})
-        if any(abs(c - p) < tol * max(abs(p), 1.0) for c in candidati for p in payload_floats):
-            return True
-        # Accetta anche se il valore è una differenza (raw, ×100, ×10000) tra coppie
-        # di metriche realized/realized_base dello stesso tipo metrico. NON cartesiano
-        # completo su tutto il payload (troppo permissivo): solo le coppie semanticamente
-        # significative estratte da payload["engines"][*]["realized"/"realized_base"].
-        if realized_diffs:
-            return any(abs(abs(v) - d) < tol * max(d, 1.0) for d in realized_diffs)
-        return False
-
-    _pf_raw: list[float] = []
-    for _t in _numtokens(payload_json):
-        try:
-            _pf_raw.append(float(_t.replace(',', '.')))
-        except ValueError:
-            pass
-    payload_floats = frozenset(_pf_raw)
-
-    # Precomputa differenze semantiche tra realized/realized_base (stesso nome metrico,
-    # qualsiasi coppia di engine o varianti ON/Base). Espressi come raw, ×100, ×10000
-    # (punti percentuali e punti base) per coprire il modo in cui il testo le esprime.
-    # Non usa il prodotto cartesiano completo del payload per non rendere il guardrail
-    # troppo permissivo (vedi analisi nel commit di introduzione).
-    _realized_raw: dict[tuple, float] = {}
-    for _eng_name, _ev in payload.get("engines", {}).items():
-        for _rv_key in ("realized", "realized_base"):
-            _rv = _ev.get(_rv_key) or {}
-            if isinstance(_rv, dict):
-                for _met, _val in _rv.items():
-                    try:
-                        _realized_raw[(_eng_name, _rv_key, _met)] = float(_val)
-                    except (TypeError, ValueError):
-                        pass
-    _rv_items = list(_realized_raw.items())
-    _diff_set: set[float] = set()
-    for _i in range(len(_rv_items)):
-        (_ei, _ki, _mi), _vi = _rv_items[_i]
-        for _j in range(_i + 1, len(_rv_items)):
-            (_ej, _kj, _mj), _vj = _rv_items[_j]
-            if _mi != _mj:  # solo coppie dello stesso tipo di metrica
-                continue
-            _d = abs(_vi - _vj)
-            _diff_set.update({_d, _d * 100, _d * 10000})
-    realized_diffs = frozenset(_diff_set)
-
-    _ALWAYS_ACCEPT = {"6", "7"}
-    sospetti = {t for t in _numtokens(analysis_md)
-                if t not in _ALWAYS_ACCEPT and not _accettabile(t, payload_floats, realized_diffs)}
-    if sospetti:
-        debug_path = Path("/tmp/relazione_llm_debug.md")
-        debug_path.write_text(analysis_md)
-        print(f"[DEBUG] Testo generato salvato in {debug_path} per ispezione")
-        raise ValueError(
-            f"generate_relazione_llm: numeri nel testo generato assenti dal "
-            f"payload di input: {sospetti}. Output scartato — probabile "
-            f"allucinazione, non pubblicare senza revisione."
-        )
+    # ── Guardrail anti-allucinazione (funzione condivisa) ──────────────────
+    _run_numeric_guardrail(analysis_md, payload,
+                            debug_path="/tmp/relazione_llm_debug.md")
 
     return analysis_md
+
+
+def generate_relazione_investitore_llm(
+    *,
+    out: dict,
+    ptf_def: dict,
+    portfolio_title: str,
+    benchmark_title: str,
+    model: str = "claude-sonnet-4-6",
+) -> str:
+    """
+    Genera in Markdown la relazione investitore, via LLM (Anthropic API).
+
+    A differenza di generate_relazione_llm (che valuta SE un PTF merita il
+    deploy, tramite OFC/MC), questa funzione risponde alla domanda: il PTF
+    gia' selezionato e' compatibile con la propensione al rischio e
+    l'orizzonte temporale dell'investitore? Usa l'output di
+    generate_rotational_portfolio_performance (statistiche rolling,
+    drawdown/recovery, CAPM) come unica fonte di verita'.
+
+    Solleva ValueError se il testo generato contiene numeri assenti dal
+    payload (guardrail anti-allucinazione condiviso). Propagare
+    l'eccezione — non ingoiarla.
+    """
+    import json as _json
+
+    ptf_type = ptf_def.get("ptf_type", "systematic")  # default silenzioso
+    thesis = ptf_def.get("thesis", "")
+
+    # ── Riassunto rolling alpha/beta (non la serie intera: costo token) ────
+    ra = out["rolling_alpha"]
+    n = len(ra)
+    first_half = ra.iloc[: n // 2]
+    second_half = ra.iloc[n // 2 :]
+    last_90 = ra.tail(90)
+
+    rolling_summary = {
+        "alpha_ann_pct_prima_meta_media": float(first_half["alpha_ann_pct"].mean()),
+        "alpha_ann_pct_seconda_meta_media": float(second_half["alpha_ann_pct"].mean()),
+        "alpha_ann_pct_ultimi_90gg_media": float(last_90["alpha_ann_pct"].mean()),
+        "beta_prima_meta_media": float(first_half["beta"].mean()),
+        "beta_seconda_meta_media": float(second_half["beta"].mean()),
+        "beta_ultimi_90gg_media": float(last_90["beta"].mean()),
+        "p_alpha_ultimi_90gg_media": float(last_90["p_alpha"].mean()),
+    }
+
+    payload = {
+        "portfolio_title": portfolio_title,
+        "benchmark_title": benchmark_title,
+        "ptf_type": ptf_type,
+        "thesis": thesis,
+        "stats": out["stats_df"]["Valore"].to_dict(),
+        "capm_full_period": out["capm"],
+        "rolling_summary": rolling_summary,
+        "benchmark_meta": out["benchmark_meta"],
+    }
+
+    # Pre-calcolo conversioni giorni -> anni (252 gg/anno, convenzione trading)
+    # cosi' il modello NON deve inventare la conversione a runtime: il numero
+    # e' gia' nel payload e il guardrail lo accetta senza falsi positivi.
+    _stats_raw = out["stats_df"]["Valore"]
+    _conversioni_anni = {}
+    for _k in ("Giorni di trading", "Max Underwater Duration (giorni)",
+               "Underwater Days Now", "Durata minima in guadagno (giorni)"):
+        if _k in _stats_raw.index:
+            try:
+                _giorni = float(_stats_raw[_k])
+                _conversioni_anni[_k.replace("(giorni)", "(anni)").strip()] = round(_giorni / 252, 1)
+            except (TypeError, ValueError):
+                pass
+    payload["conversioni_giorni_anni"] = _conversioni_anni
+
+    payload_json = _json.dumps(payload, indent=2, default=str)
+
+    _thesis_instruction = (
+        "Poiche' ptf_type='thematic', un alpha rolling in aumento nella finestra "
+        "recente rispetto allo storico e' l'evidenza ATTESA che la tesi "
+        "d'investimento (vedi campo 'thesis') si sta confermando — descrivilo "
+        "come conferma, non con toni di cautela sulla persistenza."
+        if ptf_type == "thematic" else
+        "Poiche' ptf_type='systematic', un eventuale aumento di alpha nella "
+        "finestra recente va descritto come pattern da verificare nel tempo, "
+        "NON come conferma di edge strutturale."
+    )
+
+    system_prompt = f"""Agisci come un consulente finanziario senior che
+spiega a un investitore finale — non a un tecnico — se il portafoglio
+gia' selezionato e' compatibile con la sua propensione al rischio e il
+suo orizzonte temporale. Non stai valutando se il PTF merita il deploy
+(quello e' gia' deciso): stai spiegando il suo comportamento reale.
+
+Regole non negoziabili:
+- Usa ESCLUSIVAMENTE i numeri presenti nel JSON fornito. Ogni cifra che
+  scrivi deve essere rintracciabile li' dentro.
+- {_thesis_instruction}
+- Non usare mai un trattino (-, –, —, −) per esprimere un intervallo
+  numerico. Scrivi sempre 'tra X e Y' per esteso, mai 'X-Y' o 'X–Y'.
+  Questo vale ANCHE per i percentili ordinali con simbolo di grado:
+  NON scrivere: "al 5°–95° percentile"
+  SCRIVERE: "tra il 5° e il 95° percentile"
+- Nessun consiglio di investimento esplicito ne' giudizio di idoneita'
+  personale: descrivi il comportamento del portafoglio, non "dovresti
+  investire". Chiudi sempre indicando di verificare l'idoneita' con il
+  proprio consulente/gestore.
+- Usa **grassetto Markdown** (doppio asterisco) per enfatizzare i numeri
+  chiave che un investitore deve notare a colpo d'occhio: CAGR, Max
+  Drawdown, durata underwater attuale, volatilita' annua, alpha
+  annualizzato, beta. Non esagerare: 1-2 grassetti per paragrafo,
+  sui dati piu' rilevanti per quella sezione, non su ogni numero.
+- Non arrotondare un valore reale a una soglia "tonda" diversa dal dato
+  esatto per effetto retorico (es. NON scrivere "supera il 60%" se il
+  valore esatto e' 63,17% — scrivi il numero esatto, es. "63,17%" o
+  al massimo "supera il 63%"). Ogni cifra deve restare aderente al
+  valore fornito, non un'approssimazione arbitraria verso un numero
+  piu' memorabile.
+- Il Max Drawdown e l'Underwater Duration attuale vanno sempre
+  contestualizzati in termini di TEMPO (giorni/anni), non solo
+  percentuale — e' l'informazione piu' concreta per valutare l'orizzonte.
+- Il campo "Durata minima in guadagno (giorni)" indica la finestra minima
+  di detenzione (holding period) tale che, storicamente, chiunque fosse
+  entrato in QUALSIASI momento e avesse tenuto il portafoglio per almeno
+  quella durata, sarebbe sempre risultato in guadagno. NON significa
+  "tempo gia' trascorso in guadagno" — e' una soglia di sicurezza per
+  l'orizzonte temporale, non un fatto gia' avvenuto. Esprimila sempre
+  come requisito ("tenendo il portafoglio per almeno X, storicamente
+  non si sarebbe mai chiuso in perdita"), mai come durata gia' vissuta.
+- Scrivi i numeri interi grandi SENZA separatore delle migliaia.
+- Non costruire tabelle Markdown — solo testo di analisi in prosa.
+- Qualunque numero che scrivi deve essere (a) letteralmente presente nel
+  JSON, oppure (b) uno dei valori gia' pre-calcolati in
+  "conversioni_giorni_anni". NON eseguire tu conversioni, calcoli
+  illustrativi o esempi con numeri di fantasia (es. "a un movimento del
+  10% del benchmark corrispondono circa X punti", "orizzonte tipicamente
+  superiore a 10 anni", soglie empiriche non presenti nel JSON). Se vuoi
+  spiegare beta, alpha, o un requisito di orizzonte/tolleranza al rischio,
+  fallo in termini qualitativi (es. "il portafoglio si muove mediamente a
+  circa meta' dell'ampiezza del benchmark"), senza assegnare numeri che
+  non provengono direttamente dal JSON.
+- Stile: diretto, per un lettore non tecnico. Se usi termini come "beta"
+  o "alpha", spiegali in una frase semplice, senza esempi numerici
+  costruiti ad hoc.
+- Attenzione alla grammatica italiana: nei periodi ipotetici del tipo
+  "chiunque fosse entrato in qualsiasi momento e avesse mantenuto il
+  portafoglio per almeno quella durata", la conseguenza va sempre al
+  CONDIZIONALE PASSATO ("non avrebbe mai chiuso in perdita"), MAI al
+  congiuntivo ("non avesse mai chiuso in perdita") — il doppio
+  congiuntivo e' un errore grave da evitare sempre.
+- Non usare l'anglicismo tradotto "sott'acqua"/"sottacqua" (calco di
+  "underwater"). Usa terminologia italiana standard, ad esempio: "in
+  fase di ribasso rispetto al massimo storico", "al di sotto del picco
+  precedente", "non ha ancora recuperato il massimo storico".
+"""
+
+    user_prompt = (
+        f'Genera in Markdown la relazione investitore per\n'
+        f'"{portfolio_title}", benchmark {benchmark_title}.\n\n'
+        f"Dati — unica fonte di verita', non usare nient'altro:\n{payload_json}\n\n"
+        f'Struttura richiesta (SOLO testo di analisi — nessuna tabella Markdown):\n'
+        f'## Sintesi\n2-3 frasi: cosa ha fatto il portafoglio, in parole semplici.\n'
+        f'## Drawdown e Tempo di Recupero\n'
+        f'3-5 frasi su MaxDD, underwater duration attuale, tempi di recupero tipici.\n'
+        f'## Andamento del Vantaggio nel Tempo\n'
+        f'3-5 frasi su alpha storico vs recente, interpretato secondo ptf_type.\n'
+        f'## Relazione col Mercato di Riferimento\n'
+        f'2-4 frasi su beta/correlazione: quanto il PTF segue o si smarca dal benchmark.\n'
+        f"## Nota per l'Investitore\n"
+        f'2-3 frasi: per quale tipo di orizzonte/tolleranza al rischio questi numeri sono '
+        f'ragionevoli — SENZA consiglio esplicito, chiudendo con rimando al gestore.\n'
+    )
+
+    _max_attempts = 3  # tentativo iniziale + 2 retry
+    _last_error = None
+    analysis_md = None
+    for _attempt in range(1, _max_attempts + 1):
+        _suffix = "" if _attempt == 1 else f" (tentativo {_attempt}/{_max_attempts})"
+        print(f"[generate_relazione_investitore_llm] Generazione relazione per "
+              f"'{portfolio_title}' in corso{_suffix} (puo' richiedere alcuni minuti)...")
+        analysis_md = _call_claude(system_prompt, user_prompt, max_tokens=8000)
+        print(f"[generate_relazione_investitore_llm] Testo generato "
+              f"({len(analysis_md)} caratteri). Verifica guardrail anti-allucinazione...")
+        try:
+            _run_numeric_guardrail(analysis_md, payload,
+                                    debug_path="/tmp/relazione_investitore_debug.md")
+            print("[generate_relazione_investitore_llm] Guardrail superato. Relazione pronta.")
+            return analysis_md
+        except ValueError as _e:
+            _last_error = _e
+            print(f"[generate_relazione_investitore_llm] Guardrail bloccato al "
+                  f"tentativo {_attempt}/{_max_attempts}: {_e}")
+
+    # Tutti i tentativi falliti: fail-soft. Non solleva eccezione — restituisce
+    # il testo con un banner di attenzione ben visibile, per revisione manuale,
+    # invece di bloccare l'intera esecuzione per un problema di formulazione
+    # (spesso falso positivo: riformulazione aritmeticamente corretta di un
+    # numero vero, non una vera allucinazione). Il banner finisce anche nel
+    # PDF, dato che il testo passa comunque per _md_to_flowables.
+    print(f"[generate_relazione_investitore_llm] ATTENZIONE: guardrail non "
+          f"superato dopo {_max_attempts} tentativi. Restituisco il testo con "
+          f"banner di avviso — revisione manuale richiesta prima di pubblicare.")
+    _banner = (
+        "**\u26a0\ufe0f ATTENZIONE — VERIFICA MANUALE RICHIESTA.** Il controllo "
+        f"automatico anti-allucinazione non e' stato superato dopo {_max_attempts} "
+        "tentativi di generazione. Uno o piu' numeri nel testo seguente "
+        "potrebbero non essere direttamente derivabili dai dati di origine. "
+        "Verificare ogni cifra prima di condividere questo documento con "
+        f"l'investitore. Dettaglio: `{_last_error}`\n\n---\n\n"
+    )
+    return _banner + analysis_md
+
+_INVESTOR_FIG_TITLES = [
+    ("rolling_capm",      "Rolling CAPM"),
+    ("perf_ytd",          "Performance vs Benchmark (YTD)"),
+    ("rend_annuali",      "Rendimenti annuali"),
+    ("rend_mensili",      "Rendimenti mensili"),
+    ("triangolo_cagr",    "Triangolo dei rendimenti medi"),
+    ("rend_per_titolo",   "Rendimenti totali per titolo"),
+]
+
+
+def _select_investor_figs(out: dict) -> dict:
+    """
+    Seleziona, per titolo (substring match case-insensitive), i grafici
+    chiave da out['figs'] per la relazione investitore: rolling CAPM,
+    performance YTD vs benchmark, rendimenti annuali, rendimenti mensili,
+    triangolo CAGR, rendimenti per titolo.
+
+    Ritorna dict {slug: plotly.graph_objects.Figure}. Chiavi assenti se
+    il grafico corrispondente non e' stato trovato in out['figs'].
+    """
+    result = {}
+    for fig in out.get("figs", []):
+        title_obj = getattr(fig, "layout", None)
+        title_obj = getattr(title_obj, "title", None) if title_obj is not None else None
+        title_text = getattr(title_obj, "text", None) if title_obj is not None else None
+        if not title_text:
+            continue
+        for slug, needle in _INVESTOR_FIG_TITLES:
+            if slug in result:
+                continue
+            if needle.lower() in title_text.lower():
+                result[slug] = fig
+    return result
+
+
+def generate_relazione_investitore_pdf(
+    *,
+    portfolio_title: str,
+    benchmark_title: str,
+    analysis_md: str,
+    out: dict,
+    output_path,
+    gen_date: str | None = None,
+    include_figs: bool = True,
+    figs_dir=None,
+) -> _Path_doc:
+    """
+    Genera la Relazione Investitore PDF con reportlab, riusando la stessa
+    palette/header/footer/convertitore Markdown di generate_relazione_tecnica,
+    ma con struttura piu' snella: titolo, testo di analisi (Sintesi, Drawdown,
+    Alpha nel tempo, Relazione col benchmark, Nota per l'investitore) e i
+    grafici chiave selezionati da out['figs'] (rolling CAPM, performance YTD,
+    rendimenti annuali/mensili, triangolo CAGR, rendimenti per titolo).
+
+    Parameters
+    ----------
+    analysis_md : str
+        Output di generate_relazione_investitore_llm (Markdown con ## headers).
+    out : dict
+        Output di generate_rotational_portfolio_performance.
+    output_path : path-like
+        Path del PDF da generare.
+    include_figs : bool, default True
+        Se True, esporta ed embedda i grafici chiave (richiede kaleido).
+    figs_dir : path-like, optional
+        Directory per i PNG esportati temporaneamente. Default:
+        output_path.parent / "_investor_figs".
+
+    Returns
+    -------
+    Path
+        Path del PDF scritto.
+    """
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors as rl_colors
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import mm
+    from reportlab.platypus import (
+        SimpleDocTemplate, Paragraph, Spacer, HRFlowable,
+    )
+    from reportlab.platypus import Image as _RLImage
+    from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
+    try:
+        from PIL import Image as _PILImage
+        _HAS_PIL = True
+    except ImportError:
+        _HAS_PIL = False
+
+    output_path = _Path_doc(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if gen_date is None:
+        gen_date = _dt_doc.date.today().isoformat()
+
+    C_NAVY    = rl_colors.HexColor(_RL_NAVY)
+    C_NAVY_LT = rl_colors.HexColor(_RL_NAVY_LT)
+    C_GRAY_BD = rl_colors.HexColor(_RL_GRAY_BD)
+    C_WHITE   = rl_colors.white
+    C_TEXT    = rl_colors.HexColor(_RL_TEXT)
+
+    PAGE_W, PAGE_H = A4
+    MARGIN    = 20 * mm
+    CONTENT_W = PAGE_W - 2 * MARGIN
+
+    styles = getSampleStyleSheet()
+
+    def _st(name, parent='Normal', **kw):
+        return ParagraphStyle(name, parent=styles[parent], **kw)
+
+    st_title    = _st('_ri_title',  'Title', fontSize=22, textColor=C_NAVY,
+                       spaceAfter=4, alignment=TA_CENTER, fontName='Helvetica-Bold')
+    st_subtitle = _st('_ri_sub',    fontSize=10, textColor=C_NAVY_LT,
+                       spaceAfter=12, alignment=TA_CENTER)
+    st_section  = _st('_ri_sec',    fontSize=13, textColor=C_NAVY, spaceBefore=12,
+                       spaceAfter=5, fontName='Helvetica-Bold')
+    st_subsec   = _st('_ri_ssec',   fontSize=10.5, textColor=C_NAVY_LT, spaceBefore=7,
+                       spaceAfter=3, fontName='Helvetica-Bold')
+    st_body     = _st('_ri_body',   fontSize=9.5, textColor=C_TEXT, spaceAfter=6,
+                       alignment=TA_JUSTIFY, leading=14)
+    st_caption  = _st('_ri_cap',    fontSize=7.5, textColor=C_NAVY_LT, spaceAfter=6,
+                       alignment=TA_CENTER, fontName='Helvetica-Oblique')
+
+    _ptf_label  = f"{portfolio_title}"
+    _foot_label = f"Generato il {gen_date} · investia.cloud · uso interno"
+
+    def _draw_hf(canvas, doc):
+        canvas.saveState()
+        canvas.setFillColor(C_NAVY)
+        canvas.rect(0, PAGE_H - 12 * mm, PAGE_W, 12 * mm, fill=1, stroke=0)
+        canvas.setFont('Helvetica-Bold', 9)
+        canvas.setFillColor(C_WHITE)
+        canvas.drawString(MARGIN, PAGE_H - 8 * mm,
+                          'InvestIA — Relazione Investitore')
+        canvas.drawRightString(PAGE_W - MARGIN, PAGE_H - 8 * mm, _ptf_label)
+        canvas.setFont('Helvetica', 7.5)
+        canvas.setFillColor(rl_colors.HexColor('#666666'))
+        canvas.drawString(MARGIN, 8 * mm, _foot_label)
+        canvas.drawRightString(PAGE_W - MARGIN, 8 * mm, f"Pag. {doc.page}")
+        canvas.setStrokeColor(C_GRAY_BD)
+        canvas.setLineWidth(0.5)
+        canvas.line(MARGIN, 11 * mm, PAGE_W - MARGIN, 11 * mm)
+        canvas.restoreState()
+
+    # ── Esportazione grafici chiave (opzionale) ─────────────────────────────
+    _fig_captions = {
+        "rolling_capm":    "Alpha e Beta in finestra rolling.",
+        "perf_ytd":        "Performance a confronto col benchmark, anno corrente.",
+        "rend_annuali":    "Rendimenti annuali e rischio annuale.",
+        "rend_mensili":    "Rendimenti mensili del portafoglio.",
+        "triangolo_cagr":  "Rendimenti medi annui (CAGR) tra date discrete di ingresso/uscita.",
+        "rend_per_titolo": "Rendimenti totali per singolo titolo in portafoglio.",
+    }
+    _fig_paths = {}
+    if include_figs:
+        if figs_dir is None:
+            figs_dir = output_path.parent / "_investor_figs"
+        figs_dir = _Path_doc(figs_dir)
+        figs_dir.mkdir(parents=True, exist_ok=True)
+        _selected = _select_investor_figs(out)
+        for slug, fig in _selected.items():
+            _png_path = figs_dir / f"{slug}.png"
+            try:
+                fig.write_image(str(_png_path), width=1400, height=800, scale=2)
+                _fig_paths[slug] = _png_path
+            except Exception as _e:
+                print(f"[generate_relazione_investitore_pdf] WARNING: "
+                      f"impossibile esportare grafico '{slug}': {_e}")
+
+    def _img_flowable(png_path, caption=None):
+        if not png_path.exists():
+            return []
+        try:
+            from reportlab.platypus import KeepTogether
+            w = CONTENT_W
+            if _HAS_PIL:
+                with _PILImage.open(png_path) as im:
+                    iw, ih = im.size
+                h = w * (ih / iw)
+            else:
+                h = w * 0.55
+            elems = [_RLImage(str(png_path), width=w, height=h)]
+            if caption:
+                elems.append(Paragraph(caption, st_caption))
+            return [KeepTogether(elems), Spacer(1, 4 * mm)]
+        except Exception:
+            return []
+
+    # ── Story ───────────────────────────────────────────────────────────────
+    story = []
+    story.append(Spacer(1, 6 * mm))
+    story.append(Paragraph(f"Relazione per l'Investitore · {portfolio_title}", st_title))
+    story.append(Paragraph(
+        f"Benchmark {benchmark_title} · Generato il {gen_date}",
+        st_subtitle,
+    ))
+    story.append(HRFlowable(width='100%', thickness=0.75, color=C_NAVY_LT))
+    story.append(Spacer(1, 4 * mm))
+
+    _disclaimer = (
+        "Questo documento descrive il comportamento storico del portafoglio "
+        "gia' selezionato dal gestore. Non costituisce consulenza in materia "
+        "di investimenti ne' una valutazione di idoneita' personale: verificare "
+        "sempre con il proprio consulente o gestore la compatibilita' con la "
+        "propria situazione finanziaria individuale."
+    )
+    story.append(Paragraph(_disclaimer, st_caption))
+    story.append(Spacer(1, 4 * mm))
+
+    _ri_stys = {
+        'section':   st_section,
+        'subsec':    st_subsec,
+        'body':      st_body,
+        'content_w': CONTENT_W,
+    }
+    story.extend(_md_to_flowables(analysis_md, styles=_ri_stys))
+
+    # ── Grafici chiave (in coda al testo) ──────────────────────────────────
+    if _fig_paths:
+        story.append(Spacer(1, 3 * mm))
+        story.append(Paragraph("Grafici di supporto", st_section))
+        for slug, _label in _INVESTOR_FIG_TITLES:
+            if slug in _fig_paths:
+                story.extend(_img_flowable(_fig_paths[slug], _fig_captions.get(slug)))
+
+    doc = SimpleDocTemplate(
+        str(output_path), pagesize=A4,
+        topMargin=18 * mm, bottomMargin=18 * mm,
+        leftMargin=MARGIN, rightMargin=MARGIN,
+        title=f"Relazione Investitore {portfolio_title}",
+        author="InvestIA")
+    doc.build(story, onFirstPage=_draw_hf, onLaterPages=_draw_hf)
+    return output_path
+
+
+def generate_relazione_investitore_report(
+    *,
+    out: dict,
+    portfolio: dict,
+    reports_dir,
+    year: int | None = None,
+    profile: str | None = None,
+) -> dict | None:
+    """
+    Orchestratore analogo a generate_final_report: chiama
+    generate_relazione_investitore_llm (LLM, con guardrail) e poi
+    generate_relazione_investitore_pdf (rendering), salvando il PDF in
+    reports_dir. Stampa i path generati, stesso pattern di
+    generate_final_report.
+
+    Parameters
+    ----------
+    portfolio : dict
+        Dizionario di definizione del portafoglio (es. portfolio_germany_plan).
+        Deve contenere almeno le chiavi "Title" e "benchmark_title".
+        Title, benchmark_title e ptf_type/thesis vengono derivati da qui —
+        NON passare questi valori separatamente per evitare disallineamenti
+        tra portfolio e i suoi metadati (bug gia' verificatosi: thesis di
+        un PTF applicata per errore a un PTF diverso).
+
+    Returns
+    -------
+    dict | None
+        None se la generazione LLM fallisce (eccezione propagata a monte).
+        Altrimenti {"pdf_path": Path, "analysis_md": str}.
+    """
+    from datetime import date as _date
+
+    portfolio_title = portfolio["Title"]
+    benchmark_title = portfolio["benchmark_title"]
+
+    _today_iso = _date.today().isoformat()
+    _ptf_name  = portfolio_title.replace(' ', '_').lower()
+    reports_dir = _Path_doc(reports_dir)
+
+    _suffix = f"_{year}" if year else ""
+    _suffix += f"_{profile}" if profile else ""
+    _pdf_path = reports_dir / f"{_ptf_name}{_suffix}_Relazione_Investitore.pdf"
+    _pdf_path.parent.mkdir(parents=True, exist_ok=True)
+
+    _analysis_md = generate_relazione_investitore_llm(
+        out=out,
+        ptf_def=portfolio,
+        portfolio_title=portfolio_title,
+        benchmark_title=benchmark_title,
+    )
+
+    generate_relazione_investitore_pdf(
+        portfolio_title=portfolio_title,
+        benchmark_title=benchmark_title,
+        analysis_md=_analysis_md,
+        out=out,
+        output_path=_pdf_path,
+        gen_date=_today_iso,
+    )
+    print(f"Relazione investitore PDF: {_pdf_path}")
 
 
 def _test_guardrail_numtokens() -> None:
@@ -15148,8 +15664,7 @@ def generate_relazione_tecnica(
         topMargin=18 * mm, bottomMargin=18 * mm,
         leftMargin=MARGIN, rightMargin=MARGIN,
         title=f"Relazione Tecnica {portfolio_title} {year}",
-        author="TSlab",
-    )
+        author="InvestIA")
     doc.build(story, onFirstPage=_draw_hf, onLaterPages=_draw_hf)
     return output_path
 

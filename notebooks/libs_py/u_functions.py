@@ -1704,12 +1704,29 @@ def generate_portfolio_performance(pf, portfolio_title: str, pf_b_h=None,
         show_report=show_report, show_plots=show_plots)
 
 
-def generate_rotational_portfolio_performance(pf, portfolio_title: str, sel_tickers=None,
+def generate_rotational_portfolio_performance(pf=None, portfolio_title: str = None, sel_tickers=None,
+                                               results_pipeline=None, engine=None,
                                                benchmark: str = 'SPY', benchmark_data=None,
                                                plot_start_date=None, plot_end_date=None,
                                                method=None, freq=None, alpha_analysis: bool = True,
                                                show_report: bool = True, show_plots: bool = False,
                                                universe=[]) -> dict:
+    # Risoluzione pf/sel_tickers da results_pipeline+engine, se forniti (alternativa
+    # a passare pf/sel_tickers gia' estratti a mano dal chiamante).
+    if results_pipeline is not None and engine is not None:
+        if engine not in results_pipeline:
+            raise ValueError(
+                f"engine {engine!r} non presente in results_pipeline "
+                f"(disponibili: {list(results_pipeline.keys())})"
+            )
+        pf = results_pipeline[engine]["pf_rot"]
+        sel_tickers = results_pipeline[engine]["sel_tickers"]
+    elif pf is None:
+        raise ValueError(
+            "generate_rotational_portfolio_performance: fornire pf esplicito "
+            "oppure results_pipeline + engine."
+        )
+
     return _generate_portfolio_performance_core_refactored(
         pf=pf, portfolio_title=portfolio_title, mode="rotational", sel_tickers=sel_tickers,
         pf_b_h=None, benchmark_mode=("external" if benchmark_data is not None else "internal"),
