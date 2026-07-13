@@ -51,6 +51,40 @@ _TSLAB_RUNTIME_T_WFO_RESULTS_DIR = f"{_TSLAB_INPUNTS_DIR}/WFO_T_RUN_RESULTS"
 _TSLAB_RUNTIME_R_WFO_RESULTS_DIR = f"{_TSLAB_INPUNTS_DIR}/WFO_R_RUN_RESULTS"
 _TSLAB_DEV_T_WFO_RESULTS_DIR     = f"{_TSLAB_OUTPUTS_DIR}/WFO_T_DEV_RESULTS"
 _TSLAB_DEV_R_WFO_RESULTS_DIR     = f"{_TSLAB_OUTPUTS_DIR}/WFO_R_DEV_RESULTS"
+_TSLAB_K_PANEL_EXPORTS_DIR       = f"{_TSLAB_OUTPUTS_DIR}/k_panel_exports"
+_TSLAB_L_PANEL_EXPORTS_DIR       = f"{_TSLAB_OUTPUTS_DIR}/l_panel_exports"
+
+def get_analysis_output_dir(
+    category: str,
+    ptf_name: str = None,
+    timestamp: str = None,
+) -> "Path":
+    """
+    Calcola il path di output canonico per un'analisi CLI o notebook.
+
+    Parameters
+    ----------
+    category  : "r_analysis" | "k_analysis" | "l_analysis"
+    ptf_name  : sottocartella portafoglio (solo R-portfolio la usa)
+    timestamp : stringa timestamp; se None genera datetime.now() con
+                formato "%Y%m%d_%H%M%S"
+
+    Returns
+    -------
+    pathlib.Path — <TSLAB_OUTPUTS_DIR>/<category>[/<ptf_name>]/<timestamp>
+    """
+    from pathlib import Path
+    from datetime import datetime
+    _valid = ("r_analysis", "k_analysis", "l_analysis")
+    if category not in _valid:
+        raise ValueError(f"get_analysis_output_dir: category deve essere uno di {_valid}, ricevuto '{category}'")
+    if timestamp is None:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    base = Path(_TSLAB_OUTPUTS_DIR) / category
+    if ptf_name:
+        base = base / ptf_name
+    return base / timestamp
+
 
 
 def get_analysis_output_dir(
@@ -909,46 +943,316 @@ def visualize_portfolio_weights(pf, title="Portfolio Weights", show_report: bool
 # ---------------------------------------------------------------------------
 # Selection comparison
 # ---------------------------------------------------------------------------
-def compare_selection_columns(df1: pd.DataFrame, df2: pd.DataFrame,
-                               column: str = "Top_Tickers", label_a: str = "Selezione A",
-                               label_b: str = "Selezione B",
-                               compare_only_common_dates: bool = True,
-                               sort_table_by_diff: bool = False,
-                               display_table: bool = True):
-    if column not in df1.columns: raise ValueError(f"Colonna '{column}' non presente in df1.")
-    if column not in df2.columns: raise ValueError(f"Colonna '{column}' non presente in df2.")
+
+###############################################################################
+# UTILITY: CREAZIONE DELLA MASCHERA DI OPERATIVITÀ
+###############################################################################
+    
+def compare_selection_columns(
+    df1: pd.DataFrame,
+    df2: pd.DataFrame,
+    column: str = "Top_Tickers",
+    label_a: str = "Selezione A",
+    label_b: str = "Selezione B",
+    compare_only_common_dates: bool = True,
+    sort_table_by_diff: bool = False,
+    display_table: bool = True,
+):
+    """
+    Confronta due DataFrame contenenti una colonna di selezioni ticker.
+
+    Ogni cella della colonna deve idealmente contenere una lista di ticker,
+    ma la funzione gestisce anche:
+      - NaN / None
+      - stringhe singole
+      - tuple / set / np.ndarray / pd.Index
+
+    Parametri
+    ---------
+    df1, df2 : pd.DataFrame
+        DataFrame da confrontare.
+
+    column : str
+        Nome della colonna che contiene le selezioni ticker.
+
+    label_a, label_b : str
+        Etichette descrittive delle due selezioni.
+        Esempio:
+            label_a="con risk on/off"
+            label_b="senza risk on/off"
+
+    compare_only_common_dates : bool
+        Se True, confronta solo le date presenti in entrambi i DataFrame.
+        Se False, mantiene l'unione degli indici e converte eventuali NaN in liste vuote.
+
+    sort_table_by_diff : bool
+        Se True, la tabella visualizzata viene ordinata per Diff_Count decrescente.
+
+    display_table : bool
+        Se True, visualizza la tabella con ace_tools_open.
+
+    Ritorna
+    -------
+    df_compare : pd.DataFrame
+        DataFrame con selezioni e metriche di confronto.
+    """
+
+    import numpy as np
+    import pandas as pd
+    import plotly.graph_objects as go
+    from IPython.display import display
+
+    if column not in df1.columns:
+        raise ValueError(f"Colonna '{column}' non presente in df1.")
+
+    if column not in df2.columns:
+        raise ValueError(f"Colonna '{column}' non presente in df2.")
 
     def _to_list(x):
-        if x is None or (isinstance(x, float) and np.isnan(x)): return []
+        if x is None:
+            return []
+
+        if isinstance(x, float) and np.isnan(x):
+            return []
+
         if isinstance(x, (list, tuple, set, np.ndarray, pd.Index)):
             return [item for item in list(x) if pd.notna(item)]
-        if isinstance(x, str): return [x]
+
+        if isinstance(x, str):
+            return [x]
+
         return []
 
-    common_index = df1.index.intersection(df2.index) if compare_only_common_dates else None
-    df_compare = pd.concat([
-        (df1.loc[common_index, column] if common_index is not None else df1[column]),
-        (df2.loc[common_index, column] if common_index is not None else df2[column])
-    ], axis=1)
+    # ------------------------------------------------------------
+    # Allineamento indici
+    # ------------------------------------------------------------
+    if compare_only_common_dates:
+        common_index = df1.index.intersection(df2.index)
+
+        df_compare = pd.concat(
+            [
+                df1.loc[common_index, column],
+                df2.loc[common_index, column],
+            ],
+            axis=1
+        )
+    else:
+        df_compare = pd.concat(
+            [
+                df1[column],
+                df2[column],
+            ],
+            axis=1
+        )
+
+    # Colonne tecniche interne
     df_compare.columns = ["Sel_A", "Sel_B"]
+
+    # ------------------------------------------------------------
+    # Normalizzazione celle
+    # ------------------------------------------------------------
     df_compare["Sel_A"] = df_compare["Sel_A"].apply(_to_list)
     df_compare["Sel_B"] = df_compare["Sel_B"].apply(_to_list)
-    set_a = df_compare["Sel_A"].apply(set); set_b = df_compare["Sel_B"].apply(set)
 
-    df_compare["In_Common"]          = [sorted(a & b) for a, b in zip(set_a, set_b)]
-    df_compare[f"Solo in {label_a}"] = [sorted(a - b) for a, b in zip(set_a, set_b)]
-    df_compare[f"Solo in {label_b}"] = [sorted(b - a) for a, b in zip(set_a, set_b)]
-    df_compare[f"N {label_a}"]       = df_compare["Sel_A"].apply(len)
-    df_compare[f"N {label_b}"]       = df_compare["Sel_B"].apply(len)
-    df_compare["N_Common"]            = df_compare["In_Common"].apply(len)
-    df_compare[f"N solo {label_a}"]  = df_compare[f"Solo in {label_a}"].apply(len)
-    df_compare[f"N solo {label_b}"]  = df_compare[f"Solo in {label_b}"].apply(len)
-    df_compare["Union_Count"]         = [len(a | b) for a, b in zip(set_a, set_b)]
-    df_compare["Diff_Count"]          = [len(a ^ b) for a, b in zip(set_a, set_b)]
-    df_compare["Jaccard"]             = [len(a & b)/len(a | b) if len(a | b) > 0 else np.nan
-                                         for a, b in zip(set_a, set_b)]
+    set_a = df_compare["Sel_A"].apply(set)
+    set_b = df_compare["Sel_B"].apply(set)
+
+    # ------------------------------------------------------------
+    # Metriche di confronto
+    # ------------------------------------------------------------
+    df_compare["In_Common"] = [
+        sorted(a & b) for a, b in zip(set_a, set_b)
+    ]
+
+    df_compare[f"Solo in {label_a}"] = [
+        sorted(a - b) for a, b in zip(set_a, set_b)
+    ]
+
+    df_compare[f"Solo in {label_b}"] = [
+        sorted(b - a) for a, b in zip(set_a, set_b)
+    ]
+
+    df_compare[f"N {label_a}"] = df_compare["Sel_A"].apply(len)
+    df_compare[f"N {label_b}"] = df_compare["Sel_B"].apply(len)
+
+    df_compare["N_Common"] = df_compare["In_Common"].apply(len)
+    df_compare[f"N solo {label_a}"] = df_compare[f"Solo in {label_a}"].apply(len)
+    df_compare[f"N solo {label_b}"] = df_compare[f"Solo in {label_b}"].apply(len)
+
+    df_compare["Union_Count"] = [
+        len(a | b) for a, b in zip(set_a, set_b)
+    ]
+
+    df_compare["Diff_Count"] = [
+        len(a ^ b) for a, b in zip(set_a, set_b)
+    ]
+
+    df_compare["Jaccard"] = [
+        len(a & b) / len(a | b) if len(a | b) > 0 else np.nan
+        for a, b in zip(set_a, set_b)
+    ]
+
+    # ------------------------------------------------------------
+    # Grafico 1: Jaccard Similarity
+    # ------------------------------------------------------------
+    fig_jaccard = go.Figure()
+
+    fig_jaccard.add_trace(
+        go.Scatter(
+            x=df_compare.index,
+            y=df_compare["Jaccard"],
+            mode="lines+markers",
+            name="Similarità Jaccard",
+            hovertemplate=(
+                "Data: %{x}<br>"
+                "Similarità Jaccard: %{y:.2f}<br>"
+                "<extra></extra>"
+            )
+        )
+    )
+
+    fig_jaccard.update_layout(
+        title=f"Similarità tra selezioni ({column})",
+        xaxis_title="Data di Ribilanciamento",
+        yaxis_title="Similarità Jaccard",
+        yaxis=dict(range=[0, 1.05]),
+        width=1000,
+        height=470,
+        margin=dict(t=60, b=95),
+        annotations=[
+            dict(
+                text=(
+                    "Jaccard Similarity = ticker in comune / ticker totali unici tra le due selezioni. "
+                    "Valore 1.00 = selezioni identiche; valore 0.00 = nessun ticker in comune."
+                ),
+                xref="paper",
+                yref="paper",
+                x=0,
+                y=-0.28,
+                showarrow=False,
+                align="left",
+                font=dict(size=11)
+            )
+        ]
+    )
+
+    display(fig_jaccard)
+
+    # ------------------------------------------------------------
+    # Grafico 2: composizione differenze
+    # ------------------------------------------------------------
+    x_labels = df_compare.index.strftime("%Y-%m-%d")
+
+    fig_stack = go.Figure()
+
+    fig_stack.add_trace(
+        go.Bar(
+            x=x_labels,
+            y=df_compare["N_Common"],
+            name="In comune",
+            hovertemplate=(
+                "Data: %{x}<br>"
+                "Ticker comuni: %{y}<br>"
+                "<extra></extra>"
+            )
+        )
+    )
+
+    fig_stack.add_trace(
+        go.Bar(
+            x=x_labels,
+            y=df_compare[f"N solo {label_a}"],
+            name=f"Solo in {label_a}",
+            hovertemplate=(
+                "Data: %{x}<br>"
+                f"Solo in {label_a}: "
+                "%{y}<br>"
+                "<extra></extra>"
+            )
+        )
+    )
+
+    fig_stack.add_trace(
+        go.Bar(
+            x=x_labels,
+            y=df_compare[f"N solo {label_b}"],
+            name=f"Solo in {label_b}",
+            hovertemplate=(
+                "Data: %{x}<br>"
+                f"Solo in {label_b}: "
+                "%{y}<br>"
+                "<extra></extra>"
+            )
+        )
+    )
+
+    fig_stack.update_layout(
+        title=f"Composizione differenze tra selezioni ({column})",
+        barmode="stack",
+        xaxis_title="Data di Ribilanciamento",
+        yaxis_title="Numero ticker",
+        width=1100,
+        height=500,
+        legend_title="Categoria",
+    )
+
+    fig_stack.update_xaxes(
+        type="category",
+        tickangle=45,
+    )
+
+    display(fig_stack)
+
+    # ------------------------------------------------------------
+    # Tabella dettagliata con nomi leggibili
+    # ------------------------------------------------------------
+    df_table = df_compare[
+        [
+            "Sel_A",
+            "Sel_B",
+            "In_Common",
+            f"Solo in {label_a}",
+            f"Solo in {label_b}",
+            f"N {label_a}",
+            f"N {label_b}",
+            "N_Common",
+            f"N solo {label_a}",
+            f"N solo {label_b}",
+            "Diff_Count",
+            "Union_Count",
+            "Jaccard",
+        ]
+    ].copy()
+
+    df_table = df_table.rename(
+        columns={
+            "Sel_A": label_a,
+            "Sel_B": label_b,
+            "In_Common": "In comune",
+            "N_Common": "N in comune",
+            "Diff_Count": "N diversi",
+            "Union_Count": "N unici totali",
+            "Jaccard": "Similarità Jaccard",
+        }
+    )
+
+    if sort_table_by_diff:
+        df_table = df_table.sort_values(
+            ["N diversi", "Similarità Jaccard"],
+            ascending=[False, True]
+        )
+
+    if display_table:
+        try:
+            import ace_tools_open as tools
+            tools.display_dataframe_to_user(
+                name=f"Confronto selezioni {column}",
+                dataframe=df_table
+            )
+        except ImportError:
+            display(df_table)
+
     return df_compare
-
 
 # ---------------------------------------------------------------------------
 # Min positive period
@@ -1400,12 +1704,29 @@ def generate_portfolio_performance(pf, portfolio_title: str, pf_b_h=None,
         show_report=show_report, show_plots=show_plots)
 
 
-def generate_rotational_portfolio_performance(pf, portfolio_title: str, sel_tickers=None,
+def generate_rotational_portfolio_performance(pf=None, portfolio_title: str = None, sel_tickers=None,
+                                               results_pipeline=None, engine=None,
                                                benchmark: str = 'SPY', benchmark_data=None,
                                                plot_start_date=None, plot_end_date=None,
                                                method=None, freq=None, alpha_analysis: bool = True,
                                                show_report: bool = True, show_plots: bool = False,
                                                universe=[]) -> dict:
+    # Risoluzione pf/sel_tickers da results_pipeline+engine, se forniti (alternativa
+    # a passare pf/sel_tickers gia' estratti a mano dal chiamante).
+    if results_pipeline is not None and engine is not None:
+        if engine not in results_pipeline:
+            raise ValueError(
+                f"engine {engine!r} non presente in results_pipeline "
+                f"(disponibili: {list(results_pipeline.keys())})"
+            )
+        pf = results_pipeline[engine]["pf_rot"]
+        sel_tickers = results_pipeline[engine]["sel_tickers"]
+    elif pf is None:
+        raise ValueError(
+            "generate_rotational_portfolio_performance: fornire pf esplicito "
+            "oppure results_pipeline + engine."
+        )
+
     return _generate_portfolio_performance_core_refactored(
         pf=pf, portfolio_title=portfolio_title, mode="rotational", sel_tickers=sel_tickers,
         pf_b_h=None, benchmark_mode=("external" if benchmark_data is not None else "internal"),

@@ -80,8 +80,17 @@ portfolio_germany_plan = {
     "Title": "Germany Plan",
     "tickers": germany_plan_beneficiaries,
     "benchmark_portfolio": None,
-    "benchmark_title": "^GDAXI"
+    "benchmark_title": "^GDAXI",
+    "ptf_type": "thematic",
+    "thesis": (
+        "Posizionamento sul piano straordinario del governo tedesco per "
+        "difesa e infrastrutture (2025-...). Tesi recente: e' atteso e "
+        "desiderabile un alpha crescente nelle finestre rolling piu' "
+        "recenti, a differenza di un PTF sistematico generalista dove lo "
+        "stesso pattern richiederebbe verifica di persistenza."
+    ),
 }
+
 
 portfolio_italy_big_cap = {
     "Title": "Italy Big Cap",
