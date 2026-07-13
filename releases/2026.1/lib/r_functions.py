@@ -3931,11 +3931,33 @@ def analyze_rebalance_actions_for_report(
     def _fmt(lst, title, icon):
         if not lst:
             return ""
-        s = f"<h3>{icon} {title} ({len(lst)}):</h3><ul>"
+        s = f"<h3>{icon} {title} ({len(lst)}):</h3>"
+        s += (
+            "<table style='border-collapse: collapse; margin-top: 8px;'>"
+            "<thead>"
+            "<tr style='background-color: #f0f0f0;'>"
+            "<th style='border: 1px solid #ccc; padding: 6px 12px; text-align: left;'>Ticker</th>"
+            "<th style='border: 1px solid #ccc; padding: 6px 12px; text-align: left;'>Company</th>"
+            "<th style='border: 1px solid #ccc; padding: 6px 12px; text-align: left;'>ISIN</th>"
+            "</tr>"
+            "</thead>"
+            "<tbody>"
+        )
         for t in lst:
-            company = company_data.at[t, "Company"] if t in company_data.index else ""
-            s += f"<li><b>{t}</b> – {company}</li>"
-        return s + "</ul>"
+            if t in company_data.index:
+                company = company_data.at[t, "Company"] if pd.notna(company_data.at[t, "Company"]) else ""
+                isin    = company_data.at[t, "ISIN"]    if pd.notna(company_data.at[t, "ISIN"])    else ""
+            else:
+                company = ""
+                isin    = ""
+            s += (
+                "<tr>"
+                f"<td style='border: 1px solid #ccc; padding: 6px 12px;'>{t}</td>"
+                f"<td style='border: 1px solid #ccc; padding: 6px 12px;'>{company}</td>"
+                f"<td style='border: 1px solid #ccc; padding: 6px 12px; font-family: monospace;'>{isin}</td>"
+                "</tr>"
+            )
+        return s + "</tbody></table>"
 
     html += _fmt(to_keep, "Da mantenere", "📌")
     html += _fmt(to_sell, "Da vendere", "❌")

@@ -2137,7 +2137,7 @@ def generate_relazione_tecnica_lazy(
     capital_projection : dict | None
         {'p10': Series, 'p50': Series, 'p90': Series} da project_lazy_capital.
     output_path : path-like
-        Path del PDF (es. outputs/lazy_reports/<ptf>_relazione_tecnica.pdf).
+        Path del PDF (es. outputs/l_analysis/<timestamp>/<ptf>_relazione_tecnica.pdf).
 
     Returns
     -------
