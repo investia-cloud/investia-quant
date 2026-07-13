@@ -531,9 +531,9 @@ def report(ptf, all_portfolios, rotational, trading, recipient, start_date, end_
 @app.command("r-analyze", epilog=(
     "\b\nEsempi:\n"
     "  iq r-analyze --ptf alpha_fact\n"
-    "  iq r-analyze --ptf alpha_fact --pdf\n"
+    "  iq r-analyze --ptf alpha_fact --relazione-tecnica\n"
     "  iq r-analyze --ptf alpha_fact --engine Momentum\n"
-    "  iq r-analyze --universe inputs/universe.csv --profile core --pdf\n"
+    "  iq r-analyze --universe inputs/universe.csv --profile core --relazione-tecnica\n"
 ))
 @click.option("--ptf", default=None,
               help="Nome portafoglio R da registry (es. alpha_fact)")
@@ -548,17 +548,21 @@ def report(ptf, all_portfolios, rotational, trading, recipient, start_date, end_
               help="Anno selezione WFO (default: anno corrente)")
 @click.option("--start-date", default="2015-01-01",
               help="Inizio storico download (default: 2015-01-01)")
-@click.option("--pdf", "gen_pdf", is_flag=True, default=False,
-              help="Genera la relazione tecnica PDF (default: solo card .md)")
+@click.option("--relazione-tecnica", "relazione_tecnica", is_flag=True, default=False,
+              help=(
+                  "Genera la relazione tecnica completa (analisi LLM + PTF card .md + PDF). "
+                  "Senza questo flag: solo pipeline WFO+OFC+MC, nessuna chiamata LLM."
+              ))
 @click.option("--engine", default=None,
               type=click.Choice(["Momentum", "Multifactor"]),
               help="Engine WFO da eseguire (default: entrambi Momentum e Multifactor)")
 @click.option("--verbose", is_flag=True, default=False, help="Output verboso")
-def r_analyze(ptf, universe, output_dir, profile, year, start_date, gen_pdf, engine, verbose):
+def r_analyze(ptf, universe, output_dir, profile, year, start_date, relazione_tecnica, engine, verbose):
     """Pipeline R-portfolio N-engine: WFO + OFC + MC. Solo R-portfolio.
 
-    Esegue sempre la pipeline di calcolo e la card .md; la relazione
-    tecnica PDF viene generata solo con --pdf.
+    Esegue sempre la pipeline WFO+OFC+MC. Con --relazione-tecnica genera
+    anche l'analisi LLM, la PTF card .md e la relazione tecnica PDF
+    (sempre insieme — blocco atomico).
     """
 
     # Validazione input
@@ -612,34 +616,35 @@ def r_analyze(ptf, universe, output_dir, profile, year, start_date, gen_pdf, eng
 
     engines_to_run = [engine] if engine else ["Momentum", "Multifactor"]
 
-    click.echo(f"[iq r-analyze] Portafoglio: {portfolio_obj.get('Title', ptf_name)}")
-    click.echo(f"[iq r-analyze] Output dir:  {output_dir}")
-    click.echo(f"[iq r-analyze] Profile:     {profile}")
-    click.echo(f"[iq r-analyze] Engine(s):   {', '.join(engines_to_run)}")
-    click.echo(f"[iq r-analyze] PDF:         {'sì' if gen_pdf else 'no (usa --pdf per generarlo)'}")
+    click.echo(f"[iq r-analyze] Portafoglio:         {portfolio_obj.get('Title', ptf_name)}")
+    click.echo(f"[iq r-analyze] Output dir:          {output_dir}")
+    click.echo(f"[iq r-analyze] Profile:             {profile}")
+    click.echo(f"[iq r-analyze] Engine(s):           {', '.join(engines_to_run)}")
+    click.echo(f"[iq r-analyze] Relazione tecnica:   {'sì' if relazione_tecnica else 'no (usa --relazione-tecnica)'}")
     click.echo(f"[iq r-analyze] Avvio pipeline (WFO + OFC + MC)...")
 
     try:
         result = run_analysis(
-            portfolio_cfg = portfolio_obj,
-            output_dir    = output_dir,
-            year          = year,
-            start_date    = start_date,
-            end_date      = None,
-            profile       = profile,
-            verbose       = verbose,
-            gen_pdf       = gen_pdf,
-            engines       = engines_to_run,
+            portfolio_cfg      = portfolio_obj,
+            output_dir         = output_dir,
+            year               = year,
+            start_date         = start_date,
+            end_date           = None,
+            profile            = profile,
+            verbose            = verbose,
+            relazione_tecnica  = relazione_tecnica,
+            engines            = engines_to_run,
         )
         click.echo(f"[iq r-analyze] Completato.")
-        click.echo(f"  Card MD:       {result['card_path'] or '(non generato)'}")
-        click.echo(f"  PDF:           {result['pdf_path'] if result['pdf_path'] else '(non generato — usa --pdf)'}")
         click.echo(f"  Plots dir:     {result['plots_dir']}")
         for eng_name, eng_data in result.get("engines", {}).items():
             ofc_promoted = bool((eng_data.get("ofc_report") or {}).get("promoted", False))
             skill = eng_data.get("skill_profile", "N/A")
             verdict = "PROMOTED" if ofc_promoted else "REJECTED"
             click.echo(f"  OFC {eng_name:<12}: {verdict}  (skill: {skill})")
+        if relazione_tecnica:
+            click.echo(f"  Card MD:       {result['card_path'] or '(non generato)'}")
+            click.echo(f"  PDF:           {result['pdf_path'] or '(non generato)'}")
     except Exception as exc:
         raise click.ClickException(f"Pipeline fallita: {exc}")
 

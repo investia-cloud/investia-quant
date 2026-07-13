@@ -16022,18 +16022,17 @@ def generate_final_report(
     plots_dir,
     ratio: str,
     metric: str,
-    gen_pdf: bool = True,
 ) -> dict | None:
     """
-    Genera la decisione finale, la PTF Card Markdown e (opzionalmente)
-    la Relazione Tecnica PDF per una run R-portfolio multi-engine
-    (Momentum + Multifactor).
+    Genera la decisione finale, la PTF Card Markdown e la Relazione
+    Tecnica PDF per una run R-portfolio multi-engine (Momentum +
+    Multifactor).
 
     Raccoglie i dati OFC/MC dai risultati già calcolati in
     ``results_pipeline``, costruisce il dict ``engines`` per-engine
     con le grid-size reali esposte da ``run_wfo_pipeline``, chiama
     ``generate_relazione_llm`` una sola volta e distribuisce l'output
-    a entrambi i documenti.
+    a entrambi i documenti (card .md e PDF sempre insieme — blocco atomico).
 
     Parameters
     ----------
@@ -16227,26 +16226,23 @@ def generate_final_report(
     
     print(f"\nPTF Card MD: {_card_path}")
 
-    # ── Relazione Tecnica PDF (solo se gen_pdf=True) ──────────────────────────
-    if gen_pdf:
-        generate_relazione_tecnica(
-            portfolio_title            = portfolio_title,
-            year                       = year,
-            profile                    = profile,
-            benchmark                  = benchmark_title,
-            benchmark_pf               = _benchmark_pf,
-            period                     = (str(pipeline_start_date), _today_iso),
-            universe_size              = len(tickers),
-            wfo_config                 = _wfo_config,
-            engines                    = engines,
-            plots_dir                  = plots_dir,
-            output_path                = _pdf_path,
-            analysis_md                = _analysis_md,
-            survivorship_bias_universe = survivorship_bias_universe,
-        )
-        print(f"Relazione tecnica PDF: {_pdf_path}")
-    else:
-        _pdf_path = None
+    # ── Relazione Tecnica PDF ─────────────────────────────────────────────────
+    generate_relazione_tecnica(
+        portfolio_title            = portfolio_title,
+        year                       = year,
+        profile                    = profile,
+        benchmark                  = benchmark_title,
+        benchmark_pf               = _benchmark_pf,
+        period                     = (str(pipeline_start_date), _today_iso),
+        universe_size              = len(tickers),
+        wfo_config                 = _wfo_config,
+        engines                    = engines,
+        plots_dir                  = plots_dir,
+        output_path                = _pdf_path,
+        analysis_md                = _analysis_md,
+        survivorship_bias_universe = survivorship_bias_universe,
+    )
+    print(f"Relazione tecnica PDF: {_pdf_path}")
 
     return {
         "card_path": _card_path,
@@ -16263,14 +16259,15 @@ def run_r_portfolio_n_engine_analysis(
     end_date=None,
     profile: str = "satellite",
     verbose: bool = False,
-    gen_pdf: bool = False,
+    relazione_tecnica: bool = False,
     engines: list | None = None,
 ) -> dict:
     """
     Pipeline N-engine R-portfolio in modalità headless (CLI/batch).
 
     Orchestra build_wfo_grid + run_wfo_pipeline (per ogni engine richiesto),
-    run_ofc_mc_pipeline e generate_final_report. Usata da ``iq r-analyze``.
+    run_ofc_mc_pipeline e (opzionalmente) generate_final_report.
+    Usata da ``iq r-analyze``.
 
     Parameters
     ----------
@@ -16291,9 +16288,11 @@ def run_r_portfolio_n_engine_analysis(
         Profilo di rischio: ``"satellite"`` o ``"core"``.
     verbose : bool
         Output verboso.
-    gen_pdf : bool
-        Se True genera la Relazione Tecnica PDF oltre alla PTF Card .md.
-        Se False (default) genera solo la PTF Card .md.
+    relazione_tecnica : bool
+        Se True esegue il blocco relazione tecnica completo (LLM + PTF
+        card .md + PDF — sempre insieme, blocco atomico).
+        Se False (default) la pipeline si ferma dopo WFO+OFC+MC;
+        nessuna chiamata LLM, nessun documento generato.
     engines : list[str] | None
         Engine da eseguire: sottoinsieme di ``["Momentum", "Multifactor"]``.
         None (default) esegue entrambi.
@@ -16301,10 +16300,10 @@ def run_r_portfolio_n_engine_analysis(
     Returns
     -------
     dict con le chiavi:
-        ``"card_path"``  Path PTF Card Markdown (.md)
-        ``"pdf_path"``   Path Relazione Tecnica PDF (None se gen_pdf=False)
-        ``"engines"``    dict per-engine con ofc_report, mc_skill, skill_profile
-        ``"plots_dir"``  Path directory PNG
+        ``"card_path"``     Path PTF Card .md (None se relazione_tecnica=False)
+        ``"pdf_path"``      Path Relazione Tecnica PDF (None se relazione_tecnica=False)
+        ``"engines"``       dict per-engine con ofc_report, mc_skill, skill_profile
+        ``"plots_dir"``     Path directory PNG
         ``"wfo_file_save"`` str path CSV WFO summary
     """
     import matplotlib
@@ -16444,7 +16443,41 @@ def run_r_portfolio_n_engine_analysis(
         plots_dir          = plots_dir,
     )
 
-    # 6. REPORT (card .md sempre; PDF solo se gen_pdf=True)
+    # 6a. Decisione finale testuale (sempre — nessun LLM, puramente deterministica)
+    # Assembla il dict engines minimale per print_final_decision.
+    _engines_display = {}
+    for _eng, _rp in results_pipeline.items():
+        if _rp.get('ofc') is None:
+            continue
+        _mc = _rp.get('mc')
+        _entry = {
+            'ofc_report': _rp['ofc']['report'],
+            'mc_skill':   _mc['skill_results'] if _mc else None,
+            'mc_ci':      _mc['ci_summary_df'] if _mc else None,
+        }
+        _entry['skill_profile'] = compute_skill_profile(
+            engines={_eng: _entry}
+        ).get(_eng, 'N/A')
+        _engines_display[_eng] = _entry
+
+    if _engines_display:
+        print_final_decision(
+            portfolio_title = portfolio_title,
+            year            = year,
+            profile         = profile,
+            engines         = _engines_display,
+        )
+
+    # 6b. Relazione tecnica completa (LLM + card .md + PDF) — solo se richiesta
+    if not relazione_tecnica:
+        return {
+            "card_path":     None,
+            "pdf_path":      None,
+            "engines":       _engines_display,
+            "plots_dir":     plots_dir,
+            "wfo_file_save": wfo_file_save,
+        }
+
     report = generate_final_report(
         results_pipeline           = results_pipeline,
         portfolio_title            = portfolio_title,
@@ -16459,23 +16492,22 @@ def run_r_portfolio_n_engine_analysis(
         plots_dir                  = plots_dir,
         ratio                      = ratio,
         metric                     = metric,
-        gen_pdf                    = gen_pdf,
     )
 
     if report is None:
         return {
-            "card_path":    None,
-            "pdf_path":     None,
-            "engines":      {},
-            "plots_dir":    plots_dir,
+            "card_path":     None,
+            "pdf_path":      None,
+            "engines":       _engines_display,
+            "plots_dir":     plots_dir,
             "wfo_file_save": wfo_file_save,
         }
 
     return {
-        "card_path":    report["card_path"],
-        "pdf_path":     report["pdf_path"],
-        "engines":      report["engines"],
-        "plots_dir":    plots_dir,
+        "card_path":     report["card_path"],
+        "pdf_path":      report["pdf_path"],
+        "engines":       report["engines"],
+        "plots_dir":     plots_dir,
         "wfo_file_save": wfo_file_save,
     }
 
