@@ -1289,6 +1289,29 @@ def compute_portfolio_ticker_intersections(debug: bool = False) -> Dict[str, Lis
 # Load/save WFO
 
 
+def _compact_param_grid(param_grid):
+    """
+    Se param_grid e' una lista di combinazioni gia' espanse (nuovo formato
+    N-engine da build_wfo_grid), la ricomprime in un dict {chiave: valori
+    distinti} per i metadati — evita di scrivere migliaia di dict nel
+    commento header del CSV (bug: file da MB invece di KB, causato dal
+    cambio di tipo di ritorno di build_wfo_grid rispetto al vecchio
+    formato dict compatto usato da build_cluster_grids_legacy_cluster).
+
+    Se param_grid e' gia' un dict (vecchio formato / legacy cluster),
+    lo ritorna invariato.
+    """
+    if isinstance(param_grid, dict):
+        return param_grid
+    if isinstance(param_grid, list) and param_grid and isinstance(param_grid[0], dict):
+        compact = {}
+        for combo in param_grid:
+            for k, v in combo.items():
+                compact.setdefault(k, set()).add(v)
+        return {k: sorted(vals, key=str) for k, vals in compact.items()}
+    return param_grid
+
+
 def save_rotational_wfo_summary(
     summary_df: pd.DataFrame,
     file_path: str,
@@ -1334,7 +1357,7 @@ def save_rotational_wfo_summary(
         "metric": metric,
         "ratio": ratio,
         "force_next_year_params": force_next_year_params,
-        "param_grid": param_grid,
+        "param_grid": _compact_param_grid(param_grid),
     }
 
     if extra_meta:
