@@ -1398,6 +1398,52 @@ def load_wfo_summary(file_path: str) -> pd.DataFrame:
         comment="#",
     )
     return df
+
+
+def read_wfo_metadata(file_path: str) -> dict:
+    """
+    Legge i campi extra_meta dall'header commentato scritto da
+    save_rotational_wfo_summary() (linee '# key = value').
+    Ritorna un dict str→str con i valori grezzi (non interpretati).
+    """
+    meta = {}
+    with open(file_path, "r", encoding="utf-8") as f:
+        for line in f:
+            if not line.startswith("#"):
+                break
+            line = line[1:].strip()
+            if "=" in line and not line.startswith("==="):
+                key, _, val = line.partition("=")
+                meta[key.strip()] = val.strip()
+    return meta
+
+
+def apply_risk_off_overlay(
+    stocks_data: pd.DataFrame,
+    risk_off_data: pd.DataFrame,
+    verbose: bool = False,
+) -> pd.DataFrame:
+    """
+    Allarga l'universo principale aggiungendo i ticker difensivi di risk_off_data.
+    Duplicati già presenti in stocks_data vengono rimossi prima del concat.
+    Condivisa tra run_wfo_pipeline (analisi) e r_run_portfolio (runtime).
+    """
+    duplicate_cols = stocks_data.columns.intersection(risk_off_data.columns)
+    if len(duplicate_cols) > 0 and verbose:
+        print(
+            f"[WARN] Rimossi da risk_off_data ticker già presenti "
+            f"in stocks_data: {list(duplicate_cols)}"
+        )
+    risk_off_clean = risk_off_data.drop(columns=duplicate_cols, errors='ignore')
+    oos_data = pd.concat([stocks_data, risk_off_clean], axis=1)
+    if oos_data.columns.duplicated().any():
+        dup_cols = oos_data.columns[oos_data.columns.duplicated()].tolist()
+        raise ValueError(
+            f"Duplicate columns in oos_data after concat: {dup_cols}"
+        )
+    return oos_data
+
+
 # =============================================================================
 # PUNTO 3: PRE-CALCOLO VOLATILITY MULTI-WINDOW
 # =============================================================================
@@ -3495,7 +3541,29 @@ def r_run_portfolio(
 
     # --- Carica summary WFO ---
     summary_df=load_wfo_summary(wfo_file_save)
-    
+
+    # --- Leggi metadata (deployed_engine, deployed_variant) dall'header del CSV ---
+    _wfo_meta         = read_wfo_metadata(wfo_file_save)
+    _deployed_variant = _wfo_meta.get("deployed_variant", "BASE").strip().upper()
+
+    # --- Overlay Risk ON/OFF ---
+    if _deployed_variant == "RISK_ON_OFF":
+        from k_tickers import risk_off_tickers as _default_risk_off_tickers
+        _risk_off_tickers = portfolio.get("risk_off_tickers", _default_risk_off_tickers)
+        risk_off_data = download_data(
+            _risk_off_tickers,
+            download_start_date,
+            end_date,
+            show_progress=show_progress,
+            auto_adjust=False,
+        )
+        stocks_data = apply_risk_off_overlay(stocks_data, risk_off_data, verbose=verbose)
+        if verbose:
+            print(
+                f"[INFO] Risk ON/OFF overlay applicato: "
+                f"{list(risk_off_data.columns)}"
+            )
+
     # --- Selezioni tickers dal summary ---
     sel_tickers = collect_selections_from_summary(
         summary_df=summary_df,
@@ -15852,13 +15920,14 @@ def save_wfo_for_runtime(
     metric: str,
     ratio: str,
     force_next_year_params: bool,
+    variant_scelta: str = "RISK_ON_OFF",
 ) -> None:
     """
     Salva il WFO summary dell'engine scelto per l'uso in produzione (runtime).
 
     Legge summary_df e param_grid dall'engine selezionato e chiama
-    save_rotational_wfo_summary, aggiungendo nei metadati la chiave
-    ``deployed_engine`` con il nome dell'engine scelto.
+    save_rotational_wfo_summary, aggiungendo nei metadati le chiavi
+    ``deployed_engine`` e ``deployed_variant``.
 
     Parameters
     ----------
@@ -15884,6 +15953,9 @@ def save_wfo_for_runtime(
         Rapporto IS:OOS (es. ``"3:1"``).
     force_next_year_params : bool
         Se True, forza i parametri dell'anno successivo.
+    variant_scelta : str
+        Variante di rischio: ``"RISK_ON_OFF"`` (overlay difensivo attivo a runtime)
+        oppure ``"BASE"`` (nessun overlay). Default: ``"RISK_ON_OFF"``.
 
     Returns
     -------
@@ -15894,6 +15966,13 @@ def save_wfo_for_runtime(
     - Scrive il file CSV su wfo_file_save.
     - Stampa conferma su stdout.
     """
+    _valid_variants = {"RISK_ON_OFF", "BASE"}
+    if variant_scelta not in _valid_variants:
+        raise ValueError(
+            f"variant_scelta='{variant_scelta}' non è un valore valido. "
+            f"Valori possibili: {sorted(_valid_variants)}"
+        )
+
     valid_keys = list(results_pipeline.keys())
     if engine_scelto not in results_pipeline:
         raise ValueError(
@@ -15905,8 +15984,9 @@ def save_wfo_for_runtime(
             f"engine_scelto='{engine_scelto}' non trovato in wfo_runs. "
             f"Chiavi disponibili: {list(wfo_runs.keys())}"
         )
-        
+
     print(f"Engine scelto per il RUNTIME: {engine_scelto}")
+    print(f"Variante Risk: {variant_scelta}")
 
     _summary_df_runtime = results_pipeline[engine_scelto]["summary_df"]
     _param_grid_runtime = wfo_runs[engine_scelto]["param_grid"]
@@ -15920,7 +16000,10 @@ def save_wfo_for_runtime(
         metric                 = metric,
         ratio                  = ratio,
         force_next_year_params = force_next_year_params,
-        extra_meta             = {"deployed_engine": engine_scelto},
+        extra_meta             = {
+            "deployed_engine":  engine_scelto,
+            "deployed_variant": variant_scelta,
+        },
     )
 
 
