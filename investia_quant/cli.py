@@ -532,6 +532,7 @@ def report(ptf, all_portfolios, rotational, trading, recipient, start_date, end_
     "\b\nEsempi:\n"
     "  iq r-analyze --ptf alpha_fact\n"
     "  iq r-analyze --ptf alpha_fact --pdf\n"
+    "  iq r-analyze --ptf alpha_fact --engine Momentum\n"
     "  iq r-analyze --universe inputs/universe.csv --profile core --pdf\n"
 ))
 @click.option("--ptf", default=None,
@@ -548,12 +549,13 @@ def report(ptf, all_portfolios, rotational, trading, recipient, start_date, end_
 @click.option("--start-date", default="2015-01-01",
               help="Inizio storico download (default: 2015-01-01)")
 @click.option("--pdf", "gen_pdf", is_flag=True, default=False,
-              help="Genera la relazione tecnica PDF (default: solo pipeline, niente PDF)")
-@click.option("--cluster", "run_cluster", is_flag=True, default=False,
-              help="Esegui anche il path WFO Cluster (default: solo Standard)")
+              help="Genera la relazione tecnica PDF (default: solo card .md)")
+@click.option("--engine", default=None,
+              type=click.Choice(["Momentum", "Multifactor"]),
+              help="Engine WFO da eseguire (default: entrambi Momentum e Multifactor)")
 @click.option("--verbose", is_flag=True, default=False, help="Output verboso")
-def r_analyze(ptf, universe, output_dir, profile, year, start_date, gen_pdf, run_cluster, verbose):
-    """Pipeline R-portfolio: WFO + OFC + MC. Solo R-portfolio.
+def r_analyze(ptf, universe, output_dir, profile, year, start_date, gen_pdf, engine, verbose):
+    """Pipeline R-portfolio N-engine: WFO + OFC + MC. Solo R-portfolio.
 
     Esegue sempre la pipeline di calcolo e la card .md; la relazione
     tecnica PDF viene generata solo con --pdf.
@@ -568,9 +570,9 @@ def r_analyze(ptf, universe, output_dir, profile, year, start_date, gen_pdf, run
     click.echo("[iq r-analyze] Caricamento librerie...")
     ns = _load_all_libs()
 
-    run_r_portfolio_analysis = ns.get("run_r_portfolio_analysis")
-    if run_r_portfolio_analysis is None:
-        raise click.ClickException("run_r_portfolio_analysis non trovata in r_functions.")
+    run_analysis = ns.get("run_r_portfolio_n_engine_analysis")
+    if run_analysis is None:
+        raise click.ClickException("run_r_portfolio_n_engine_analysis non trovata in r_functions.")
 
     # Risolvi portfolio_cfg
     if ptf:
@@ -608,15 +610,17 @@ def r_analyze(ptf, universe, output_dir, profile, year, start_date, gen_pdf, run
         _get_dir = ns.get("get_analysis_output_dir")
         output_dir = str(_get_dir("r_analysis", ptf_name=ptf_name))
 
+    engines_to_run = [engine] if engine else ["Momentum", "Multifactor"]
+
     click.echo(f"[iq r-analyze] Portafoglio: {portfolio_obj.get('Title', ptf_name)}")
     click.echo(f"[iq r-analyze] Output dir:  {output_dir}")
     click.echo(f"[iq r-analyze] Profile:     {profile}")
+    click.echo(f"[iq r-analyze] Engine(s):   {', '.join(engines_to_run)}")
     click.echo(f"[iq r-analyze] PDF:         {'sì' if gen_pdf else 'no (usa --pdf per generarlo)'}")
-    click.echo(f"[iq r-analyze] Cluster:     {'sì' if run_cluster else 'no (usa --cluster per eseguirlo)'}")
     click.echo(f"[iq r-analyze] Avvio pipeline (WFO + OFC + MC)...")
 
     try:
-        result = run_r_portfolio_analysis(
+        result = run_analysis(
             portfolio_cfg = portfolio_obj,
             output_dir    = output_dir,
             year          = year,
@@ -624,17 +628,18 @@ def r_analyze(ptf, universe, output_dir, profile, year, start_date, gen_pdf, run
             end_date      = None,
             profile       = profile,
             verbose       = verbose,
-            generate_pdf  = gen_pdf,
-            run_cluster   = run_cluster,
+            gen_pdf       = gen_pdf,
+            engines       = engines_to_run,
         )
         click.echo(f"[iq r-analyze] Completato.")
-        click.echo(f"  PDF:           {result['pdf'] if result['pdf'] else '(non generato — usa --pdf)'}")
+        click.echo(f"  Card MD:       {result['card_path'] or '(non generato)'}")
+        click.echo(f"  PDF:           {result['pdf_path'] if result['pdf_path'] else '(non generato — usa --pdf)'}")
         click.echo(f"  Plots dir:     {result['plots_dir']}")
-        click.echo(f"  OFC Standard:  {'PROMOTED' if result['ofc_std'] else 'REJECTED'}")
-        _ofc_cl = result['ofc_cluster']
-        click.echo(f"  OFC Cluster:   {'PROMOTED' if _ofc_cl else 'REJECTED' if _ofc_cl is not None else 'N/A (non eseguito)'}")
-        click.echo(f"  Skill Std:     {result['skill_profile_std']}")
-        click.echo(f"  Skill Cluster: {result['skill_profile_cluster']}")
+        for eng_name, eng_data in result.get("engines", {}).items():
+            ofc_promoted = bool((eng_data.get("ofc_report") or {}).get("promoted", False))
+            skill = eng_data.get("skill_profile", "N/A")
+            verdict = "PROMOTED" if ofc_promoted else "REJECTED"
+            click.echo(f"  OFC {eng_name:<12}: {verdict}  (skill: {skill})")
     except Exception as exc:
         raise click.ClickException(f"Pipeline fallita: {exc}")
 

@@ -15939,11 +15939,12 @@ def generate_final_report(
     plots_dir,
     ratio: str,
     metric: str,
+    gen_pdf: bool = True,
 ) -> dict | None:
     """
-    Genera la decisione finale, la PTF Card Markdown e la Relazione
-    Tecnica PDF per una run R-portfolio multi-engine (Momentum +
-    Multifactor).
+    Genera la decisione finale, la PTF Card Markdown e (opzionalmente)
+    la Relazione Tecnica PDF per una run R-portfolio multi-engine
+    (Momentum + Multifactor).
 
     Raccoglie i dati OFC/MC dai risultati già calcolati in
     ``results_pipeline``, costruisce il dict ``engines`` per-engine
@@ -16143,28 +16144,256 @@ def generate_final_report(
     
     print(f"\nPTF Card MD: {_card_path}")
 
-    # ── Relazione Tecnica PDF ─────────────────────────────────────────────────
-    generate_relazione_tecnica(
-        portfolio_title            = portfolio_title,
-        year                       = year,
-        profile                    = profile,
-        benchmark                  = benchmark_title,
-        benchmark_pf               = _benchmark_pf,
-        period                     = (str(pipeline_start_date), _today_iso),
-        universe_size              = len(tickers),
-        wfo_config                 = _wfo_config,
-        engines                    = engines,
-        plots_dir                  = plots_dir,
-        output_path                = _pdf_path,
-        analysis_md                = _analysis_md,
-        survivorship_bias_universe = survivorship_bias_universe,
-    )
-    print(f"Relazione tecnica PDF: {_pdf_path}")
+    # ── Relazione Tecnica PDF (solo se gen_pdf=True) ──────────────────────────
+    if gen_pdf:
+        generate_relazione_tecnica(
+            portfolio_title            = portfolio_title,
+            year                       = year,
+            profile                    = profile,
+            benchmark                  = benchmark_title,
+            benchmark_pf               = _benchmark_pf,
+            period                     = (str(pipeline_start_date), _today_iso),
+            universe_size              = len(tickers),
+            wfo_config                 = _wfo_config,
+            engines                    = engines,
+            plots_dir                  = plots_dir,
+            output_path                = _pdf_path,
+            analysis_md                = _analysis_md,
+            survivorship_bias_universe = survivorship_bias_universe,
+        )
+        print(f"Relazione tecnica PDF: {_pdf_path}")
+    else:
+        _pdf_path = None
 
     return {
         "card_path": _card_path,
         "pdf_path":  _pdf_path,
         "engines":   engines,
+    }
+
+
+def run_r_portfolio_n_engine_analysis(
+    portfolio_cfg: dict,
+    output_dir,
+    year: int | None = None,
+    start_date: str = "2015-01-01",
+    end_date=None,
+    profile: str = "satellite",
+    verbose: bool = False,
+    gen_pdf: bool = False,
+    engines: list | None = None,
+) -> dict:
+    """
+    Pipeline N-engine R-portfolio in modalità headless (CLI/batch).
+
+    Orchestra build_wfo_grid + run_wfo_pipeline (per ogni engine richiesto),
+    run_ofc_mc_pipeline e generate_final_report. Usata da ``iq r-analyze``.
+
+    Parameters
+    ----------
+    portfolio_cfg : dict
+        Dict portafoglio da r_portfolios.py. Chiavi attese: ``Title``,
+        ``tickers``, ``benchmark_portfolio`` (o ``benchmark_title``),
+        ``risk_off_tickers`` (opzionale), ``init_cash`` (opzionale),
+        ``asset_type`` (opzionale).
+    output_dir : str | Path
+        Directory di output per report, plot e CSV WFO.
+    year : int | None
+        Anno di selezione WFO (default: anno corrente).
+    start_date : str
+        Inizio storico download (default: "2015-01-01").
+    end_date : str | None
+        Fine storico download (default: None = oggi).
+    profile : str
+        Profilo di rischio: ``"satellite"`` o ``"core"``.
+    verbose : bool
+        Output verboso.
+    gen_pdf : bool
+        Se True genera la Relazione Tecnica PDF oltre alla PTF Card .md.
+        Se False (default) genera solo la PTF Card .md.
+    engines : list[str] | None
+        Engine da eseguire: sottoinsieme di ``["Momentum", "Multifactor"]``.
+        None (default) esegue entrambi.
+
+    Returns
+    -------
+    dict con le chiavi:
+        ``"card_path"``  Path PTF Card Markdown (.md)
+        ``"pdf_path"``   Path Relazione Tecnica PDF (None se gen_pdf=False)
+        ``"engines"``    dict per-engine con ofc_report, mc_skill, skill_profile
+        ``"plots_dir"``  Path directory PNG
+        ``"wfo_file_save"`` str path CSV WFO summary
+    """
+    import matplotlib
+    matplotlib.use('Agg')
+    from pathlib import Path
+    from datetime import date, timedelta
+    import os
+
+    if engines is None:
+        engines = ["Momentum", "Multifactor"]
+
+    # 1. SETUP
+    if year is None:
+        year = date.today().year
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    plots_dir = output_dir / "plots"
+    plots_dir.mkdir(parents=True, exist_ok=True)
+
+    portfolio_title     = portfolio_cfg["Title"]
+    tickers             = portfolio_cfg["tickers"]
+    benchmark_portfolio = portfolio_cfg.get("benchmark_portfolio")
+    benchmark_title     = portfolio_cfg.get("benchmark_title")
+    from k_tickers import risk_off_tickers as _default_risk_off_tickers
+    risk_off_tickers    = portfolio_cfg.get("risk_off_tickers", _default_risk_off_tickers)
+    init_cash           = portfolio_cfg.get("init_cash", 100_000)
+    asset_type          = portfolio_cfg.get("asset_type", "stock")
+
+    survivorship_bias_universe: bool = isinstance(tickers, str)
+    tickers = (
+        extract_tickers_from_wikipedia(tickers, exclude=["GOOG"], rename={"BRK.B": "BRK-B"})
+        if isinstance(tickers, str)
+        else list(tickers)
+    )
+
+    wfo_results_dir = os.environ.get(
+        "IQ_OUTPUTS_DIR",
+        str(Path(__file__).parent.parent / "outputs")
+    )
+    wfo_file_save = f"{wfo_results_dir}/WFO_R_DEV_RESULTS/{portfolio_title}_{year}.wfo_summary.csv"
+
+    # 2. DOWNLOAD
+    lookback_buffer = 365
+    download_start = (
+        pd.to_datetime(start_date) - timedelta(days=lookback_buffer)
+    ).strftime("%Y-%m-%d")
+
+    stocks_data, _ = fetch_data_and_companies(
+        tickers, download_start, end_date, normalize=False
+    )
+    stocks_data_raw = download_data(tickers, download_start, end_date, auto_adjust=False)
+    portfolio_cfg["stocks_data"] = stocks_data
+    portfolio_cfg["init_cash"]   = init_cash
+
+    if benchmark_portfolio:
+        benchmark_data     = build_benchmark(
+            benchmark_portfolio,
+            stocks_data.index.min(), stocks_data.index.max(),
+        ).replace(0, np.nan).ffill()
+        benchmark_data_raw = build_benchmark(
+            benchmark_portfolio,
+            stocks_data.index.min(), stocks_data.index.max(),
+            auto_adjust=False,
+        ).replace(0, np.nan).ffill()
+    elif benchmark_title:
+        benchmark_data     = download_data(benchmark_title, stocks_data.index.min(), end_date)
+        benchmark_data_raw = download_data(benchmark_title, stocks_data.index.min(), end_date,
+                                           auto_adjust=False)
+    else:
+        benchmark_data = benchmark_data_raw = None
+
+    risk_off_tickers_uniq = [t for t in risk_off_tickers if t not in tickers]
+    risk_off_data = (
+        download_data(risk_off_tickers_uniq, download_start, end_date)
+        if risk_off_tickers_uniq
+        else None
+    )
+    if isinstance(risk_off_data, pd.Series):
+        risk_off_data = risk_off_data.to_frame()
+
+    # 3. PIPELINE_START_DATE
+    ratio   = "3:1"
+    metric  = "Sharpe Ratio"
+    cores   = -1
+
+    ratio_int = int(str(ratio).split(":")[0])
+    if benchmark_data is not None:
+        benchmark_start = benchmark_data.dropna(how="all").index.min()
+    else:
+        benchmark_start = stocks_data.dropna(how="all").index.min()
+    first_full_year     = pd.Timestamp(f"{benchmark_start.year + 1}-01-01")
+    pipeline_start_date = first_full_year - pd.DateOffset(years=ratio_int)
+
+    # 4. WFO LOOP (un engine alla volta)
+    results_pipeline = {}
+    for engine in engines:
+        grid = build_wfo_grid(engine=engine, profile=profile, asset_type=asset_type)
+        wfo_audit_path_base = str(output_dir / f"{portfolio_title}_{year}_{engine.lower()}")
+        results_pipeline[engine] = run_wfo_pipeline(
+            stocks_data_raw     = stocks_data_raw,
+            stocks_data         = stocks_data,
+            benchmark_data      = benchmark_data,
+            benchmark_data_raw  = benchmark_data_raw,
+            tickers             = tickers,
+            risk_off_data       = risk_off_data,
+            ratio               = ratio,
+            metric              = metric,
+            start_date          = pipeline_start_date,
+            end_date            = end_date,
+            cores               = cores,
+            verbose             = verbose,
+            force_next_year_params = False,
+            param_grid          = grid,
+            engine              = engine,
+            autoreduce          = True,
+            portfolio_title     = portfolio_title,
+            benchmark_title     = benchmark_title,
+            init_cash           = init_cash,
+            risk_on_off         = True,
+            plot                = False,
+            profile             = profile,
+            asset_type          = asset_type,
+            wfo_audit_path_base = wfo_audit_path_base,
+            benchmark_prices    = benchmark_data_raw,
+        )
+
+    # 5. OFC + MC
+    run_ofc_mc_pipeline(
+        results_pipeline   = results_pipeline,
+        profile            = profile,
+        portfolio          = portfolio_cfg,
+        stocks_data        = stocks_data,
+        benchmark_data     = benchmark_data,
+        benchmark_data_raw = benchmark_data_raw,
+        tickers            = tickers,
+        init_cash          = init_cash,
+        plots_dir          = plots_dir,
+    )
+
+    # 6. REPORT (card .md sempre; PDF solo se gen_pdf=True)
+    report = generate_final_report(
+        results_pipeline           = results_pipeline,
+        portfolio_title            = portfolio_title,
+        year                       = year,
+        profile                    = profile,
+        benchmark_title            = benchmark_title,
+        tickers                    = tickers,
+        pipeline_start_date        = pipeline_start_date,
+        wfo_file_save              = wfo_file_save,
+        survivorship_bias_universe = survivorship_bias_universe,
+        reports_dir                = output_dir,
+        plots_dir                  = plots_dir,
+        ratio                      = ratio,
+        metric                     = metric,
+        gen_pdf                    = gen_pdf,
+    )
+
+    if report is None:
+        return {
+            "card_path":    None,
+            "pdf_path":     None,
+            "engines":      {},
+            "plots_dir":    plots_dir,
+            "wfo_file_save": wfo_file_save,
+        }
+
+    return {
+        "card_path":    report["card_path"],
+        "pdf_path":     report["pdf_path"],
+        "engines":      report["engines"],
+        "plots_dir":    plots_dir,
+        "wfo_file_save": wfo_file_save,
     }
 
 
