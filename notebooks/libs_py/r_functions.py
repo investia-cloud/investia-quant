@@ -15770,6 +15770,7 @@ def run_ofc_mc_pipeline(
     tickers: list,
     init_cash: float,
     plots_dir,
+    show_method_plots: bool = True,
 ) -> dict:
     """
     Esegue la pipeline OFC + Monte Carlo per ogni engine in results_pipeline.
@@ -15880,7 +15881,7 @@ def run_ofc_mc_pipeline(
                     block_size            = 10,
                     vol_window            = 60,
                     n_vol_quantiles       = 3,
-                    show_method_plots     = True,
+                    show_method_plots     = show_method_plots,
                     show_method_summaries = True,
                     save_plots            = True,
                     plots_dir             = plots_dir_run,
@@ -16441,6 +16442,7 @@ def run_r_portfolio_n_engine_analysis(
         tickers            = tickers,
         init_cash          = init_cash,
         plots_dir          = plots_dir,
+        show_method_plots  = False,
     )
 
     # 6a. Decisione finale testuale (sempre — nessun LLM, puramente deterministica)
