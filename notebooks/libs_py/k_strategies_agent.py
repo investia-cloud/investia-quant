@@ -4887,3 +4887,73 @@ def strategy_crowd_timer(data: pd.DataFrame, params: dict, year: int | None = No
     shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
     shifted_exits = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
     return shifted_entries, shifted_exits
+
+
+# ─────────────────────────────────────
+# Fonte: A Massive Backtest on AMAT — and Why the Monte Carlo Simulation Made Me Pump the Brakes
+# URL:   https://medium.com/@Kryptera/a-massive-backtest-on-amat-and-why-the-monte-carlo-simulation-made-me-pump-the-brakes-1d110e268ca7
+# Data:  2026-07-14 02:00
+# ─────────────────────────────────────
+
+############################
+# Strategy cci_ema_amat
+############################
+
+import pandas as pd
+import numpy as np
+
+
+def ind_cci_ema_amat_cci(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    tp = (df['High'] + df['Low'] + df['Close']) / 3.0
+    sma_tp = tp.rolling(period, min_periods=1).mean()
+    mean_dev = tp.rolling(period, min_periods=1).apply(
+        lambda x: np.mean(np.abs(x - np.mean(x))), raw=True
+    )
+    safe_den = np.where(mean_dev != 0, mean_dev.values, 1.0)
+    cci_vals = np.where(
+        mean_dev.values != 0,
+        (tp.values - sma_tp.values) / (0.015 * safe_den),
+        0.0
+    )
+    return pd.Series(cci_vals, index=df.index)
+
+
+def ind_cci_ema_amat_ema(df: pd.DataFrame, period: int = 20) -> pd.Series:
+    ema = df['Close'].ewm(span=period, adjust=False, min_periods=1).mean()
+    return ema
+
+
+strategy_cci_ema_amat_param_ranges = {
+    'cci_period_range' : range(11, 25, 4),
+    'cci_level_range'  : range(-10, 11, 10),
+    'ema_period_range' : range(16, 25, 4),
+}
+
+
+def strategy_cci_ema_amat(data: pd.DataFrame, params: dict, year: int | None = None):
+    cci_period = params.get('cci_period_range')
+    cci_level  = params.get('cci_level_range')
+    ema_period = params.get('ema_period_range')
+
+    df = data.copy()
+
+    cci = ind_cci_ema_amat_cci(df, period=cci_period)
+    ema = ind_cci_ema_amat_ema(df, period=ema_period)
+
+    df['CCI'] = cci
+    df['EMA'] = ema
+
+    if year is not None:
+        df = df[df.index.year == int(year)]
+
+    # Entry: CCI drops below the threshold level
+    entries = df['CCI'] < cci_level
+
+    # Exit: Open crosses below EMA after having been above it the prior bar
+    open_below_ema       = df['Open'] < df['EMA']
+    open_above_ema_prev  = df['Open'].shift(1) > df['EMA'].shift(1)
+    exits = open_below_ema & open_above_ema_prev
+
+    shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    shifted_exits   = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    return shifted_entries, shifted_exits
