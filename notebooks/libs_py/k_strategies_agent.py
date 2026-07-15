@@ -4957,3 +4957,93 @@ def strategy_cci_ema_amat(data: pd.DataFrame, params: dict, year: int | None = N
     shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
     shifted_exits   = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
     return shifted_entries, shifted_exits
+
+
+# ─────────────────────────────────────
+# Fonte: The Santa Claus Rally
+# URL:   https://medium.com/@Kryptera/the-santa-claus-rally-53e47ecb9e17
+# Data:  2026-07-15 02:00
+# ─────────────────────────────────────
+
+############################
+# Strategy santa_claus_rally
+############################
+
+import pandas as pd
+import numpy as np
+
+
+def ind_santa_claus_rally_signals(df: pd.DataFrame, dec_day_threshold: int = 14, exit_trading_day: int = 3):
+    """
+    Entry: Buy at close of first Friday after December <dec_day_threshold>
+    Exit:  Sell at close of the <exit_trading_day>-th trading day of the new year
+    """
+    index = df.index
+    n = len(index)
+    
+    entries = pd.Series(False, index=index)
+    exits = pd.Series(False, index=index)
+    
+    years = index.year.unique()
+    
+    for year in years:
+        # Find first Friday after December dec_day_threshold of this year
+        target = pd.Timestamp(year=int(year), month=12, day=dec_day_threshold)
+        candidate = target + pd.Timedelta(days=1)
+        # Find next Friday (dayofweek == 4)
+        while candidate.dayofweek != 4:
+            candidate += pd.Timedelta(days=1)
+        
+        # Find the closest trading day on or after candidate
+        future_mask = index >= candidate
+        if future_mask.any():
+            entry_date = index[future_mask][0]
+            # Only mark entry if it's still in December
+            if entry_date.month == 12:
+                entries.loc[entry_date] = True
+        
+        # Find exit: 3rd trading day of next year
+        next_year = int(year) + 1
+        next_year_mask = index.year == next_year
+        if next_year_mask.any():
+            next_year_days = index[next_year_mask]
+            if len(next_year_days) >= exit_trading_day:
+                exit_date = next_year_days[exit_trading_day - 1]
+                exits.loc[exit_date] = True
+    
+    return entries, exits
+
+
+strategy_santa_claus_rally_param_ranges = {
+    'dec_day_threshold_range': range(8, 18, 3),   # [8, 11, 14, 17] -> 4 values
+    'exit_trading_day_range' : range(2, 5, 1),    # [2, 3, 4] -> 3 values
+}
+# Total: 4 * 3 = 12 combinations
+
+
+def strategy_santa_claus_rally(data: pd.DataFrame, params: dict, year: int | None = None):
+    dec_day_threshold = params.get('dec_day_threshold_range')
+    exit_trading_day  = params.get('exit_trading_day_range')
+
+    df = data.copy()
+
+    # Calculate signals on entire df (signals depend on calendar, need full history)
+    entries, exits = ind_santa_claus_rally_signals(
+        df,
+        dec_day_threshold=dec_day_threshold,
+        exit_trading_day=exit_trading_day
+    )
+
+    df['entries'] = entries
+    df['exits']   = exits
+
+    if year is not None:
+        df = df[df.index.year == int(year)]
+
+    entries_filtered = df['entries']
+    exits_filtered   = df['exits']
+
+    shifted_entries = entries_filtered.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    shifted_exits   = exits_filtered.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+
+    return shifted_entries, shifted_exits
