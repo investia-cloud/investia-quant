@@ -1,25 +1,24 @@
 # === WFO METADATA ===
-# created_at = 2026-06-28T11:54:28
+# created_at = 2026-07-13T15:58:57
 # data_start_date = 2015-01-01
 # data_end_date = None
 # metric = Sharpe Ratio
 # ratio = 3:1
 # force_next_year_params = True
-# param_grid = {'rebalance_frequency': ['QE', 'ME'], 'momentum_lookback_days': [10, 20, 40, 60], 'riskparity_lookback_days': [10, 20, 40, 60], 'n_top': [3, 5, 8], 'use_acceleration': [True], 'momentum_weight': [0.5, 0.7, 1.0], 'filter_ema': [False], 'filter_volatility': [False], 'filter_min_momentum': [False]}
-# deployed_path = STANDARD
-# deployed_variant = RISK_ON_OFF
+# param_grid = {'rebalance_frequency': ['ME', 'QE'], 'momentum_lookback_days': [10, 20, 40, 60], 'riskparity_lookback_days': [10, 20, 40, 60], 'n_top': [3, 5, 8], 'filter_ema': [False, True], 'filter_volatility': [False, True], 'filter_min_momentum': [False, True], 'momentum_weight': [0.0, 0.5, 1.0], 'ivol_weight': [0.0, 0.5, 1.0], 'sortino_weight': [0.0, 0.5, 1.0], 'idio_weight': [0.0, 0.5, 1.0]}
+# deployed_engine = Multifactor
+# deployed_variant = BASE
 # === WFO RESULTS ===
-Window,rebalance_frequency,momentum_lookback_days,riskparity_lookback_days,n_top,use_acceleration,momentum_weight,filter_ema,filter_volatility,filter_min_momentum,TrainScore,TestScore
-2015-01-01→2015-12-31,QE,60,10,5,True,0.5,False,False,False,1.3937513635411367,1.2476545125639773
-2016-01-01→2016-12-31,QE,60,60,5,True,0.7,False,False,False,1.2894265632467625,0.879028923360025
-2017-01-01→2017-12-31,QE,60,20,8,True,0.7,False,False,False,1.2897316047407983,3.7474150890166222
-2018-01-01→2018-12-31,QE,20,10,3,True,1.0,False,False,False,1.8090243372728265,-1.6088940888791952
-2019-01-01→2019-12-31,QE,60,10,8,True,0.7,False,False,False,1.43386253492033,0.28936556273656533
-2020-01-01→2020-12-31,QE,60,10,8,True,0.7,False,False,False,0.6937500356708938,0.24509352555844735
-2021-01-01→2021-12-31,QE,10,60,5,True,0.5,False,False,False,1.1321733552569613,-0.890292090943786
-2022-01-01→2022-12-31,QE,20,40,3,True,0.5,False,False,False,1.036769192610999,0.3332740446936849
-2023-01-01→2023-12-31,QE,60,10,3,True,0.7,False,False,False,1.5632824491462942,1.7582369351715543
-2024-01-01→2024-12-31,QE,40,20,8,True,0.7,False,False,False,0.8396947407986638,-0.06056963386952771
-2025-01-01→2025-12-31,QE,10,20,3,True,0.5,False,False,False,2.035771676946866,2.654081700272652
-2026-01-01→2026-12-31,QE,10,10,5,True,0.5,False,False,False,2.105713939351648,1.3866558892882364
-2027-01-01→2027-12-31,QE,60,10,8,True,1.0,False,False,False,2.560575722283556,
+Window,TrainScore,TestScore,rebalance_frequency,momentum_lookback_days,riskparity_lookback_days,n_top,filter_ema,filter_volatility,filter_min_momentum,momentum_weight,ivol_weight,sortino_weight,idio_weight
+2015-01-01→2015-12-31,1.790383693841803,1.2793776673670394,QE,10,10,3,False,False,False,0.0,0.5,0.0,0.0
+2016-01-01→2016-12-31,1.3846228649949344,0.33506466104721827,QE,60,10,3,False,False,False,0.5,0.5,1.0,1.0
+2017-01-01→2017-12-31,1.406733196564446,3.2225105582048728,QE,60,10,3,False,False,False,0.0,0.5,1.0,1.0
+2018-01-01→2018-12-31,1.9487849837404856,-1.4231430546444246,QE,60,10,3,False,False,False,0.0,0.5,1.0,1.0
+2019-01-01→2019-12-31,1.5735243928428175,-0.8584003022825134,QE,60,40,3,False,False,False,0.0,0.5,1.0,0.5
+2020-01-01→2020-12-31,1.1782461818599523,2.158271995137603,QE,20,40,3,False,False,False,0.0,0.5,0.5,0.5
+2021-01-01→2021-12-31,1.856350955075979,-0.8802138486243967,QE,10,40,3,False,False,False,0.0,0.5,0.5,0.5
+2022-01-01→2022-12-31,1.337580765217616,-0.5089543420130618,QE,20,10,3,False,False,False,0.0,1.0,1.0,0.5
+2023-01-01→2023-12-31,2.1077004773879464,0.7550773701523538,QE,60,10,3,False,False,False,0.5,0.5,0.5,1.0
+2024-01-01→2024-12-31,1.207995445819405,1.131083932536094,QE,20,40,3,False,False,False,0.0,1.0,0.5,0.0
+2025-01-01→2025-12-31,2.5417409968133473,2.3945147417046075,QE,10,40,3,False,False,False,0.0,1.0,0.5,0.0
+2026-01-01→2026-12-31,2.7081461772696533,1.379661487790014,QE,10,60,3,False,False,False,0.0,1.0,0.0,0.5

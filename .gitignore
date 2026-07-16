@@ -61,7 +61,8 @@ __pycache__/
 venv/
 
 # ── Claude Code ───────────────────────────────────────────────────────────────
-.claude/
+.claude/*
+!.claude/settings.json
 
 # ── OS ────────────────────────────────────────────────────────────────────────
 .DS_Store
@@ -103,3 +104,4 @@ K-Strategy-Agent/k_strategy_agent_output.ipynb
 docs/AI_vs_Quant_InvestIA.pdf
 docs/*.pdf
 logs/k_agent.log
+FETCH_HEAD

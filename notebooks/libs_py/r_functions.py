@@ -16,6 +16,7 @@ from u_functions import (
     my_display, Emoji, BOLD, RESET, DIM, compare_selection_columns,
     build_company_df_with_cache, download_data, extract_tickers_from_wikipedia,
     generate_rotational_portfolio_performance, now, send_email_report, send_portfolio_performance,
+    _TSLAB_OUTPUTS_DIR,
 )
 import yfinance as yf
 from datetime import datetime
@@ -27,11 +28,15 @@ from typing import Union, List, Dict, Tuple, Any
 from itertools import product, combinations
 
 import warnings
+import requests
+import re
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 from dataclasses import dataclass, field
 from typing import Optional
+
+from pathlib import Path
 
 """
 rotational_engine.py
@@ -40,8 +45,8 @@ Refactoring del motore rotazionale.
 
 ARCHITETTURA A 3 LAYER:
   Layer 1 – Pure functions   : compute_rebal_dates, compute_scores, select_tickers, build_weight_matrix
-  Layer 2 – Orchestrator     : run_rotational_engine  →  RotationalResult (dataclass)
-  Layer 3 – VBT Bridge       : build_portfolio, build_portfolio_from_wfo_summary
+  Layer 2 – Orchestrator     : run_rotational_engine_legacy_cluster  →  RotationalResult (dataclass)
+  Layer 3 – VBT Bridge       : build_portfolio, build_portfolio_from_wfo_summary_legacy_cluster
 
 PRINCIPI:
   - Arità STABILE: niente più tuple a lunghezza variabile.
@@ -52,8 +57,8 @@ PRINCIPI:
   - bottom_tickers sperimentale → rimosso dal core, disponibile come utility separata.
 
 COMPATIBILITÀ COI NOTEBOOK:
-  - build_rotational_portfolios_from_wfo_result  → alias di build_portfolio_from_wfo_summary
-  - collect_selections_from_summary              → alias di collect_wfo_selections
+  - build_rotational_portfolios_from_wfo_result  → alias di build_portfolio_from_wfo_summary_legacy_cluster
+  - collect_selections_from_summary              → alias di collect_wfo_selections_legacy_cluster
   - build_rotational_portfolios_from_selections  → alias di build_portfolio_from_selections
 """
 
@@ -444,7 +449,7 @@ def build_weight_matrix(
 @dataclass
 class RotationalResult:
     """
-    Output strutturato di run_rotational_engine.
+    Output strutturato di run_rotational_engine_legacy_cluster.
 
     Attributes
     ----------
@@ -468,7 +473,7 @@ class RotationalResult:
     params: EngineParams
 
 
-def run_rotational_engine(
+def run_rotational_engine_legacy_cluster(
     prices: pd.DataFrame,
     params: EngineParams,
     vol_cache: dict | None = None,
@@ -641,9 +646,9 @@ def build_portfolio(
     Parameters
     ----------
     result : RotationalResult
-        Output di run_rotational_engine.
+        Output di run_rotational_engine_legacy_cluster.
     prices : pd.DataFrame
-        Prezzi (stesso universo usato per run_rotational_engine).
+        Prezzi (stesso universo usato per run_rotational_engine_legacy_cluster).
     benchmark_data : pd.Series, optional
     init_cash : float
     start_date, end_date : str | Timestamp, optional
@@ -734,7 +739,7 @@ def build_portfolio(
 
 # ─────────────────────────────────────────────────────────────────────────────
 
-def collect_wfo_selections(
+def collect_wfo_selections_legacy_cluster(
     summary_df: pd.DataFrame,
     stocks_data: pd.DataFrame,
     benchmark_data: pd.Series | None = None,
@@ -746,7 +751,7 @@ def collect_wfo_selections(
 
     Per ogni finestra temporale in summary_df:
       1. Calcola i parametri del motore dalla riga del summary.
-      2. Esegue run_rotational_engine sulla slice di prezzo corretta
+      2. Esegue run_rotational_engine_legacy_cluster sulla slice di prezzo corretta
          (con buffer storico per garantire il lookback).
       3. Tiene solo le selezioni nella finestra [start, end].
       4. NON fa doppio carry-forward: le selezioni già contengono il flag 'carried'.
@@ -823,7 +828,7 @@ def collect_wfo_selections(
                               f"{len(keep)}/{len(stocks.columns)} ticker")
 
         # ── run engine sulla slice ────────────────────────────────────────────
-        engine_result = run_rotational_engine(
+        engine_result = run_rotational_engine_legacy_cluster(
             prices=slice_prices,
             params=params,
             debug=debug,
@@ -870,7 +875,7 @@ def collect_wfo_selections(
 
 # ─────────────────────────────────────────────────────────────────────────────
 
-def build_portfolio_from_wfo_summary(
+def build_portfolio_from_wfo_summary_legacy_cluster(
     summary_df: pd.DataFrame,
     stocks_data: pd.DataFrame,
     benchmark_data: pd.Series,
@@ -889,7 +894,7 @@ def build_portfolio_from_wfo_summary(
     Funzione di alto livello per i Notebook.
 
     Pipeline completa:
-      1. collect_wfo_selections  → selections DataFrame
+      1. collect_wfo_selections_legacy_cluster  → selections DataFrame
       2. build_portfolio_from_selections → (pf_rot, pf_bh)
 
     Returns
@@ -897,7 +902,7 @@ def build_portfolio_from_wfo_summary(
     (pf_rot, pf_bh, selections)
         selections : pd.DataFrame con colonne tickers, carried, n_passed_filters
     """
-    selections = collect_wfo_selections(
+    selections = collect_wfo_selections_legacy_cluster(
         summary_df=summary_df,
         stocks_data=stocks_data,
         benchmark_data=benchmark_data,
@@ -907,7 +912,7 @@ def build_portfolio_from_wfo_summary(
 
     if selections.empty:
         raise ValueError(
-            "collect_wfo_selections ha restituito un DataFrame vuoto. "
+            "collect_wfo_selections_legacy_cluster ha restituito un DataFrame vuoto. "
             "Controlla summary_df e stocks_data."
         )
 
@@ -1226,8 +1231,8 @@ def _print_report(pf_rot, pf_bh, selections: pd.DataFrame, portfolio_name: str, 
 # ALIAS PER RETROCOMPATIBILITÀ COI NOTEBOOK ESISTENTI
 # ─────────────────────────────────────────────────────────────────────────────
 
-build_rotational_portfolios_from_wfo_result   = build_portfolio_from_wfo_summary
-collect_selections_from_summary               = collect_wfo_selections
+build_rotational_portfolios_from_wfo_result   = build_portfolio_from_wfo_summary_legacy_cluster
+collect_selections_from_summary               = collect_wfo_selections_legacy_cluster
 build_rotational_portfolios_from_selections   = build_portfolio_from_selections
 
 # Funzioni di utilita' per i rotazionali
@@ -1285,6 +1290,29 @@ def compute_portfolio_ticker_intersections(debug: bool = False) -> Dict[str, Lis
 # Load/save WFO
 
 
+def _compact_param_grid(param_grid):
+    """
+    Se param_grid e' una lista di combinazioni gia' espanse (nuovo formato
+    N-engine da build_wfo_grid), la ricomprime in un dict {chiave: valori
+    distinti} per i metadati — evita di scrivere migliaia di dict nel
+    commento header del CSV (bug: file da MB invece di KB, causato dal
+    cambio di tipo di ritorno di build_wfo_grid rispetto al vecchio
+    formato dict compatto usato da build_cluster_grids_legacy_cluster).
+
+    Se param_grid e' gia' un dict (vecchio formato / legacy cluster),
+    lo ritorna invariato.
+    """
+    if isinstance(param_grid, dict):
+        return param_grid
+    if isinstance(param_grid, list) and param_grid and isinstance(param_grid[0], dict):
+        compact = {}
+        for combo in param_grid:
+            for k, v in combo.items():
+                compact.setdefault(k, set()).add(v)
+        return {k: sorted(vals, key=str) for k, vals in compact.items()}
+    return param_grid
+
+
 def save_rotational_wfo_summary(
     summary_df: pd.DataFrame,
     file_path: str,
@@ -1330,7 +1358,7 @@ def save_rotational_wfo_summary(
         "metric": metric,
         "ratio": ratio,
         "force_next_year_params": force_next_year_params,
-        "param_grid": param_grid,
+        "param_grid": _compact_param_grid(param_grid),
     }
 
     if extra_meta:
@@ -1349,14 +1377,13 @@ def save_rotational_wfo_summary(
 
     # --- Stampa finale di conferma ---
     print(
-        "[WFO SAVE OK] "
-        f"File salvato correttamente: '{file_path}' | "
-        f"Righe: {len(summary_df)} | "
-        f"Metric: {metric} | "
-        f"Ratio: {ratio} | "
-        f"Data start: {start_date} | "
-        f"Data end: {end_date} | "
-        f"Force next year params: {force_next_year_params}"
+        f"File salvato correttamente: '{file_path}'"
+        f"\nRighe: {len(summary_df)}"
+        f"\nMetric: {metric}"
+        f"\nRatio: {ratio}"
+        f"\nData start: {start_date}"
+        f"\nData end: {end_date}"
+        f"\nForce next year params: {force_next_year_params}"
     )
 
 def load_wfo_summary(file_path: str) -> pd.DataFrame:
@@ -1390,6 +1417,330 @@ def read_wfo_metadata(file_path: str) -> dict:
                 key, _, val = line.partition("=")
                 meta[key.strip()] = val.strip()
     return meta
+
+
+def save_wfo_portfolio_objects(
+    results_pipeline: dict,
+    output_dir,
+    ptf_name: str,
+    year: int,
+    profilo: str,
+    pipeline_constants: dict,
+) -> dict:
+    """
+    Salva i Portfolio object vectorbt e i DataFrame di selezione per ogni engine,
+    più un JSON con le costanti di pipeline, nella run directory.
+
+    Usa lo stesso meccanismo di k_strategies:
+      - vbt.Portfolio  →  .save()  (pickle nativo vectorbt)
+      - pd.DataFrame   →  pd.to_pickle()
+
+    Nomi file per engine E in output_dir/:
+      {ptf}_{year}_{E}_pf_rot.pkl
+      {ptf}_{year}_{E}_pf_rot_base.pkl
+      {ptf}_{year}_{E}_pf_benchmark.pkl
+      {ptf}_{year}_{E}_pf_benchmark_base.pkl
+      {ptf}_{year}_{E}_sel_tickers.pkl
+      {ptf}_{year}_{E}_sel_tickers_base.pkl
+    File condiviso (una sola volta):
+      {ptf}_{year}_run_metadata.json
+
+    Parameters
+    ----------
+    results_pipeline : dict[engine, dict]
+        Output del loop run_wfo_pipeline (chiavi: pf_rot, pf_rot_base,
+        pf_benchmark, pf_benchmark_base, sel_tickers, sel_tickers_base).
+    output_dir : path-like
+        Directory della run corrente (già esistente).
+    ptf_name : str
+        Nome portafoglio (usato nel prefisso file).
+    year : int
+        Anno WFO (usato nel prefisso file).
+    profilo : str
+        Profilo di rischio ("satellite" | "core"); salvato nei metadati.
+    pipeline_constants : dict
+        Costanti di pipeline da salvare nel JSON per il resume:
+        ratio, metric, force_next_year_params, autoreduce,
+        risk_on_off, pipeline_start_date.
+
+    Returns
+    -------
+    dict con i path salvati (chiave engine → dict path).
+    """
+    import pickle
+    import json
+    from pathlib import Path
+    from datetime import datetime
+
+    out = Path(output_dir)
+    _ptf_key = ptf_name.replace(' ', '_').lower()
+    prefix = f"{_ptf_key}_{year}"
+    saved = {}
+
+    for engine, rp in results_pipeline.items():
+        if rp is None:
+            continue
+        eng_key = engine.lower()
+        engine_paths = {}
+
+        _PF_OBJECTS = {
+            "pf_rot":           rp.get("pf_rot"),
+            "pf_rot_base":      rp.get("pf_rot_base"),
+            "pf_benchmark":     rp.get("pf_benchmark"),
+            "pf_benchmark_base": rp.get("pf_benchmark_base"),
+        }
+        _DF_OBJECTS = {
+            "sel_tickers":      rp.get("sel_tickers"),
+            "sel_tickers_base": rp.get("sel_tickers_base"),
+        }
+
+        for key, pf in _PF_OBJECTS.items():
+            if pf is None:
+                engine_paths[key] = None
+                continue
+            fpath = str(out / f"{prefix}_{eng_key}_{key}.pkl")
+            try:
+                pf.save(fpath)
+                engine_paths[key] = fpath
+            except Exception as e:
+                print(f"[WARN] save_wfo_portfolio_objects: impossibile salvare {key} ({engine}): {e}")
+                engine_paths[key] = None
+
+        for key, df in _DF_OBJECTS.items():
+            if df is None:
+                engine_paths[key] = None
+                continue
+            fpath = str(out / f"{prefix}_{eng_key}_{key}.pkl")
+            try:
+                pd.to_pickle(df, fpath)
+                engine_paths[key] = fpath
+            except Exception as e:
+                print(f"[WARN] save_wfo_portfolio_objects: impossibile salvare {key} ({engine}): {e}")
+                engine_paths[key] = None
+
+        saved[engine] = engine_paths
+
+        sizes = [
+            os.path.getsize(p) / 1024 / 1024
+            for p in engine_paths.values() if p and os.path.exists(p)
+        ]
+        total_mb = sum(sizes)
+        print(f"[save_wfo_portfolio_objects] {engine}: {total_mb:.1f} MB totali in {len(sizes)} file")
+        if total_mb > 50:
+            print(
+                f"[WARN] {engine}: dimensione pickle supera 50 MB ({total_mb:.1f} MB). "
+                "Valuta se ridurre l'universo o usare un formato più compatto."
+            )
+
+    # JSON metadati condivisi
+    meta_path = str(out / f"{prefix}_run_metadata.json")
+    meta = {
+        "ptf_name":              ptf_name,
+        "profilo":               profilo,
+        "year":                  year,
+        "engines":               list(results_pipeline.keys()),
+        "ratio":                 pipeline_constants.get("ratio"),
+        "metric":                pipeline_constants.get("metric"),
+        "force_next_year_params": pipeline_constants.get("force_next_year_params"),
+        "autoreduce":            pipeline_constants.get("autoreduce"),
+        "risk_on_off":           pipeline_constants.get("risk_on_off"),
+        "pipeline_start_date":   str(pipeline_constants.get("pipeline_start_date")),
+        "created_at":            datetime.now().isoformat(timespec="seconds"),
+        "pickle_files":          saved,
+    }
+    try:
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2, default=str)
+        print(f"[save_wfo_portfolio_objects] Metadati salvati: {meta_path}")
+    except Exception as e:
+        print(f"[WARN] save_wfo_portfolio_objects: impossibile salvare metadati JSON: {e}")
+
+    return saved
+
+
+def load_wfo_results_for_resume(
+    ptf_name: str,
+    profilo: str,
+    run_dir=None,
+) -> dict:
+    """
+    Carica i risultati di una run WFO precedente per riprendere l'analisi
+    da §4a (compare_wfo_pipelines) senza rieseguire §1-§3.
+
+    **Scope del resume — IMPORTANTE**
+    Questa funzione copre ESCLUSIVAMENTE §4a (confronto WFO visuale e
+    tabella metriche). Per proseguire a §4b (run_ofc_mc_pipeline) sono
+    ancora necessari, forniti separatamente dall'utente:
+      - stocks_data          (prezzi adjusted per l'universo)
+      - benchmark_data       (prezzi adjusted del benchmark)
+      - benchmark_data_raw   (prezzi raw del benchmark)
+      - regime               (serie storica risk-on/off Momentum, non salvata)
+    Questi dati NON vengono caricati da questa funzione.
+
+    Parameters
+    ----------
+    ptf_name : str
+        Nome portafoglio (corrisponde a ptf_name usato durante il salvataggio).
+    profilo : str
+        Profilo di rischio ("satellite" | "core").
+    run_dir : path-like | None
+        Path esplicito della run directory. Se None, risolve automaticamente
+        <IQ_OUTPUTS_DIR>/r_analysis/<ptf_name>/<profilo>/latest/.
+
+    Returns
+    -------
+    dict con le chiavi:
+        "results_pipeline"      dict[engine, dict] con pf_rot, pf_rot_base,
+                                pf_benchmark, pf_benchmark_base, sel_tickers,
+                                sel_tickers_base, summary_df per ciascun engine.
+        "pipeline_start_date"   pd.Timestamp
+        "ratio"                 str (es. "3:1")
+        "metric"                str (es. "Sharpe Ratio")
+        "force_next_year_params" bool
+        "autoreduce"            bool
+        "risk_on_off"           bool
+        "run_dir"               Path della run caricata
+        "profilo"               str
+        "ptf_name"              str
+        "year"                  int
+    """
+    import json
+    import pickle
+    from pathlib import Path
+
+    _ptf_key = ptf_name.replace(' ', '_').lower()
+    outputs_dir = _TSLAB_OUTPUTS_DIR
+
+    if run_dir is None:
+        latest = Path(outputs_dir) / "r_analysis" / _ptf_key / profilo / "latest"
+        if not latest.exists():
+            raise FileNotFoundError(
+                f"Symlink 'latest' non trovato: {latest}\n"
+                f"Esegui almeno una volta la pipeline con profilo='{profilo}' "
+                f"per il portafoglio '{_ptf_key}'."
+            )
+        run_dir = latest.resolve()
+    else:
+        run_dir = Path(run_dir).resolve()
+
+    if not run_dir.is_dir():
+        raise FileNotFoundError(f"Run directory non trovata: {run_dir}")
+
+    prefix_candidates = [
+        p.name.split("_run_metadata.json")[0]
+        for p in run_dir.glob("*_run_metadata.json")
+    ]
+    if not prefix_candidates:
+        raise FileNotFoundError(
+            f"Nessun file *_run_metadata.json trovato in {run_dir}.\n"
+            "La run è stata generata con una versione precedente di save_wfo_portfolio_objects?"
+        )
+    prefix = prefix_candidates[0]
+
+    meta_path = run_dir / f"{prefix}_run_metadata.json"
+    with open(meta_path, "r", encoding="utf-8") as f:
+        meta = json.load(f)
+
+    engines = meta.get("engines", [])
+    year = meta.get("year")
+    results_pipeline = {}
+
+    for engine in engines:
+        eng_key = engine.lower()
+        rp = {}
+
+        _PF_KEYS = ("pf_rot", "pf_rot_base", "pf_benchmark", "pf_benchmark_base")
+        _DF_KEYS = ("sel_tickers", "sel_tickers_base")
+
+        for key in _PF_KEYS:
+            fpath = run_dir / f"{prefix}_{eng_key}_{key}.pkl"
+            if fpath.exists():
+                try:
+                    import vectorbt as vbt
+                    rp[key] = vbt.Portfolio.load(str(fpath))
+                except Exception as e:
+                    print(f"[WARN] load_wfo_results_for_resume: errore caricamento {key} ({engine}): {e}")
+                    rp[key] = None
+            else:
+                print(f"[WARN] load_wfo_results_for_resume: file non trovato: {fpath}")
+                rp[key] = None
+
+        for key in _DF_KEYS:
+            fpath = run_dir / f"{prefix}_{eng_key}_{key}.pkl"
+            if fpath.exists():
+                try:
+                    rp[key] = pd.read_pickle(str(fpath))
+                except Exception as e:
+                    print(f"[WARN] load_wfo_results_for_resume: errore caricamento {key} ({engine}): {e}")
+                    rp[key] = None
+            else:
+                print(f"[WARN] load_wfo_results_for_resume: file non trovato: {fpath}")
+                rp[key] = None
+
+        # summary_df dal CSV audit (audit trail leggibile)
+        csv_candidates = list(run_dir.glob(f"{prefix}_{eng_key}.csv"))
+        if csv_candidates:
+            try:
+                rp["summary_df"] = load_wfo_summary(str(csv_candidates[0]))
+            except Exception as e:
+                print(f"[WARN] load_wfo_results_for_resume: errore caricamento summary_df ({engine}): {e}")
+                rp["summary_df"] = None
+        else:
+            print(f"[WARN] load_wfo_results_for_resume: CSV audit non trovato per engine {engine} in {run_dir}")
+            rp["summary_df"] = None
+
+        results_pipeline[engine] = rp
+
+    pipeline_start_date_str = meta.get("pipeline_start_date")
+    pipeline_start_date = pd.Timestamp(pipeline_start_date_str) if pipeline_start_date_str else None
+
+    print(f"[load_wfo_results_for_resume] Caricato da: {run_dir}")
+    print(f"  PTF: {meta.get('ptf_name')}  |  Profilo: {meta.get('profilo')}  |  Anno: {year}")
+    print(f"  Engines: {engines}")
+    for eng, rp in results_pipeline.items():
+        n_ok = sum(1 for v in rp.values() if v is not None)
+        print(f"  {eng}: {n_ok}/{len(rp)} oggetti caricati")
+
+    return {
+        "results_pipeline":       results_pipeline,
+        "pipeline_start_date":    pipeline_start_date,
+        "ratio":                  meta.get("ratio"),
+        "metric":                 meta.get("metric"),
+        "force_next_year_params": meta.get("force_next_year_params"),
+        "autoreduce":             meta.get("autoreduce"),
+        "risk_on_off":            meta.get("risk_on_off"),
+        "run_dir":                run_dir,
+        "profilo":                meta.get("profilo"),
+        "ptf_name":               meta.get("ptf_name"),
+        "year":                   year,
+    }
+
+
+def apply_risk_off_overlay(
+    stocks_data: pd.DataFrame,
+    risk_off_data: pd.DataFrame,
+    verbose: bool = False,
+) -> pd.DataFrame:
+    """
+    Allarga l'universo principale aggiungendo i ticker difensivi di risk_off_data.
+    Duplicati già presenti in stocks_data vengono rimossi prima del concat.
+    Condivisa tra run_wfo_pipeline (analisi) e r_run_portfolio (runtime).
+    """
+    duplicate_cols = stocks_data.columns.intersection(risk_off_data.columns)
+    if len(duplicate_cols) > 0 and verbose:
+        print(
+            f"[WARN] Rimossi da risk_off_data ticker già presenti "
+            f"in stocks_data: {list(duplicate_cols)}"
+        )
+    risk_off_clean = risk_off_data.drop(columns=duplicate_cols, errors='ignore')
+    oos_data = pd.concat([stocks_data, risk_off_clean], axis=1)
+    if oos_data.columns.duplicated().any():
+        dup_cols = oos_data.columns[oos_data.columns.duplicated()].tolist()
+        raise ValueError(
+            f"Duplicate columns in oos_data after concat: {dup_cols}"
+        )
+    return oos_data
+
 
 # =============================================================================
 # PUNTO 3: PRE-CALCOLO VOLATILITY MULTI-WINDOW
@@ -1452,7 +1803,7 @@ def precalculate_volatility_multiwindow(
     return vol_dict
 
     
-def walk_forward_rotational(
+def walk_forward_rotational_legacy_cluster(
     stocks_data: pd.DataFrame,
     benchmark_data: pd.Series,
     param_grid: Dict[str, List[Any]],
@@ -1900,7 +2251,7 @@ def walk_forward_rotational(
                 buf_s  = pd.Timestamp(test_start) - pd.Timedelta(days=buffer_days)
                 te_px  = stocks_data.loc[buf_s:test_end]
                 te_bch = benchmark_data.loc[buf_s:test_end]
-                pf_te, *_ = build_rotational_portfolios_vbt(
+                pf_te, *_ = build_rotational_portfolios_vbt_legacy_cluster(
                     stocks_data=te_px,
                     benchmark_data=te_bch,
                     plot=plot,
@@ -2044,9 +2395,9 @@ def walk_forward_rotational(
 
 
 """
-build_rotational_portfolios_vbt.py
+build_rotational_portfolios_vbt_legacy_cluster.py
 ===================================
-Versione migliorata di build_rotational_portfolios_vbt.
+Versione migliorata di build_rotational_portfolios_vbt_legacy_cluster.
 
 MIGLIORAMENTI RISPETTO ALL'ORIGINALE
 -------------------------------------
@@ -2092,7 +2443,7 @@ MIGLIORAMENTI RISPETTO ALL'ORIGINALE
 @dataclass
 class RotationalVbtResult:
     """
-    Output strutturato di build_rotational_portfolios_vbt.
+    Output strutturato di build_rotational_portfolios_vbt_legacy_cluster.
 
     Attributi sempre presenti
     -------------------------
@@ -2220,7 +2571,7 @@ def _build_vbt_bh(bench_px: pd.Series, prices_index: pd.DatetimeIndex, init_cash
 # FUNZIONE PRINCIPALE
 # ─────────────────────────────────────────────────────────────────────────────
 
-def build_rotational_portfolios_vbt(
+def build_rotational_portfolios_vbt_legacy_cluster(
     stocks_data: pd.DataFrame,
     benchmark_data: pd.Series | None = None,
     # ── frequenza e lookback ─────────────────────────────────────────────────
@@ -2980,7 +3331,7 @@ def analyze_portfolio_metrics(
                 df_norm[col] = df[col]
         return df_norm.clip(0, 1)
 
-    print(f'{Emoji.SETUP} Analisi Portfolio Rotazionale ({BOLD}{portfolio_name}{RESET}):\n')
+    # print(f'{Emoji.SETUP} Analisi Portfolio Rotazionale ({BOLD}{portfolio_name}{RESET}):\n')
     
     # -----------------------------------------------------------------
     # Prepara dataframe input
@@ -3489,27 +3840,12 @@ def r_run_portfolio(
     # --- Carica summary WFO ---
     summary_df=load_wfo_summary(wfo_file_save)
 
-    # --- Leggi metadata (deployed_path, deployed_variant) dall'header del CSV ---
+    # --- Leggi metadata (deployed_engine, deployed_variant) dall'header del CSV ---
     _wfo_meta         = read_wfo_metadata(wfo_file_save)
     _deployed_variant = _wfo_meta.get("deployed_variant", "BASE").strip().upper()
-    _deployed_path    = _wfo_meta.get("deployed_path", "STANDARD").strip().upper()
 
-    # --- Overlay Risk ON/OFF (solo path STANDARD) ---
+    # --- Overlay Risk ON/OFF ---
     if _deployed_variant == "RISK_ON_OFF":
-        if _deployed_path != "STANDARD":
-            print(
-                f"[ERROR] Risk ON/OFF supportato solo per path STANDARD nel runtime — "
-                f"PTF: {portfolio_title}, path: {_deployed_path}. "
-                "Path Cluster accantonato, vedi piano operativo item 0.d."
-            )
-            return {
-                "dry_run": False,
-                "portfolio": portfolio_title,
-                "error": (
-                    f"RISK_ON_OFF non supportato per path {_deployed_path} "
-                    f"nel runtime (PTF: {portfolio_title})"
-                ),
-            }
         from k_tickers import risk_off_tickers as _default_risk_off_tickers
         _risk_off_tickers = portfolio.get("risk_off_tickers", _default_risk_off_tickers)
         risk_off_data = download_data(
@@ -4018,11 +4354,33 @@ def analyze_rebalance_actions_for_report(
     def _fmt(lst, title, icon):
         if not lst:
             return ""
-        s = f"<h3>{icon} {title} ({len(lst)}):</h3><ul>"
+        s = f"<h3>{icon} {title} ({len(lst)}):</h3>"
+        s += (
+            "<table style='border-collapse: collapse; margin-top: 8px;'>"
+            "<thead>"
+            "<tr style='background-color: #f0f0f0;'>"
+            "<th style='border: 1px solid #ccc; padding: 6px 12px; text-align: left;'>Ticker</th>"
+            "<th style='border: 1px solid #ccc; padding: 6px 12px; text-align: left;'>Company</th>"
+            "<th style='border: 1px solid #ccc; padding: 6px 12px; text-align: left;'>ISIN</th>"
+            "</tr>"
+            "</thead>"
+            "<tbody>"
+        )
         for t in lst:
-            company = company_data.at[t, "Company"] if t in company_data.index else ""
-            s += f"<li><b>{t}</b> – {company}</li>"
-        return s + "</ul>"
+            if t in company_data.index:
+                company = company_data.at[t, "Company"] if pd.notna(company_data.at[t, "Company"]) else ""
+                isin    = company_data.at[t, "ISIN"]    if pd.notna(company_data.at[t, "ISIN"])    else ""
+            else:
+                company = ""
+                isin    = ""
+            s += (
+                "<tr>"
+                f"<td style='border: 1px solid #ccc; padding: 6px 12px;'>{t}</td>"
+                f"<td style='border: 1px solid #ccc; padding: 6px 12px;'>{company}</td>"
+                f"<td style='border: 1px solid #ccc; padding: 6px 12px; font-family: monospace;'>{isin}</td>"
+                "</tr>"
+            )
+        return s + "</tbody></table>"
 
     html += _fmt(to_keep, "Da mantenere", "📌")
     html += _fmt(to_sell, "Da vendere", "❌")
@@ -4832,7 +5190,7 @@ def monte_carlo_ranking_noise(
     Parametri
     ----------
     stocks_data : pd.DataFrame
-        Prezzi storici (stesso formato di build_rotational_portfolios_vbt)
+        Prezzi storici (stesso formato di build_rotational_portfolios_vbt_legacy_cluster)
     benchmark_data : pd.Series, optional
         Benchmark per confronto
     params : dict
@@ -4857,7 +5215,7 @@ def monte_carlo_ranking_noise(
         Progress bar
     build_portfolio_func : Callable, optional
         Funzione custom per build portfolio.
-        Se None, usa build_rotational_portfolios_vbt di default.
+        Se None, usa build_rotational_portfolios_vbt_legacy_cluster di default.
         
     Returns
     -------
@@ -4887,7 +5245,7 @@ def monte_carlo_ranking_noise(
     
     # Set build function (assume disponibile)
     if build_portfolio_func is None:
-            build_portfolio_func = build_rotational_portfolios_vbt
+            build_portfolio_func = build_rotational_portfolios_vbt_legacy_cluster
 
     
     # =========================================================================
@@ -5586,7 +5944,7 @@ def monte_carlo_wfo_per_window(
     benchmark_data : pd.Series
         Benchmark completo
     wfo_summary : pd.DataFrame
-        Output di walk_forward_rotational() con colonne:
+        Output di walk_forward_rotational_legacy_cluster() con colonne:
         - Index: Window string (es. "2020-01-01→2020-12-31 | 2021-01-01→2021-12-31")
         - Parametri: rebalance_frequency, n_top, momentum_lookback_days, etc.
         - TestStart, TestEnd: date OOS (se presenti, altrimenti parsate da Index)
@@ -5797,7 +6155,7 @@ def monte_carlo_wfo_per_window(
             try:
                 # Build con noise usando monkey-patch interno
                 # NOTA: build_rotational_portfolios_from_wfo_result chiama
-                # build_rotational_portfolios_vbt internamente, quindi
+                # build_rotational_portfolios_vbt_legacy_cluster internamente, quindi
                 # il monkey-patch su pd.Series.rank funziona
                 
                 original_rank = pd.Series.rank
@@ -7004,7 +7362,7 @@ def plot_dendrogram_colored(Z, labels, n_clusters, ax, palette=None):
     return cluster_colors  # restituisce la palette per allineare lo scatter
 
     
-def analyze_and_cluster_universe(
+def analyze_and_cluster_universe_legacy_cluster(
     prices            : pd.DataFrame,
     n_clusters        : int  = 3,
     lookback_days     : int  = 252,
@@ -7051,7 +7409,7 @@ def analyze_and_cluster_universe(
 
     if metrics_df.empty:
         raise ValueError(
-            f"analyze_and_cluster_universe: nessun ticker ha dati sufficienti "
+            f"analyze_and_cluster_universe_legacy_cluster: nessun ticker ha dati sufficienti "
             f"(ret ha {len(ret)} righe, soglia minima=60). "
             f"Riduci lookback_days o verifica i dati in ingresso."
         )
@@ -7230,7 +7588,7 @@ def analyze_and_cluster_universe(
                 f"(Sharpe={sharpe_by_cluster[cid]:.2f})"
             )
 
-    if plot:
+    if plot or (save_plots and plots_dir is not None):
         palette = ['#1D9E75', '#378ADD', '#BA7517', '#9F77DD', '#D85A30']
 
         fig, axes = plt.subplots(1, 2, figsize=(16, 5))
@@ -7300,7 +7658,10 @@ def analyze_and_cluster_universe(
                     bbox_inches=_extent_padded,
                 )
 
-        plt.show()
+        if plot:
+            plt.show()
+        else:
+            plt.close(fig)
 
     return dict(
         cluster_map       = cluster_map,
@@ -7312,7 +7673,7 @@ def analyze_and_cluster_universe(
     )
 
 
-def plot_cluster_heatmap(
+def plot_cluster_heatmap_legacy_cluster(
     cluster_result : dict,
     stocks_data    : pd.DataFrame,
     lookback_days  : int  = 252,
@@ -7326,7 +7687,7 @@ def plot_cluster_heatmap(
 
     Parameters
     ----------
-    cluster_result : output di analyze_and_cluster_universe (chiavi: cluster_groups, cluster_labels)
+    cluster_result : output di analyze_and_cluster_universe_legacy_cluster (chiavi: cluster_groups, cluster_labels)
     stocks_data    : prezzi storici — stessa sorgente passata al WFO
     lookback_days  : finestra in giorni — DEVE corrispondere al lookback_days del run WFO
     save_path      : se fornito, salva la figura nel path indicato (dpi=150)
@@ -7341,7 +7702,7 @@ def plot_cluster_heatmap(
         sorted_t.extend([t for t in cluster_groups[cid] if t in stocks_data.columns])
 
     if not sorted_t:
-        print("plot_cluster_heatmap: nessun ticker disponibile in stocks_data — skip")
+        print("plot_cluster_heatmap_legacy_cluster: nessun ticker disponibile in stocks_data — skip")
         return
 
     ret_sub = (stocks_data[sorted_t]
@@ -7386,7 +7747,7 @@ def plot_cluster_heatmap(
     plt.show()
 
 
-def _build_cluster_pool_labels(profile: str, regime_val: int) -> set:
+def _build_cluster_pool_labels_legacy_cluster(profile: str, regime_val: int) -> set:
     """
     Ritorna le label cluster eleggibili come pool di selezione per una finestra,
     in base a profile e regime (1=ON, 0=OFF).
@@ -7417,7 +7778,76 @@ def resolve_n_top(asset_type: str = "stock", profile: str = "satellite") -> list
     return _N_TOP_TABLE.get((asset_type, profile), [3, 5, 8])
 
 
-def build_cluster_grids(
+def build_wfo_grid(
+    engine: str = "Momentum",
+    profile: str = "satellite",
+    asset_type: str = "stock",
+) -> list:
+    """
+    Factory: restituisce la griglia WFO per l'engine specificato come lista
+    di combinazioni già espanse (ogni dict = una combinazione completa di parametri).
+
+    engine='Momentum'    → 3 combinazioni paired (momentum_weight ∈ {0.5, 0.7, 1.0},
+                           ivol_weight = 1 - momentum_weight, sortino/idio = 0).
+                           Compatibile con walk_forward_rotational().
+    engine='Multifactor' → prodotto cartesiano completo dei 4 pesi ∈ {0, 0.5, 1.0}
+                           (81 combinazioni peso × dimensioni base).
+                           Compatibile con walk_forward_rotational().
+    """
+    from itertools import product as _product
+
+    if engine not in ("Momentum", "Multifactor"):
+        raise ValueError(
+            f"build_wfo_grid: engine={engine!r} non riconosciuto. "
+            "Valori validi: 'Momentum' | 'Multifactor'."
+        )
+
+    n_top = resolve_n_top(asset_type, profile)
+
+    _base_keys = [
+        "rebalance_frequency",
+        "momentum_lookback_days",
+        "riskparity_lookback_days",
+        "n_top",
+        "filter_ema",
+        "filter_volatility",
+        "filter_min_momentum",
+    ]
+    _base_vals = [
+        ["QE", "ME"],
+        [10, 20, 40, 60],
+        [10, 20, 40, 60],
+        n_top,
+        [True, False],
+        [True, False],
+        [True, False],
+    ]
+
+    combos: list = []
+
+    if engine == "Momentum":
+        _weight_pairs = [
+            {"momentum_weight": 0.5, "ivol_weight": 0.5, "sortino_weight": 0.0, "idio_weight": 0.0},
+            {"momentum_weight": 0.7, "ivol_weight": 0.3, "sortino_weight": 0.0, "idio_weight": 0.0},
+            {"momentum_weight": 1.0, "ivol_weight": 0.0, "sortino_weight": 0.0, "idio_weight": 0.0},
+        ]
+        for base_combo in _product(*_base_vals):
+            base_dict = dict(zip(_base_keys, base_combo))
+            for wp in _weight_pairs:
+                combos.append({**base_dict, **wp})
+    else:  # Multifactor
+        _w_vals = [0.0, 0.5, 1.0]
+        _w_keys = ["momentum_weight", "ivol_weight", "sortino_weight", "idio_weight"]
+        for base_combo in _product(*_base_vals):
+            base_dict = dict(zip(_base_keys, base_combo))
+            for w_combo in _product(*[_w_vals] * 4):
+                wd = dict(zip(_w_keys, w_combo))
+                combos.append({**base_dict, **wd})
+
+    return combos
+
+
+def build_cluster_grids_legacy_cluster(
     cluster_labels : dict,
     cluster_groups : dict,
     n_top_min      : int   = 2,           # mantenuto per compatibilità, non più usato
@@ -7496,7 +7926,7 @@ def build_cluster_grids(
     return grids
 
 
-def run_clustered_wfo(
+def run_clustered_wfo_legacy_cluster(
     cluster_groups  : dict,
     cluster_grids   : dict,
     cluster_labels  : dict,
@@ -7519,7 +7949,7 @@ def run_clustered_wfo(
         print(f"{'='*55}")
 
         try:
-            summary_df = walk_forward_rotational(
+            summary_df = walk_forward_rotational_legacy_cluster(
                 stocks_data            = cluster_data,
                 param_grid             = grid,
                 ratio                  = wfo_kwargs.get('ratio', 'sharpe'),
@@ -7554,7 +7984,7 @@ def run_clustered_wfo(
     return results
 
 
-def compute_market_regime(
+def compute_market_regime_legacy_cluster(
     prices        : pd.DataFrame,
     equity_tickers: list,
     ema_fast      : int   = 50,
@@ -7572,32 +8002,6 @@ def compute_market_regime(
     print(f"Regime ON : {regime.mean():.1%} del tempo")
     print(f"Regime OFF: {(1 - regime.mean()):.1%} del tempo")
     return regime
-
-
-def apply_risk_off_overlay(
-    stocks_data: pd.DataFrame,
-    risk_off_data: pd.DataFrame,
-    verbose: bool = False,
-) -> pd.DataFrame:
-    """
-    Allarga l'universo principale aggiungendo i ticker difensivi di risk_off_data.
-    Duplicati già presenti in stocks_data vengono rimossi prima del concat.
-    Condivisa tra run_wfo_pipeline (analisi) e r_run_portfolio (runtime).
-    """
-    duplicate_cols = stocks_data.columns.intersection(risk_off_data.columns)
-    if len(duplicate_cols) > 0 and verbose:
-        print(
-            f"[WARN] Rimossi da risk_off_data ticker già presenti "
-            f"in stocks_data: {list(duplicate_cols)}"
-        )
-    risk_off_clean = risk_off_data.drop(columns=duplicate_cols, errors='ignore')
-    oos_data = pd.concat([stocks_data, risk_off_clean], axis=1)
-    if oos_data.columns.duplicated().any():
-        dup_cols = oos_data.columns[oos_data.columns.duplicated()].tolist()
-        raise ValueError(
-            f"Duplicate columns in oos_data after concat: {dup_cols}"
-        )
-    return oos_data
 
 
 def aggregate_cluster_portfolios(
@@ -7638,7 +8042,7 @@ def aggregate_cluster_portfolios(
 
         print(f"\nCostruzione portafoglio Cluster {cid} [{label}]...")
         try:
-            pf_rot, pf_bh, selections = build_portfolio_from_wfo_summary(
+            pf_rot, pf_bh, selections = build_portfolio_from_wfo_summary_legacy_cluster(
                 summary_df      = res['summary_df'],
                 stocks_data     = cluster_data,
                 benchmark_data  = benchmark_data,
@@ -7731,10 +8135,10 @@ def aggregate_cluster_portfolios(
     )
 
 
-# cluster_grids = build_cluster_grids(cluster_result['cluster_labels'])
+# cluster_grids = build_cluster_grids_legacy_cluster(cluster_result['cluster_labels'])
 
 
-def merge_cluster_summary_dfs(
+def merge_cluster_summary_dfs_legacy_cluster(
     wfo_results    : dict,
     cluster_labels : dict,
     regime         : pd.Series,
@@ -7945,7 +8349,7 @@ def merge_cluster_summary_dfs(
     return merged
 
 
-def get_clean_summary_df(merged: pd.DataFrame) -> pd.DataFrame:
+def get_clean_summary_df_legacy_cluster(merged: pd.DataFrame) -> pd.DataFrame:
     """
     Rimuove le colonne di debug prima di passare a
     build_rotational_portfolios_from_wfo_result.
@@ -7956,7 +8360,7 @@ def get_clean_summary_df(merged: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def _compute_cluster_checkpoints(
+def _compute_cluster_checkpoints_legacy_cluster(
     prices_df        : pd.DataFrame,
     full_start_date,
     full_end_date,
@@ -7991,7 +8395,7 @@ def _compute_cluster_checkpoints(
         print(f"[CLUSTER CP {i+1}/{k}] Partizione su dati fino al "
               f"{chk_date.date()} ({len(px_chk)} trading days)…")
         try:
-            result = analyze_and_cluster_universe(
+            result = analyze_and_cluster_universe_legacy_cluster(
                 prices            = px_chk,
                 n_clusters        = n_clusters,
                 lookback_days     = len(px_chk) + 1,  # usa tutti i dati disponibili
@@ -8017,7 +8421,7 @@ def _compute_cluster_checkpoints(
     return checkpoints
 
 
-def _cluster_partition_for_window(window_start_date, checkpoints: list) -> dict:
+def _cluster_partition_for_window_legacy_cluster(window_start_date, checkpoints: list) -> dict:
     """
     Returns the cluster_result from the most recent checkpoint with
     checkpoint_date <= window_start_date.
@@ -8043,7 +8447,7 @@ def _cluster_partition_for_window(window_start_date, checkpoints: list) -> dict:
     return best
 
 
-def run_wfo_pipeline(
+def run_wfo_pipeline_legacy_cluster(
     # Dati
     stocks_data_raw  : pd.DataFrame,
     stocks_data      : pd.DataFrame,
@@ -8061,6 +8465,9 @@ def run_wfo_pipeline(
     verbose          : bool  = False,
     force_next_year_params: bool = True,
     param_grid       : dict  = None,
+
+    # Audit trail
+    wfo_audit_path_base      = None,   # str | Path | None — se fornito, salva audit CSV con suffisso .std_raw.csv / .cluster_raw.csv
 
     # Parametri clustering
     use_clustering   : bool  = True,
@@ -8201,7 +8608,7 @@ def run_wfo_pipeline(
             if verbose:
                 print(f"[CLUSTER CONTROL] Tentativo clustering con k={k_try}")
 
-            candidate_result = analyze_and_cluster_universe(
+            candidate_result = analyze_and_cluster_universe_legacy_cluster(
                 prices            = prices_df,
                 n_clusters        = k_try,
                 lookback_days     = lookback_days,
@@ -8246,7 +8653,7 @@ def run_wfo_pipeline(
                     "Fallback forzato a k=2."
                 )
 
-            cluster_result = analyze_and_cluster_universe(
+            cluster_result = analyze_and_cluster_universe_legacy_cluster(
                 prices            = prices_df,
                 n_clusters        = 2,
                 lookback_days     = lookback_days,
@@ -8277,7 +8684,7 @@ def run_wfo_pipeline(
                 else None
             )
 
-            plot_cluster_heatmap(
+            plot_cluster_heatmap_legacy_cluster(
                 cluster_result = cluster_result,
                 stocks_data    = prices_df,
                 lookback_days  = lookback_days,
@@ -8291,7 +8698,7 @@ def run_wfo_pipeline(
             print("\n" + "="*55)
             print("STEP 1b — Cluster checkpoint espandenti (k=3)")
             print("="*55)
-            _cluster_checkpoints = _compute_cluster_checkpoints(
+            _cluster_checkpoints = _compute_cluster_checkpoints_legacy_cluster(
                 prices_df         = prices_df,
                 full_start_date   = prices_df.index.min(),
                 full_end_date     = prices_df.index.max(),
@@ -8332,7 +8739,7 @@ def run_wfo_pipeline(
         print("STEP 2 — Griglie WFO per cluster")
         print("="*55)
 
-        cluster_grids = build_cluster_grids(
+        cluster_grids = build_cluster_grids_legacy_cluster(
             cluster_labels = cluster_result['cluster_labels'],
             cluster_groups = cluster_result['cluster_groups'],
             n_top_min      = n_top_min,
@@ -8348,7 +8755,7 @@ def run_wfo_pipeline(
         print("STEP 3 — WFO per cluster")
         print("="*55)
 
-        wfo_results = run_clustered_wfo(
+        wfo_results = run_clustered_wfo_legacy_cluster(
             cluster_groups  = cluster_result['cluster_groups'],
             cluster_grids   = cluster_grids,
             cluster_labels  = cluster_result['cluster_labels'],
@@ -8384,7 +8791,7 @@ def run_wfo_pipeline(
             print(f"⚠️  Nessun ticker '{_lbl_str}' — uso tutti")
             equity_tickers = tickers
 
-        regime = compute_market_regime(
+        regime = compute_market_regime_legacy_cluster(
             prices          = stocks_data[equity_tickers].dropna(how='all'),
             equity_tickers  = equity_tickers,
         )
@@ -8396,14 +8803,14 @@ def run_wfo_pipeline(
         print("STEP 5 — Merge summary_df aggregato")
         print("="*55)
 
-        merged_summary = merge_cluster_summary_dfs(
+        merged_summary = merge_cluster_summary_dfs_legacy_cluster(
             wfo_results    = wfo_results,
             cluster_labels = cluster_result['cluster_labels'],
             regime         = regime,
             profile        = profile,
         )
 
-        summary_df_final = get_clean_summary_df(merged_summary)
+        summary_df_final = get_clean_summary_df_legacy_cluster(merged_summary)
 
         df_disp = summary_df_final.rename(columns=short_map)
         my_display(
@@ -8434,7 +8841,7 @@ def run_wfo_pipeline(
         if param_grid is None:
             raise ValueError("use_clustering=False richiede param_grid")
 
-        summary_df_final = walk_forward_rotational(
+        summary_df_final = walk_forward_rotational_legacy_cluster(
             stocks_data            = stocks_data_raw[tickers],
             param_grid             = param_grid,
             ratio                  = ratio,
@@ -8467,11 +8874,36 @@ def run_wfo_pipeline(
 
     results['summary_df'] = summary_df_final
 
+    if wfo_audit_path_base is not None:
+        _audit_suffix = "cluster_raw" if use_clustering else "std_raw"
+        _audit_path   = f"{wfo_audit_path_base}.{_audit_suffix}.csv"
+        save_rotational_wfo_summary(
+            summary_df             = summary_df_final,
+            start_date             = start_date,
+            end_date               = end_date,
+            file_path              = _audit_path,
+            param_grid             = param_grid,
+            metric                 = metric,
+            ratio                  = ratio,
+            force_next_year_params = force_next_year_params,
+            extra_meta             = {
+                "audit_only":    True,
+                "use_clustering": use_clustering,
+                "note": (
+                    "calcolo grezzo — NON usato dal runtime; il file "
+                    "runtime e' salvato separatamente dopo la decisione "
+                    "manuale (JN §8)"
+                ),
+            },
+        )
+        print(f"[run_wfo_pipeline_legacy_cluster] Audit trail salvato "
+              f"({'Cluster' if use_clustering else 'Standard'}): {_audit_path}")
+
     # ----------------------------------------------------------
-    # STEP 6 — Portafogli
+    # STEP 2 — Portafogli
     # ----------------------------------------------------------
     print("\n" + "="*55)
-    print("STEP 6 — Costruzione portafogli")
+    print("STEP 2 — Costruzione portafogli")
     print("="*55)
 
     # Pool eleggibili per-finestra (solo path Cluster)
@@ -8494,14 +8926,14 @@ def run_wfo_pipeline(
                   f"identico per tutte le finestre OFF.")
         for _win, _row in merged_summary.iterrows():
             _regime_val  = int(_row.get('_regime', 1))
-            _pool_labels = _build_cluster_pool_labels(profile, _regime_val)
+            _pool_labels = _build_cluster_pool_labels_legacy_cluster(profile, _regime_val)
 
             # Partizione per-finestra (expanding) o statica (legacy)
             if _use_expanding:
                 try:
                     _win_start_str = str(_win).split("→")[0].strip()
                     _win_start     = pd.Timestamp(_win_start_str)
-                    _cp_res        = _cluster_partition_for_window(_win_start, _cluster_checkpoints)
+                    _cp_res        = _cluster_partition_for_window_legacy_cluster(_win_start, _cluster_checkpoints)
                     _cmap_win    = _cp_res['cluster_map']
                     _clabels_win = _cp_res['cluster_labels']
                 except Exception as _e_cp:
@@ -8540,7 +8972,28 @@ def run_wfo_pipeline(
     if risk_on_off and risk_off_data is not None:
         print("\n▶ Portafoglio CON Risk ON/OFF...")
 
-        oos_data = apply_risk_off_overlay(stocks_data, risk_off_data, verbose=verbose)
+        # Evita duplicati tra universo principale e asset risk-off
+        duplicate_risk_off_cols = stocks_data.columns.intersection(risk_off_data.columns)
+
+        if len(duplicate_risk_off_cols) > 0 and verbose:
+            print(
+                f"[WARN] Rimossi da risk_off_data ticker già presenti "
+                f"in stocks_data: {list(duplicate_risk_off_cols)}"
+            )
+
+        risk_off_clean = risk_off_data.drop(
+            columns=duplicate_risk_off_cols,
+            errors='ignore'
+        )
+
+        oos_data = pd.concat([stocks_data, risk_off_clean], axis=1)
+
+        # Guardia difensiva finale
+        if oos_data.columns.duplicated().any():
+            dup_cols = oos_data.columns[oos_data.columns.duplicated()].tolist()
+            raise ValueError(
+                f"Duplicate columns in oos_data after concat: {dup_cols}"
+            )
 
         mode_label = "Clustered" if use_clustering else "Standard"
 
@@ -8623,9 +9076,15 @@ def run_wfo_pipeline(
             highlight_best=True,
         )
 
-    # Confronto selezioni
+ 
     if risk_on_off and results['sel_tickers'] is not None:
-        print("\n▶ Confronto selezioni Risk ON/OFF vs Base...")
+        
+        # ----------------------------------------------------------
+        # STEP 3 — Confronto selezioni
+        # ----------------------------------------------------------
+        print("\n" + "="*55)
+        print("STEP 3 — Confronto selezioni")
+        print("="*55)
 
         _ = compare_selection_columns(
             results['sel_tickers'],
@@ -8636,11 +9095,6 @@ def run_wfo_pipeline(
             compare_only_common_dates=True,
             sort_table_by_diff=True
         )
-        # _ = compare_selection_columns(
-        #     results['sel_tickers'],
-        #     results['sel_tickers_base'],
-        #     column="tickers"
-        # )
 
     print("\n" + "="*55)
     print("PIPELINE COMPLETATA")
@@ -8648,233 +9102,8 @@ def run_wfo_pipeline(
 
     return results
     
-def compare_wfo_pipelines(
-    results_std     : dict,
-    results_cluster : dict = None,
-    portfolio_title : str  = "Portfolio",
-    benchmark_title : str  = "Benchmark",
-    plot_radar      : bool = True,
-    plot            : bool = True,
-    start_date      : str  = None,
-    end_date        : str  = None,
-    save_plots      : bool = False,
-    plots_dir              = None,    # str | Path | None
-    apply_gradient  : bool = True,
-) -> "Union[pd.DataFrame, pd.io.formats.style.Styler]":
-    """
-    Confronta i portafogli prodotti da una o due run di run_wfo_pipeline
-    (Standard, ed eventualmente Clustered, ciascuno con/senza Risk ON/OFF).
 
-    Se results_cluster è None, il confronto si limita ai 2 portafogli
-    Standard (con/senza Risk ON/OFF) + benchmark — nessun riferimento al
-    Cluster viene generato (né in tabella, né nei plot).
 
-    Genera:
-    1. Grafico lineare dei rendimenti cumulativi (portafogli disponibili + benchmark).
-    2. Tabella comparativa delle metriche con heatmap (via analyze_portfolio_metrics).
-    3. Radar chart normalizzato su range assoluti (se plot_radar=True).
-
-    Parameters
-    ----------
-    results_std     : dict        Risultato di run_wfo_pipeline (Standard).
-    results_cluster : dict | None Risultato di run_wfo_pipeline (Cluster),
-                                   se disponibile. Default None: il
-                                   confronto Cluster viene omesso.
-    portfolio_title : str   Titolo base usato nelle etichette.
-    benchmark_title : str   Etichetta del benchmark.
-    plot_radar      : bool  Se True genera il radar chart.
-    start_date      : str   Filtro opzionale inizio (es. "2020-01-01").
-    end_date        : str   Filtro opzionale fine   (es. "2024-12-31").
-
-    Returns
-    -------
-    pd.DataFrame  Tabella metriche restituita da analyze_portfolio_metrics.
-    """
-    import plotly.graph_objects as go
-
-    # ------------------------------------------------------------------
-    # Etichette
-    # ------------------------------------------------------------------
-    lbl = {
-        'std_on'   : "Std \u2013 Risk ON/OFF",
-        'std_base' : "Std \u2013 Base",
-        'cl_on'    : "Cluster \u2013 Risk ON/OFF",
-        'cl_base'  : "Cluster \u2013 Base",
-    }
-
-    # ------------------------------------------------------------------
-    # Raccolta rendimenti cumulativi (base 1.0)
-    # ------------------------------------------------------------------
-    cumrets = {}
-
-    def _add(pf, label):
-        if pf is None:
-            return
-        cr = pf.cumulative_returns() + 1
-        cumrets[label] = cr.squeeze() if isinstance(cr, pd.DataFrame) else cr
-
-    _add(results_std.get('pf_rot'),          lbl['std_on'])
-    _add(results_std.get('pf_rot_base'),     lbl['std_base'])
-    if results_cluster is not None:
-        _add(results_cluster.get('pf_rot'),      lbl['cl_on'])
-        _add(results_cluster.get('pf_rot_base'), lbl['cl_base'])
-
-    if not cumrets:
-        print("Nessun portafoglio disponibile per il confronto.")
-        return pd.DataFrame()
-
-    # Benchmark (primo disponibile)
-    pf_bm = (
-        results_std.get('pf_benchmark') or
-        results_std.get('pf_benchmark_base') or
-        (results_cluster.get('pf_benchmark') if results_cluster is not None else None) or
-        (results_cluster.get('pf_benchmark_base') if results_cluster is not None else None)
-    )
-    bm_cumret = None
-    if pf_bm is not None:
-        bm_cr = pf_bm.cumulative_returns() + 1
-        bm_cumret = bm_cr.squeeze() if isinstance(bm_cr, pd.DataFrame) else bm_cr
-
-    port_cumrets = pd.DataFrame(cumrets)
-
-    # Filtro data
-    if start_date:
-        port_cumrets = port_cumrets[port_cumrets.index >= start_date]
-        if bm_cumret is not None:
-            bm_cumret = bm_cumret[bm_cumret.index >= start_date]
-    if end_date:
-        port_cumrets = port_cumrets[port_cumrets.index <= end_date]
-        if bm_cumret is not None:
-            bm_cumret = bm_cumret[bm_cumret.index <= end_date]
-
-    port_cumrets = port_cumrets.dropna(how='all')
-
-    # ------------------------------------------------------------------
-    # 1. Plot cumulativo
-    # ------------------------------------------------------------------
-    COLORS = {
-        lbl['std_on']   : "#1f77b4",  # blu pieno
-        lbl['std_base'] : "#aec7e8",  # blu chiaro
-        lbl['cl_on']    : "#d62728",  # rosso pieno
-        lbl['cl_base']  : "#f5a7a7",  # rosso chiaro
-        benchmark_title   : "#7f7f7f",  # grigio
-    }
-    DASH = {
-        lbl['std_on']   : "solid",
-        lbl['std_base'] : "dot",
-        lbl['cl_on']    : "solid",
-        lbl['cl_base']  : "dot",
-        benchmark_title   : "dash",
-    }
-    WIDTH = {
-        lbl['std_on']   : 2.5,
-        lbl['std_base'] : 1.5,
-        lbl['cl_on']    : 2.5,
-        lbl['cl_base']  : 1.5,
-        benchmark_title   : 1.5,
-    }
-
-    fig = go.Figure()
-    for col in port_cumrets.columns:
-        fig.add_trace(go.Scatter(
-            x    = port_cumrets.index,
-            y    = port_cumrets[col],
-            name = col,
-            mode = "lines",
-            line = dict(
-                color = COLORS.get(col, "#333333"),
-                dash  = DASH.get(col, "solid"),
-                width = WIDTH.get(col, 2),
-            ),
-        ))
-
-    if bm_cumret is not None:
-        bm_aligned = bm_cumret.reindex(port_cumrets.index, method="ffill")
-        fig.add_trace(go.Scatter(
-            x    = bm_aligned.index,
-            y    = bm_aligned.values,
-            name = benchmark_title,
-            mode = "lines",
-            line = dict(
-                color = COLORS[benchmark_title],
-                dash  = DASH[benchmark_title],
-                width = WIDTH[benchmark_title],
-            ),
-        ))
-
-    fig.update_layout(
-        title       = f"Confronto rendimenti cumulativi \u2013 {portfolio_title}",
-        xaxis_title = "Data",
-        yaxis_title = "Rendimento cumulativo (base 1.0)",
-        height      = 550,
-        width       = 1100,
-        template    = "plotly_white",
-        hovermode   = "x unified",
-        legend      = dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-    )
-    if save_plots and plots_dir is not None:
-        from pathlib import Path as _P
-        _pd = _P(str(plots_dir))
-        _pd.mkdir(parents=True, exist_ok=True)
-        # equity_comparison.png — tutti i path disponibili (fig già costruita sopra)
-        fig.write_image(str(_pd / 'equity_comparison.png'))
-        # equity_std.png — solo percorsi Standard
-        _std_cols = [c for c in port_cumrets.columns
-                     if c in (lbl['std_on'], lbl['std_base'])]
-        if _std_cols:
-            _fig_std = go.Figure()
-            for _c in _std_cols:
-                _fig_std.add_trace(go.Scatter(
-                    x=port_cumrets.index, y=port_cumrets[_c], name=_c, mode='lines',
-                    line=dict(color=COLORS.get(_c,'#333'), dash=DASH.get(_c,'solid'), width=WIDTH.get(_c,2))))
-            if bm_cumret is not None:
-                _ba = bm_cumret.reindex(port_cumrets.index, method='ffill')
-                _fig_std.add_trace(go.Scatter(
-                    x=_ba.index, y=_ba.values, name=benchmark_title, mode='lines',
-                    line=dict(color=COLORS[benchmark_title], dash=DASH[benchmark_title], width=WIDTH[benchmark_title])))
-            _fig_std.update_layout(title=f"Rendimenti cumulativi \u2013 Standard \u2013 {portfolio_title}",
-                                   height=400, width=900, template='plotly_white',
-                                   hovermode='x unified')
-            _fig_std.write_image(str(_pd / 'equity_std.png'))
-        # equity_cluster.png — solo se results_cluster è stato passato
-        if results_cluster is not None:
-            _cl_cols = [c for c in port_cumrets.columns
-                        if c in (lbl.get('cl_on',''), lbl.get('cl_base',''))]
-            if _cl_cols:
-                _fig_cl = go.Figure()
-                for _c in _cl_cols:
-                    _fig_cl.add_trace(go.Scatter(
-                        x=port_cumrets.index, y=port_cumrets[_c], name=_c, mode='lines',
-                        line=dict(color=COLORS.get(_c,'#333'), dash=DASH.get(_c,'solid'), width=WIDTH.get(_c,2))))
-                if bm_cumret is not None:
-                    _ba = bm_cumret.reindex(port_cumrets.index, method='ffill')
-                    _fig_cl.add_trace(go.Scatter(
-                        x=_ba.index, y=_ba.values, name=benchmark_title, mode='lines',
-                        line=dict(color=COLORS[benchmark_title], dash=DASH[benchmark_title], width=WIDTH[benchmark_title])))
-                _fig_cl.update_layout(title=f"Rendimenti cumulativi \u2013 Cluster \u2013 {portfolio_title}",
-                                       height=400, width=900, template='plotly_white',
-                                       hovermode='x unified')
-                _fig_cl.write_image(str(_pd / 'equity_cluster.png'))
-    if plot:
-        fig.show()
-
-    # ------------------------------------------------------------------
-    # 2. Tabella metriche + Radar (via analyze_portfolio_metrics)
-    # ------------------------------------------------------------------
-    metrics_df = analyze_portfolio_metrics(
-        port_cumrets     = port_cumrets,
-        portfolio_name   = f"Confronto WFO \u2013 {portfolio_title}",
-        benchmark_cumret = bm_cumret,
-        freq             = "D",
-        sort_by          = "CAGR (%)",
-        ascending        = False,
-        plot_radar       = plot_radar,
-        radar_metrics    = "all",
-        highlight_best   = True,
-        apply_gradient   = apply_gradient,
-    )
-
-    return metrics_df
 
 def run_rotational_portfolio_performance(
     portfolio: dict,
@@ -10214,7 +10443,7 @@ def run_mc_confidence_intervals_rotational(
     ----------
     pf_rot         : vbt.Portfolio  portafoglio principale (con risk on/off se disponibile)
     pf_rot_base    : vbt.Portfolio  portafoglio base (senza risk on/off)
-    regime         : pd.Series 0/1 da compute_market_regime, oppure None
+    regime         : pd.Series 0/1 da compute_market_regime_legacy_cluster, oppure None
     benchmark_data : pd.Series      prezzi giornalieri del benchmark di mercato
     init_cash      : float
     n_simulations  : int            default 1000
@@ -10365,6 +10594,10 @@ def run_mc_confidence_intervals_rotational(
                 )[0]
                 _fig_s.update_layout(xaxis=dict(rangeselector=dict(visible=False)))
                 _fig_s.write_image(str(_Path(plots_dir) / fname))
+        _mc_plot_ci_summary(
+            ci_results, {'pf_rot': equity_actual, 'pf_rot_base': equity_base},
+            save_path=str(_Path(plots_dir) / 'mc_ci.png'),
+        )
 
     # ── SRI / MRM PRIIPs Cat. 3 ─────────────────────────────────────────────
     _init_cash_val  = float(pf_rot.init_cash)
@@ -10570,6 +10803,15 @@ def run_mc_skill_tests_rotational(
         _save_ss = (str(_Path(plots_dir) / 'mc_skill_summary.png')
                     if save_plots and plots_dir is not None else None)
         _mc_plot_skill_summary(skill_results, save_path=_save_ss).show()
+    elif save_plots and plots_dir is not None:
+        from pathlib import Path as _Path
+        for key, res in skill_results.items():
+            if res is None or key not in _skill_filenames:
+                continue
+            _mc_plot_skill_test(test_labels[key], res, equity_actual,
+                                save_path=str(_Path(plots_dir) / _skill_filenames[key]))
+        _mc_plot_skill_summary(skill_results,
+                               save_path=str(_Path(plots_dir) / 'mc_skill_summary.png'))
 
     return skill_results, skill_summary_df
 
@@ -11342,106 +11584,6 @@ def _split_history_into_periods(
     return periods
 
 
-def _evaluate_ptf_on_period(
-    ptf_config: dict,
-    params: "EngineParams",
-    start_date,
-    end_date,
-    metric: str = "CAGR",
-) -> float:
-    """
-    Evaluate a rotational portfolio on a date range and return a scalar metric.
-
-    Runs the rotational engine on a warmup-extended price slice, then builds
-    the VBT portfolio restricted to [start_date, end_date].
-
-    Parameters
-    ----------
-    ptf_config : dict
-        Required keys:
-            - ``stocks_data`` (pd.DataFrame): full price history, trading-day
-              DatetimeIndex, columns = tickers.  Must cover at least
-              [start_date - params.required_warmup_days(), end_date].
-            - ``init_cash`` (float): initial portfolio value.
-        Extra keys are silently ignored.
-    params : EngineParams
-        Single parameter set to evaluate (e.g. best row from wfo_summary_df).
-    start_date : str or pd.Timestamp
-        Inclusive start of the evaluation window.
-    end_date : str or pd.Timestamp
-        Inclusive end of the evaluation window.
-    metric : str, default "CAGR"
-        Performance metric.  One of {"CAGR", "Sharpe", "Calmar"}.
-        All three are higher-is-better.
-
-    Returns
-    -------
-    float
-        Scalar metric value over [start_date, end_date].
-        Returns ``np.nan`` if the equity curve has fewer than 2 points in
-        the window (engine ran but produced no valid data).
-
-    Raises
-    ------
-    ValueError
-        If metric is not in {"CAGR", "Sharpe", "Calmar"} (message includes
-        the received value), or if the price slice for the window is empty.
-    KeyError
-        If ``stocks_data`` or ``init_cash`` are missing from ptf_config.
-
-    Notes
-    -----
-    Metric conventions match ``_mc_compute_metrics`` (academic formulas):
-      CAGR   = (V_end/V_start)^(252/n_days) - 1
-      Sharpe = mean(daily_rets) * 252 / (std * sqrt(252)), rf = 0
-      Calmar = CAGR / abs(MaxDD)
-    These differ from vbt's built-in annualisation; do not mix the two.
-    """
-    if metric not in _STABILITY_METRICS:
-        raise ValueError(
-            f"metric={metric!r} is not supported. "
-            f"Supported metrics: {sorted(_STABILITY_METRICS)}. "
-            f"To use lower-is-better metrics (MaxDD, Volatility, Ulcer), "
-            f"handle sign convention explicitly before calling this function."
-        )
-
-    stocks_data: pd.DataFrame = ptf_config["stocks_data"]
-    init_cash: float = float(ptf_config["init_cash"])
-
-    start = pd.Timestamp(start_date).normalize()
-    end   = pd.Timestamp(end_date).normalize()
-
-    buf_start = start - pd.Timedelta(days=params.required_warmup_days())
-    slice_prices = stocks_data.loc[buf_start:end].copy()
-
-    if slice_prices.empty:
-        raise ValueError(
-            f"Empty price slice for [{buf_start.date()}, {end.date()}]. "
-            f"Ensure ptf_config['stocks_data'] covers at least "
-            f"{buf_start.date()} → {end.date()}."
-        )
-
-    rot_result = run_rotational_engine(slice_prices, params)
-
-    pf_rot, _ = build_portfolio(
-        rot_result,
-        slice_prices,
-        init_cash=init_cash,
-        start_date=start,
-        end_date=end,
-        plot=False,
-        show_report=False,
-    )
-
-    equity = pf_rot.value()
-    if isinstance(equity, pd.DataFrame):
-        equity = equity.squeeze()
-
-    if len(equity) < 2:
-        return np.nan
-
-    return float(_mc_compute_metrics(equity)[metric])
-
 _STABILITY_FLAGS = frozenset({
     "filter_ema",
     "filter_volatility",
@@ -11449,175 +11591,6 @@ _STABILITY_FLAGS = frozenset({
     "use_acceleration",
 })
 
-
-def _evaluate_flag_stability(
-    ptf_config: dict,
-    base_params: dict,
-    flag_name: str,
-    full_start_date,
-    full_end_date,
-    metric: str = "CAGR",
-    k: int = 3,
-    n_top_anchors: list[int] | None = None,
-) -> dict:
-    """
-    Evaluate whether toggling a binary flag improves performance consistently
-    across k contiguous sub-periods of the portfolio history.
-
-    For each sub-period and each value of n_top in n_top_anchors, runs the
-    rotational engine twice (flag=True vs flag=False) and records the delta.
-    Aggregates per-period deltas across anchors, then classifies the flag as
-    coherently beneficial, coherently harmful, or unstable.
-
-    Parameters
-    ----------
-    ptf_config : dict
-        Required keys: ``stocks_data`` (pd.DataFrame), ``init_cash`` (float).
-        Passed directly to ``_evaluate_ptf_on_period``.
-    base_params : dict
-        Base parameter set (e.g. a row of wfo_summary_df as a plain dict).
-        ``flag_name`` and ``n_top`` are overridden internally; all other keys
-        are passed through to ``EngineParams.from_dict``.
-    flag_name : str
-        The boolean flag to test. Must be one of:
-        ``{"filter_ema", "filter_volatility", "filter_min_momentum",
-        "use_acceleration"}``.
-    full_start_date : str or pd.Timestamp
-        Inclusive start of the full evaluation range.
-    full_end_date : str or pd.Timestamp
-        Inclusive end of the full evaluation range.
-    metric : str, default "CAGR"
-        Performance metric. One of ``{"CAGR", "Sharpe", "Calmar"}``.
-    k : int, default 3
-        Number of contiguous sub-periods.
-    n_top_anchors : list of int or None, default None
-        Values of n_top over which to average the flag delta.
-        Defaults to [3, 5, 8] if None.
-
-    Returns
-    -------
-    dict with keys:
-        flag_name, metric, k, n_top_anchors,
-        delta_per_period (list[float], length k),
-        delta_per_period_per_anchor (list[list[float]], shape k × len(anchors)),
-        mean_delta (float),
-        coherent_sign (bool),
-        recommended_value (bool),
-        diagnostic_note (str).
-
-    Raises
-    ------
-    ValueError
-        If flag_name not in the supported whitelist, or metric not supported.
-
-    Notes
-    -----
-    When one of the values in n_top_anchors coincides with
-    base_params['n_top'], the corresponding comparison varies ONLY the
-    flag (pure flag effect). For the other anchors, both the flag and n_top
-    vary simultaneously, so each delta measures the joint effect
-    "flag × concentration". This is intentional: averaging across anchors
-    captures the flag's effect under different portfolio concentrations,
-    not a single "centroid" comparison. Inspect delta_per_period_per_anchor
-    to disentangle the two effects if needed.
-    """
-    if flag_name not in _STABILITY_FLAGS:
-        raise ValueError(
-            f"flag_name={flag_name!r} is not a supported binary flag. "
-            f"Supported: {sorted(_STABILITY_FLAGS)}."
-        )
-    if metric not in _STABILITY_METRICS:
-        raise ValueError(
-            f"metric={metric!r} is not supported. "
-            f"Supported: {sorted(_STABILITY_METRICS)}."
-        )
-    if n_top_anchors is None:
-        n_top_anchors = [3, 5, 8]
-
-    periods = _split_history_into_periods(full_start_date, full_end_date, k)
-
-    delta_per_period_per_anchor: list[list[float]] = []
-
-    for s, e in periods:
-        deltas_for_period: list[float] = []
-        for anchor in n_top_anchors:
-            params_true  = {**base_params, flag_name: True,  "n_top": anchor}
-            params_false = {**base_params, flag_name: False, "n_top": anchor}
-
-            val_true  = _evaluate_ptf_on_period(
-                ptf_config, EngineParams.from_dict(params_true),  s, e, metric
-            )
-            val_false = _evaluate_ptf_on_period(
-                ptf_config, EngineParams.from_dict(params_false), s, e, metric
-            )
-
-            if np.isnan(val_true) or np.isnan(val_false):
-                warnings.warn(
-                    f"_evaluate_flag_stability: NaN for {flag_name}, "
-                    f"anchor={anchor}, period={s.date()}→{e.date()} "
-                    f"(true={val_true:.4f} false={val_false:.4f}). "
-                    f"Delta set to NaN.",
-                    stacklevel=2,
-                )
-                deltas_for_period.append(float("nan"))
-            else:
-                deltas_for_period.append(val_true - val_false)
-
-        delta_per_period_per_anchor.append(deltas_for_period)
-
-    # Aggregate per period: mean across anchors, ignoring NaN
-    delta_per_period: list[float] = []
-    for row in delta_per_period_per_anchor:
-        valid = [d for d in row if not np.isnan(d)]
-        if not valid:
-            delta_per_period.append(float("nan"))
-        else:
-            delta_per_period.append(float(np.mean(valid)))
-
-    # Sign coherence and recommendation
-    non_nan = [d for d in delta_per_period if not np.isnan(d)]
-    positive = sum(1 for d in non_nan if d > 0)
-    negative = sum(1 for d in non_nan if d < 0)
-    zero     = sum(1 for d in non_nan if d == 0)
-
-    mean_delta = float(np.mean(non_nan)) if non_nan else float("nan")
-    recommended_value: bool = False
-
-    if not non_nan:
-        coherent_sign = False
-        diagnostic_note = "all periods produced NaN — insufficient data"
-    elif len(non_nan) < k:
-        coherent_sign = False
-        diagnostic_note = f"incoherent: {k - len(non_nan)} NaN period(s)"
-    elif positive == k:
-        coherent_sign = True
-        recommended_value = True
-        diagnostic_note = "coherent positive"
-    elif negative == k:
-        coherent_sign = True
-        recommended_value = False
-        diagnostic_note = "coherent negative"
-    elif zero == k:
-        coherent_sign = False
-        recommended_value = False
-        diagnostic_note = "no effect (all deltas zero)"
-    else:
-        coherent_sign = False
-        recommended_value = False
-        diagnostic_note = "incoherent: mixed signs across periods"
-
-    return {
-        "flag_name":                    flag_name,
-        "metric":                       metric,
-        "k":                            k,
-        "n_top_anchors":                list(n_top_anchors),
-        "delta_per_period":             delta_per_period,
-        "delta_per_period_per_anchor":  delta_per_period_per_anchor,
-        "mean_delta":                   mean_delta,
-        "coherent_sign":                coherent_sign,
-        "recommended_value":            recommended_value,
-        "diagnostic_note":              diagnostic_note,
-    }
 
 def reduce_grid_via_stability(
     ptf_config: dict,
@@ -11628,10 +11601,16 @@ def reduce_grid_via_stability(
     k: int = 3,
     n_top_anchors: list[int] | None = None,
     verbose: bool = True,
+    benchmark_prices: pd.Series | None = None,
 ) -> tuple[dict, pd.DataFrame]:
     """
     Reduce a WFO parameter grid by fixing binary flags to their stability-
     recommended values, then return the reduced grid and a diagnostic report.
+
+    Supports both Momentum (v1) and Multifactor (v2) engines: if the grid
+    contains any of ivol_weight / sortino_weight / idio_weight, the v2
+    evaluator (_evaluate_flag_stability) is used automatically.
+    benchmark_prices is forwarded to the v2 evaluator when idio_weight > 0.
     """
     if metric not in _STABILITY_METRICS:
         raise ValueError(
@@ -11705,6 +11684,7 @@ def reduce_grid_via_stability(
             metric=metric,
             k=k,
             n_top_anchors=anchors,
+            benchmark_prices=benchmark_prices,
         )
 
     # ── Step 4: build reduced_grid ────────────────────────────────────────────
@@ -11930,6 +11910,7 @@ def _ofc_reconstruct_oos_equity(
     wfo_summary: pd.DataFrame,
     stocks_data: pd.DataFrame,
     init_cash: float = 100_000,
+    benchmark_prices: "pd.Series | None" = None,
 ) -> tuple[pd.Series, list[tuple]]:
     """
     Rebuild the compounded OOS equity curve from wfo_summary best params.
@@ -11950,15 +11931,13 @@ def _ofc_reconstruct_oos_equity(
         oos_end   = pd.Timestamp(parts_w[1].strip()).normalize()
         if oos_start > pd.Timestamp.today().normalize():   # ← ADD
             continue                                        # ← ADD
-        params    = EngineParams.from_dict(dict(row))
-        
-        params    = EngineParams.from_dict(dict(row))
+        params    = EngineParamsV2.from_dict(dict(row))
         buf_start = oos_start - pd.Timedelta(days=params.required_warmup_days())
         sl        = stocks.loc[buf_start:oos_end].copy()
         if sl.empty:
             continue
 
-        rot = run_rotational_engine(sl, params)
+        rot = run_rotational_engine(sl, params, benchmark_prices=benchmark_prices)
         pf_rot, _ = build_portfolio(
             rot, sl, init_cash=init_cash,
             start_date=oos_start, end_date=oos_end,
@@ -12110,7 +12089,9 @@ def _ofc_s3_bootstrap(
 
     p_value = sum(r >= actual_score for r in random_scores) / len(random_scores)
     passed  = p_value <= threshold
-    note    = (f"S3 ({m_norm}): actual={actual_score:.4f}, "
+    note    = (f"S3: {m_norm} nella finestra OOS ricostruita = {actual_score:.4f} "
+               f"(non è il {m_norm} realizzato canonico — è il punteggio calcolato "
+               f"sulla concatenazione OOS per il test bootstrap); "
                f"p={p_value:.3f} <=threshold={threshold:.2f}, "
                f"n={len(random_scores)} sims")
     return p_value, passed, note
@@ -12145,7 +12126,7 @@ def overfitting_check_rotational(
     wfo_summary: pd.DataFrame,
     stocks_data: pd.DataFrame,
     benchmark_data: pd.Series,
-    param_grid: dict,
+    param_grid: "dict | list",
     *,
     n_total_trials: int | None = None,
     profile: str = "satellite",
@@ -12156,6 +12137,7 @@ def overfitting_check_rotational(
     s4_dsr_threshold: float | None = None,
     min_signals_to_pass: int | None = None,
     stability_report: pd.DataFrame | None = None,
+    benchmark_prices: "pd.Series | None" = None,
     n_bootstrap: int = 1000,
     seed: int = 42,
     verbose: bool = True,
@@ -12173,14 +12155,14 @@ def overfitting_check_rotational(
     Parameters
     ----------
     wfo_summary : pd.DataFrame
-        Output of walk_forward_rotational. Index = Window strings
+        Output of walk_forward_rotational_legacy_cluster. Index = Window strings
         ("YYYY-MM-DD→YYYY-MM-DD"), columns = param_names + TrainScore + TestScore.
     stocks_data : pd.DataFrame
         Full price history. Must cover all WFO OOS windows + warmup buffer.
     benchmark_data : pd.Series
         Benchmark prices (reserved for future extensions; not used in current signals).
     param_grid : dict
-        Parameter grid used in walk_forward_rotational (or reduced grid if
+        Parameter grid used in walk_forward_rotational_legacy_cluster (or reduced grid if
         auto_reduce_grid was applied). Used for S1 diversity and S4 n_trials.
     n_total_trials : int or None
         Total strategy combinations explored during WFO.
@@ -12278,13 +12260,23 @@ def overfitting_check_rotational(
         )
     res_metric_norm = _ofc_normalize_metric(res_metric)
 
-    # ── 2. n_total_trials ─────────────────────────────────────────────────────
-    grid_card = _prod(len(v) for v in param_grid.values())
+    # ── 2. n_total_trials + normalise param_grid for signal helpers ───────────
+    if isinstance(param_grid, list):
+        # list[dict]: n_trials = len(list); derive unique-values dict for S1/S2
+        _n_trials_from_grid = len(param_grid)
+        _param_grid_dict: dict = {}
+        if param_grid:
+            for key in param_grid[0]:
+                _param_grid_dict[key] = list(dict.fromkeys(c[key] for c in param_grid))
+    else:
+        _n_trials_from_grid = _prod(len(v) for v in param_grid.values())
+        _param_grid_dict = param_grid
+
     if n_total_trials is None:
-        n_trials = grid_card
+        n_trials = _n_trials_from_grid
         warnings.warn(
             "overfitting_check_rotational: n_total_trials not specified. "
-            f"Using param_grid cardinality ({grid_card}). "
+            f"Using param_grid cardinality ({_n_trials_from_grid}). "
             "If auto_reduce_grid was applied, pass the ORIGINAL grid size "
             "for a correct S4 DSR penalty.",
             stacklevel=2,
@@ -12293,14 +12285,15 @@ def overfitting_check_rotational(
         n_trials = int(n_total_trials)
 
     # ── 3. Reconstruct OOS equity ─────────────────────────────────────────────
-    oos_equity, _ = _ofc_reconstruct_oos_equity(wfo_summary, stocks_data)
+    oos_equity, _ = _ofc_reconstruct_oos_equity(wfo_summary, stocks_data,
+                                                  benchmark_prices=benchmark_prices)
 
     # ── 4. Compute signals ────────────────────────────────────────────────────
-    s1_val, s1_pass, s1_note = _ofc_s1_plateau(wfo_summary, param_grid, res_plat)
+    s1_val, s1_pass, s1_note = _ofc_s1_plateau(wfo_summary, _param_grid_dict, res_plat)
     s2_val, s2_pass, s2_note = _ofc_s2_coherence(
-        wfo_summary, param_grid, stability_report, res_s2)
+        wfo_summary, _param_grid_dict, stability_report, res_s2)
     s3_val, s3_pass, s3_note = _ofc_s3_bootstrap(
-        oos_equity, stocks_data, wfo_summary, param_grid,
+        oos_equity, stocks_data, wfo_summary, _param_grid_dict,
         n_bootstrap, res_metric_norm, res_s3, seed,
     )
     s4_val, s4_pass, s4_note = _ofc_s4_dsr(oos_equity, n_trials, res_s4)
@@ -12381,16 +12374,11 @@ _RL_GRAY_LT = '#F5F6FA'
 _RL_GRAY_BD = '#D5D8DC'
 _RL_TEXT    = '#2C3E50'
 
-def compute_skill_profile(
-    *, mc_skill: dict,
-    ofc_report_std: dict | None = None,   # mantenuto per retro-compat firma, non più usato
-    mc_skill_cluster: dict | None = None,
-    ofc_report_cluster: dict | None = None,
-) -> tuple[str, str | None]:
+def compute_skill_profile(*, engines: dict) -> dict:
     '''
-    Deriva lo Skill Profile per Standard e (opzionalmente) Cluster basandosi sui 
-    test MC Block B: B1 (rotation reshuffle) e B2 (rebalance timing).
-    
+    Deriva lo Skill Profile per ogni engine basandosi sui test MC Block B:
+    B1 (rotation reshuffle) e B2 (rebalance timing).
+
     Logica:
       |  B1 PASS  |  B2 PASS  |  Profile          |
       |-----------|-----------|-------------------|
@@ -12398,36 +12386,32 @@ def compute_skill_profile(
       |    ✓      |    ✗      |  Selection-driven |
       |    ✗      |    ✓      |  Timing-driven    |
       |    ✗      |    ✗      |  No-skill         |
-    
+
     Soglia p-value per PASS: < 0.10
-    
-    Note storiche
-    -------------
-    Versione precedente (pre-B-006) usava (B1, S3-OFC) e aveva nomenclatura 
-    invertita: (B1 PASS, S3 FAIL) → "Timing-driven" anziché "Selection-driven".
-    Vedi TODO B-006 per dettagli. I parametri ofc_report_std/cluster sono 
-    mantenuti nella firma per retro-compatibilità ma non più usati.
-    
+
+    Parameters
+    ----------
+    engines : dict[str, dict]
+        Chiave = nome engine. Ogni valore deve contenere "mc_skill" (dict MC skill results).
+
     Returns
     -------
-    (profile_std, profile_cluster_or_None)
-        Tupla di due Skill Profile. Il secondo è None se mc_skill_cluster non passato.
+    dict[str, str]
+        {engine_name: skill_profile_str}
     '''
     def _profile(mc):
         if mc is None:
-            return None
+            return 'No-skill'
         b1 = mc.get('rotation_reshuffle', {}).get('p_values', {}).get('CAGR')
         b2 = mc.get('rebalance_timing', {}).get('p_values', {}).get('CAGR')
         b1_pass = (b1 is not None) and (b1 < 0.10)
         b2_pass = (b2 is not None) and (b2 < 0.10)
-        if b1_pass and b2_pass:        return 'Strong'
-        if b1_pass and not b2_pass:    return 'Selection-driven'
-        if not b1_pass and b2_pass:    return 'Timing-driven'
+        if b1_pass and b2_pass:     return 'Strong'
+        if b1_pass and not b2_pass: return 'Selection-driven'
+        if not b1_pass and b2_pass: return 'Timing-driven'
         return 'No-skill'
 
-    profile_std = _profile(mc_skill)
-    profile_cl  = _profile(mc_skill_cluster)
-    return profile_std, profile_cl
+    return {name: _profile(eng.get('mc_skill')) for name, eng in engines.items()}
     
 
 
@@ -12436,60 +12420,19 @@ def print_final_decision(
     portfolio_title: str,
     year: int,
     profile: str,
-    ofc_report_std: dict,
-    ofc_report_cluster: dict | None,
-    mc_skill: dict,
-    mc_ci,
-    skill_profile: str,
-    # NEW: opzionali per simmetria std/cluster
-    mc_skill_cluster: dict | None = None,
-    mc_ci_cluster=None,
-    skill_profile_cluster: str | None = None,
+    engines: dict,
 ) -> None:
-    
     '''
-    Stampa la DECISIONE FINALE: banner + tabella pandas 3 colonne.
-
-    Mantiene layout originale STEP 8: banner di 76 '=', titolo, tabella
-    Signal/WFO STANDARD/WFO CLUSTER, footer con invito a compilare.
+    Stampa la DECISIONE FINALE: banner + tabella pandas N+1 colonne.
 
     Parameters
     ----------
-    mc_ci : pd.DataFrame
-        ci_summary_df da run_all_mc_methods_rotational.
+    engines : dict[str, dict]
+        Chiave = nome engine. Ogni valore deve contenere:
+        "ofc_report", "mc_skill", "mc_ci", "skill_profile".
     '''
-    _sigs    = ofc_report_std.get('signals', {}) if ofc_report_std else {}
-    _cl_sigs = ofc_report_cluster.get('signals', {}) if ofc_report_cluster else {}
-    ofc_passed_std     = bool(ofc_report_std.get('promoted', False)) if ofc_report_std else False
-    ofc_passed_cluster = (
-        bool(ofc_report_cluster.get('promoted', False)) if ofc_report_cluster else None
-    )
+    _eng_names = list(engines.keys())
 
-    # Std (codice esistente)
-    reshuffle_pval   = mc_skill.get('rotation_reshuffle', {}).get('p_values', {}).get('CAGR')
-    reshuffle_passed = (reshuffle_pval is not None) and (reshuffle_pval < 0.10)
-    
-    ci_sharpe_p50 = None
-    try:
-        ci_sharpe_p50 = mc_ci.loc['A1 · IID Bootstrap', 'Sharpe_p50']
-    except Exception:
-        pass
-    
-    # Cluster — nessun fallback a std quando Cluster non eseguito
-    if mc_skill_cluster is not None:
-        reshuffle_pval_cl   = mc_skill_cluster.get('rotation_reshuffle', {}).get('p_values', {}).get('CAGR')
-        reshuffle_passed_cl = (reshuffle_pval_cl is not None) and (reshuffle_pval_cl < 0.10)
-    else:
-        reshuffle_pval_cl, reshuffle_passed_cl = None, False
-
-    ci_sharpe_p50_cl = None
-    if mc_ci_cluster is not None:
-        try:
-            ci_sharpe_p50_cl = mc_ci_cluster.loc['A1 · IID Bootstrap', 'Sharpe_p50']
-        except Exception:
-            pass
-
-    
     _sig_key_map = {
         'S1 plateau':    'S1_plateau',
         'S2 coherence':  'S2_coherence',
@@ -12502,37 +12445,49 @@ def print_final_decision(
             return 'N/A'
         return 'PASS' if v else 'FAIL'
 
-    _resh_str = (f"p={reshuffle_pval:.3f} {'PASS' if reshuffle_passed else 'FAIL'}"
-                 if reshuffle_pval is not None else 'N/A')
-    _resh_str_cl = (f"p={reshuffle_pval_cl:.3f} {'PASS' if reshuffle_passed_cl else 'FAIL'}"
-                    if reshuffle_pval_cl is not None else 'N/A')
-    _sharpe_str    = f"{ci_sharpe_p50:.3f}"    if ci_sharpe_p50    is not None else 'N/A'
-    _sharpe_str_cl = f"{ci_sharpe_p50_cl:.3f}" if ci_sharpe_p50_cl is not None else 'N/A'
+    # Per-engine values
+    def _eng_col_values(eng):
+        ofc_rep  = eng.get('ofc_report') or {}
+        mc_skill = eng.get('mc_skill') or {}
+        mc_ci    = eng.get('mc_ci')
+        sp       = eng.get('skill_profile', 'N/A')
 
+        sigs        = ofc_rep.get('signals', {})
+        ofc_passed  = bool(ofc_rep.get('promoted', False))
+        resh_pval   = mc_skill.get('rotation_reshuffle', {}).get('p_values', {}).get('CAGR')
+        resh_passed = (resh_pval is not None) and (resh_pval < 0.10)
+        sharpe_p50  = None
+        try:
+            sharpe_p50 = mc_ci.loc['A1 · IID Bootstrap', 'Sharpe_p50']
+        except Exception:
+            pass
+
+        sig_vals = {k: _fp(sigs.get(ok, {}).get('pass')) for k, ok in _sig_key_map.items()}
+        resh_str = (f"p={resh_pval:.3f} {'PASS' if resh_passed else 'FAIL'}"
+                    if resh_pval is not None else 'N/A')
+        sharpe_str = f"{sharpe_p50:.3f}" if sharpe_p50 is not None else 'N/A'
+        return sig_vals, resh_str, sharpe_str, _fp(ofc_passed), sp
+
+    cols_data = {name: _eng_col_values(eng) for name, eng in engines.items()}
 
     _rows = []
-    for sig, key in _sig_key_map.items():
-        v_std = _sigs.get(key, {}).get('pass')
-        v_clu = _cl_sigs.get(key, {}).get('pass') if _cl_sigs else None
-        _rows.append((sig, _fp(v_std), _fp(v_clu)))
+    for sig, _ in _sig_key_map.items():
+        row = [sig] + [cols_data[n][0][sig] for n in _eng_names]
+        _rows.append(row)
+    _rows.append(['MC Reshuffle p']   + [cols_data[n][1] for n in _eng_names])
+    _rows.append(['MC CI Sharpe p50'] + [cols_data[n][2] for n in _eng_names])
+    _rows.append(['OFC Verdict']      + [cols_data[n][3] for n in _eng_names])
+    _rows.append(['Skill profile']    + [cols_data[n][4] for n in _eng_names])
 
-    _rows.append(('MC Reshuffle p',   _resh_str,   _resh_str_cl))
-    _rows.append(('MC CI Sharpe p50', _sharpe_str, _sharpe_str_cl))
-    
-    _rows.append(('OFC Verdict',      _fp(ofc_passed_std), _fp(ofc_passed_cluster)))
-    _rows.append(('Skill profile',    skill_profile, skill_profile_cluster or 'N/A'))
+    col_labels = ['Signal'] + [f'WFO {n.upper()}' for n in _eng_names]
+    _df = pd.DataFrame(_rows, columns=col_labels)
 
-    _df = pd.DataFrame(_rows, columns=['Signal', 'WFO STANDARD', 'WFO CLUSTER'])
-
+    _dec_opts = ' | '.join(_eng_names) + ' | NESSUNO'
     print('=' * 76)
     print(f"  DECISIONE FINALE — {portfolio_title} ({year}) — profile={profile}")
     print('=' * 76)
     print(_df.to_string(index=False))
     print('=' * 76)
-    print('  User decision: quale path deployare? [ STANDARD | CLUSTER | NESSUNO ]')
-    print('  (compilare a mano nella scheda PTF con motivazione)')
-    print('=' * 76)
-
 
 def generate_ptf_card_md(
     *,
@@ -12540,87 +12495,38 @@ def generate_ptf_card_md(
     year: int,
     profile: str,
     benchmark: str,
+    benchmark_pf=None,
     period: tuple,
     universe_size: int,
     wfo_config: dict,
-    cluster_result: dict | None,
-    metrics_comparison: dict,
-    ofc_report_std: dict,
-    ofc_report_cluster: dict | None,
-    mc_skill: dict,
-    mc_ci,
-    skill_profile: str,
+    engines: dict,
     output_path,
-    mc_skill_cluster: dict | None = None,
-    mc_ci_cluster=None,
+    analysis_md: str,
 ) -> _Path_doc:
     '''
     Genera la PTF Card markdown (sezioni 1-9) e la scrive su output_path.
 
-    Sezione 5 (MC) e Sezione 6 (Skill Profile) sdoppiate per path Standard / Cluster.
-    Se mc_skill_cluster/mc_ci_cluster non passati, usa fallback al path standard
-    (retro-compat con i chiamanti precedenti al fix MC).
+    Parameters
+    ----------
+    engines : dict[str, dict]
+        Chiave = nome engine. Ogni valore deve contenere:
+        "ofc_report", "mc_skill", "mc_ci", "skill_profile",
+        "pf_rot" (opzionale), "pf_rot_base" (opzionale).
+    benchmark_pf : portfolio opzionale per metriche benchmark nella sezione 3.
     '''
     output_path = _Path_doc(output_path)
     _today = _dt_doc.date.today().isoformat()
     period_start, period_end = (period if len(period) == 2 else (period[0], _today))
 
-    _s  = ofc_report_std.get('signals', {}) if ofc_report_std else {}
-    _sc = ofc_report_cluster.get('signals', {}) if ofc_report_cluster else None
-    ofc_passed_std     = bool(ofc_report_std.get('promoted', False)) if ofc_report_std else False
-    ofc_passed_cluster = (
-        bool(ofc_report_cluster.get('promoted', False)) if ofc_report_cluster else None
-    )
     use_clustering = wfo_config.get('use_clustering', False)
-
-    # MC Std
-    reshuffle_pval  = mc_skill.get('rotation_reshuffle', {}).get('p_values', {}).get('CAGR')
-    timing_pval     = mc_skill.get('rebalance_timing', {}).get('p_values', {}).get('CAGR')
-    reshuffle_passed = (reshuffle_pval is not None) and (reshuffle_pval < 0.10)
-    timing_passed   = (timing_pval is not None) and (timing_pval < 0.10)
-    s3_passed_std   = _s.get('S3_bootstrap', {}).get('pass')
-
-    _reshuffle_pval_str = f"p={reshuffle_pval:.3f}" if reshuffle_pval is not None else 'N/A'
-    _timing_pval_str    = f"p={timing_pval:.3f}" if timing_pval is not None else 'N/A'
-    _s3_str             = 'Pass' if s3_passed_std else 'Fail'
-
-    # MC Cluster — nessun fallback a std quando Cluster non eseguito
-    if mc_skill_cluster is not None:
-        reshuffle_pval_cl   = mc_skill_cluster.get('rotation_reshuffle', {}).get('p_values', {}).get('CAGR')
-        timing_pval_cl      = mc_skill_cluster.get('rebalance_timing', {}).get('p_values', {}).get('CAGR')
-        reshuffle_passed_cl = (reshuffle_pval_cl is not None) and (reshuffle_pval_cl < 0.10)
-        timing_passed_cl    = (timing_pval_cl is not None) and (timing_pval_cl < 0.10)
-    else:
-        reshuffle_pval_cl = timing_pval_cl = None
-        reshuffle_passed_cl = timing_passed_cl = False
-
-    _reshuffle_pval_str_cl = f"p={reshuffle_pval_cl:.3f}" if reshuffle_pval_cl is not None else 'N/A'
-    _timing_pval_str_cl    = f"p={timing_pval_cl:.3f}"    if timing_pval_cl    is not None else 'N/A'
-
-    s3_passed_cl = _sc.get('S3_bootstrap', {}).get('pass') if _sc else None
-    _s3_str_cl   = 'Pass' if s3_passed_cl else ('Fail' if s3_passed_cl is False else 'N/A')
-
-    # plots_dir derivato da output_path
-    _plots_dir = (
-        output_path.parent.parent / 'reports' / 'plots' / f'{portfolio_title}_{year}'
-    )
+    _eng_names = list(engines.keys())
+    _n_bs_ofc = wfo_config.get('n_bootstrap_ofc', wfo_config.get('n_bootstrap', 1000))
 
     def _vd(v):
         if v is None: return 'N/A'
         return 'Pass' if v else 'Fail'
 
-    def _ci(row, col):
-        try: return f"{mc_ci.loc[row, col]:.3f}"
-        except Exception: return 'N/A'
-
-    def _ci_cl(row, col):
-        if mc_ci_cluster is None:
-            return 'N/A'
-        try: return f"{mc_ci_cluster.loc[row, col]:.3f}"
-        except Exception: return 'N/A'
-
-    def _m(key, metric):
-        pf = metrics_comparison.get(key)
+    def _mpf(pf, metric):
         if pf is None: return 'N/A'
         try:
             if metric == 'cum':    return f"{pf.total_return()*100:.1f}%"
@@ -12630,30 +12536,241 @@ def generate_ptf_card_md(
         except Exception: return 'N/A'
         return 'N/A'
 
-    # Sezione cluster (composizione)
-    _cluster_section = ''
-    if use_clustering and cluster_result is not None:
-        _cgroups = cluster_result.get('cluster_groups', {})
-        _clabels = cluster_result.get('cluster_labels', {})
-        if _cgroups:
-            def _fmt_t(ts):
-                return ', '.join(ts[:8]) + (f' ... (+{len(ts)-8})' if len(ts) > 8 else '')
-            _rows_cl = '\n'.join(
-                f"| {cid} | {_clabels.get(cid, f'C{cid}')} | {len(_cgroups[cid])} "
-                f"| {_fmt_t(_cgroups[cid])} |"
-                for cid in sorted(_cgroups.keys())
+    # ── Sezione 3: metriche comparative ──────────────────────────────────────
+    _sec3_rows = ''
+    for eng_name, eng in engines.items():
+        for variant, pf_key in [(f'{eng_name} — Risk ON/OFF', 'pf_rot'),
+                                 (f'{eng_name} — Base', 'pf_rot_base')]:
+            pf = eng.get(pf_key)
+            _sec3_rows += (
+                f"| {variant} | {_mpf(pf,'cum')} | {_mpf(pf,'cagr')} "
+                f"| {_mpf(pf,'sharpe')} | {_mpf(pf,'maxdd')} |\n"
             )
-            _cluster_section = (
-                "## 2b. Struttura dei Cluster\n"
-                "*Composizione dei cluster sull'ultimo periodo WFO*\n\n"
-                "| Cluster | Label | N. Titoli | Tickers |\n"
-                "|---------|-------|-----------|---------|\n"
-                + _rows_cl
-                + "\n\nPlot salvati: `cluster_heatmap.png`, `cluster_dendrogram.png`\n\n---"
-            )
+    _sec3_rows += (
+        f"| Benchmark ({benchmark}) | {_mpf(benchmark_pf,'cum')} | {_mpf(benchmark_pf,'cagr')} "
+        f"| {_mpf(benchmark_pf,'sharpe')} | {_mpf(benchmark_pf,'maxdd')} |\n"
+    )
 
-    def _plot_ok(name):
-        return 'Sì' if (_plots_dir / name).exists() else 'No'
+    # ── Sezione 4: OFC per engine ─────────────────────────────────────────────
+    def _ofc_section(eng_name, eng, sec_label):
+        sigs = (eng.get('ofc_report') or {}).get('signals', {})
+        promoted = bool((eng.get('ofc_report') or {}).get('promoted', False))
+        return (
+            f"### {sec_label} — {eng_name}\n"
+            f"| Segnale | Cosa misura | Verdetto | Valore |\n|---------|-------------|---------|--------|\n"
+            f"| S1 — Plateau proxy | Diversità parametrica: il WFO converge su un unico punto? | {_vd(sigs.get('S1_plateau', {}).get('pass'))} | {sigs.get('S1_plateau', {}).get('value', 'N/A')} |\n"
+            f"| S2 — Flag coherence | I filtri sono stabili tra sottoperiodi? | {_vd(sigs.get('S2_coherence', {}).get('pass'))} | {sigs.get('S2_coherence', {}).get('value', 'N/A')} |\n"
+            f"| S3 — Random selection | Il risultato Out-Of-Sample batte {_n_bs_ofc} portafogli con parametri casuali? | {_vd(sigs.get('S3_bootstrap', {}).get('pass'))} | p={sigs.get('S3_bootstrap', {}).get('p_value', 'N/A')} |\n"
+            f"| S4 — DSR | Lo Sharpe è significativo dopo correzione per n. trial? | {_vd(sigs.get('S4_dsr', {}).get('pass'))} | {sigs.get('S4_dsr', {}).get('dsr', 'N/A')} |\n"
+            f"| **OFC Verdict** | Soglia: 3/4 segnali | **{'PROMOTED' if promoted else 'NOT PROMOTED'}** | |\n\n"
+        )
+
+    _sec4 = '## 4. Overfitting Check (OFC)\n*Valuta la robustezza del processo di ottimizzazione WFO. Soglia promozione: 3/4 segnali.*\n\n'
+    sec_labels = [chr(ord('a') + i) for i in range(len(_eng_names))]
+    for i, (eng_name, eng) in enumerate(engines.items()):
+        _sec4 += _ofc_section(eng_name, eng, f'4{sec_labels[i]}.')
+
+    # ── Sezione 5: MC per engine ──────────────────────────────────────────────
+    def _mc_skill_block(eng_name, eng, sec_label):
+        mc_skill = eng.get('mc_skill') or {}
+        def _pv(test):
+            pv = mc_skill.get(test, {}).get('p_values', {}).get('CAGR')
+            passed = (pv is not None) and (pv < 0.10)
+            return f"p={pv:.3f}" if pv is not None else 'N/A', passed
+        resh_str, resh_pass = _pv('rotation_reshuffle')
+        tim_str,  tim_pass  = _pv('rebalance_timing')
+        return (
+            f"### {sec_label} Skill Tests (Block B) — {eng_name}\n"
+            f"| Test | Cosa misura | Verdetto | p-value |\n|------|-------------|---------|----------|\n"
+            f"| B1 — Rotation Reshuffle | La rotazione batte una selezione casuale dei titoli? | {'Pass' if resh_pass else 'Fail'} | {resh_str} |\n"
+            f"| B2 — Rebalance Timing | Il timing mensile batte date di ribilanciamento casuali? | {'Pass' if tim_pass else 'Fail'} | {tim_str} |\n\n"
+        )
+
+    def _ci_block(eng_name, eng, sec_label):
+        mc_ci = eng.get('mc_ci')
+        def _civ(row, col):
+            try: return f"{mc_ci.loc[row, col]:.3f}"
+            except Exception: return 'N/A'
+        return (
+            f"### {sec_label} Confidence Intervals (Block A) — {eng_name}\n"
+            f"| Metodo | CAGR p5 | CAGR p50 | CAGR p95 | Sharpe p50 | MaxDD p50 |\n"
+            f"|--------|---------|---------|---------|-----------|----------|\n"
+            f"| A1 — IID Bootstrap | {_civ('A1 · IID Bootstrap','CAGR_p5')} | {_civ('A1 · IID Bootstrap','CAGR_p50')} | {_civ('A1 · IID Bootstrap','CAGR_p95')} | {_civ('A1 · IID Bootstrap','Sharpe_p50')} | {_civ('A1 · IID Bootstrap','MaxDD_p50')} |\n"
+            f"| A2 — Block Bootstrap | {_civ('A2 · Block Bootstrap','CAGR_p5')} | {_civ('A2 · Block Bootstrap','CAGR_p50')} | {_civ('A2 · Block Bootstrap','CAGR_p95')} | {_civ('A2 · Block Bootstrap','Sharpe_p50')} | {_civ('A2 · Block Bootstrap','MaxDD_p50')} |\n\n"
+        )
+
+    def _ofc6_md(eng_name, eng):
+        ofc_rep  = eng.get('ofc_report') or {}
+        sigs     = ofc_rep.get('signals', {})
+        promoted = bool(ofc_rep.get('promoted', False))
+        minsig_l = ofc_rep.get('resolved', {}).get('min_signals_to_pass', 3)
+        n_p      = sum(1 for k in ('S1_plateau', 'S2_coherence', 'S3_bootstrap', 'S4_dsr')
+                       if sigs.get(k, {}).get('pass'))
+
+        def _sval(sk):
+            sd = sigs.get(sk, {})
+            if sk == 'S3_bootstrap':
+                raw = sd.get('p_value')
+                return f"p={raw:.3f}" if isinstance(raw, float) else 'N/A'
+            if sk == 'S4_dsr':
+                raw = sd.get('dsr')
+                return f"{raw:.3f}" if isinstance(raw, float) else 'N/A'
+            raw = sd.get('value')
+            return f"{raw:.3f}" if isinstance(raw, float) else 'N/A'
+
+        def _sthr(sk):
+            thr = sigs.get(sk, {}).get('threshold')
+            return f"{thr:.3f}" if isinstance(thr, float) else (str(thr) if thr is not None else '—')
+
+        lines = [
+            f'**{eng_name}**\n',
+            '| Segnale | Esito | Valore | Soglia | Note |',
+            '|---------|-------|--------|--------|------|',
+        ]
+        for sk, slbl in [
+            ('S1_plateau',   'S1 — Plateau'),
+            ('S2_coherence', 'S2 — Coherence'),
+            ('S3_bootstrap', 'S3 — Bootstrap'),
+            ('S4_dsr',       'S4 — DSR'),
+        ]:
+            sd  = sigs.get(sk, {})
+            pss = sd.get('pass')
+            vl  = 'PASS' if pss else ('FAIL' if pss is not None else 'N/A')
+            note = str(sd.get('note') or '—')
+            lines.append(f'| {slbl} | {vl} | {_sval(sk)} | {_sthr(sk)} | {note} |')
+        vrd = 'PROMOTED' if promoted else 'NOT PROMOTED'
+        lines.append(f'| **Verdetto OFC** | **{vrd}** | {n_p}/4 | ≥{minsig_l}/4 | |')
+        return '\n'.join(lines) + '\n\n'
+
+    def _sk6_md(eng_name, eng):
+        mcs = eng.get('mc_skill') or {}
+        lines = [
+            f'**{eng_name}**\n',
+            '| Test | CAGR Realizzato | p-value | Significativo? |',
+            '|------|-----------------|---------|----------------|',
+        ]
+        for mck, lbl in [
+            ('rotation_reshuffle', 'B1 — Rotation Reshuffle'),
+            ('rebalance_timing',   'B2 — Rebalance Timing'),
+        ]:
+            d    = mcs.get(mck, {})
+            pv   = d.get('p_values', {}).get('CAGR')
+            act  = d.get('actual_metrics', {}).get('CAGR')
+            pv_s  = f"{pv:.3f}"       if isinstance(pv,  float) else 'N/A'
+            act_s = f"{act*100:.1f}%" if isinstance(act, float) else 'N/A'
+            sig_lbl = 'Significativo' if (pv is not None and pv < 0.10) else 'Non significativo'
+            lines.append(f'| {lbl} | {act_s} | {pv_s} | {sig_lbl} |')
+        return '\n'.join(lines) + '\n\n'
+
+    def _ci6_md(eng_name, eng):
+        mc_ci = eng.get('mc_ci')
+        if mc_ci is None:
+            return f'**{eng_name}**: N/A\n\n'
+
+        def _qtl(p5, p25, p50, p75, p95, act):
+            try:
+                v = float(act)
+                if v < float(p5):  return '< p5'
+                if v < float(p25): return 'p5-p25'
+                if v < float(p50): return 'p25-p50'
+                if v < float(p75): return 'p50-p75'
+                if v < float(p95): return 'p75-p95'
+                return '> p95'
+            except (TypeError, ValueError):
+                return '—'
+
+        lines = [
+            f'**{eng_name}**\n',
+            '| Metodo / Metrica | p5 | p25 | p50 | p75 | p95 | Realizzato | ~Quantile |',
+            '|------------------|-----|-----|-----|-----|-----|------------|-----------|',
+        ]
+        for mkey, mlbl in [
+            ('A1 · IID Bootstrap',   'A1 IID'),
+            ('A2 · Block Bootstrap', 'A2 Block'),
+        ]:
+            if mkey not in mc_ci.index:
+                continue
+            rd = mc_ci.loc[mkey]
+            for met, is_pct in [('CAGR', True), ('Sharpe', False), ('MaxDD', True)]:
+                def _fv(col, _rd=rd):
+                    try: return float(_rd[col])
+                    except Exception: return float('nan')
+                def _fs(col, _ip=is_pct, _rd=rd):
+                    try:
+                        v = float(_rd[col])
+                        return f"{v*100:.1f}%" if _ip else f"{v:.3f}"
+                    except Exception: return 'N/A'
+                qtl = _qtl(_fv(f'{met}_p5'), _fv(f'{met}_p25'), _fv(f'{met}_p50'),
+                            _fv(f'{met}_p75'), _fv(f'{met}_p95'), _fv(f'Actual_{met}'))
+                lines.append(
+                    f'| {mlbl} / {met} | {_fs(f"{met}_p5")} | {_fs(f"{met}_p25")} '
+                    f'| {_fs(f"{met}_p50")} | {_fs(f"{met}_p75")} | {_fs(f"{met}_p95")} '
+                    f'| {_fs(f"Actual_{met}")} | {qtl} |'
+                )
+        return '\n'.join(lines) + '\n\n'
+
+    _sec5 = '## 5. Monte Carlo Validation\n*Valuta se il motore aggiunge valore rispetto al caso (analisi indipendente per engine)*\n\n'
+    sl2 = [chr(ord('a') + i) for i in range(len(_eng_names))]
+    for i, (eng_name, eng) in enumerate(engines.items()):
+        _sec5 += _mc_skill_block(eng_name, eng, f'5{sl2[i]}.')
+    for i, (eng_name, eng) in enumerate(engines.items()):
+        _sec5 += _ci_block(eng_name, eng, f'5{chr(ord("a")+len(_eng_names)+i)}.')
+
+    # ── Sezione 6: Skill Profile ──────────────────────────────────────────────
+    _sp_header_cols = ' | '.join(_eng_names)
+    _sp_sep_cols    = '---------| ' * len(_eng_names)
+    _sec6 = (
+        f'## 6. Skill Profile\n*Sintesi della capacità predittiva per engine*\n\n'
+        f'| Test | Cosa misura | {_sp_header_cols} |\n'
+        f'|------|-------------|{_sp_sep_cols}|\n'
+    )
+    for test_name, mc_key, desc in [
+        ('MC Rotation Reshuffle', 'rotation_reshuffle', 'La rotazione batte il caso?'),
+        ('MC Rebalance Timing',   'rebalance_timing',   'Il timing batte il caso?'),
+    ]:
+        row_vals = []
+        for eng in engines.values():
+            ms = eng.get('mc_skill') or {}
+            pv = ms.get(mc_key, {}).get('p_values', {}).get('CAGR')
+            row_vals.append('Pass' if (pv is not None and pv < 0.10) else 'Fail')
+        _sec6 += f'| {test_name} | {desc} | {" | ".join(row_vals)} |\n'
+    _sec6 += '\n'
+    for eng_name, eng in engines.items():
+        _sec6 += f'**Skill Profile {eng_name}: {eng.get("skill_profile", "N/A")}**\n'
+    _sec6 += (
+        '*Nota: No-skill non implica PTF non deployabile — il valore può derivare\n'
+        'dalla struttura dell\'universe o dal Risk ON/OFF.*\n\n---\n\n'
+    )
+
+    # ── §2 grid rows per-engine ───────────────────────────────────────────────
+    _sec2_grid = ''
+    for _geng, _gdata in engines.items():
+        _nf = _gdata.get('n_full_trials', 'N/A')
+        _nr = _gdata.get('n_reduced_trials', 'N/A')
+        _sec2_grid += (
+            f"| Grid size full — {_geng} | {_nf} combinazioni | Spazio parametrico totale |\n"
+            f"| Grid size reduced — {_geng} | {_nr} combinazioni | Dopo stability analysis |\n"
+        )
+
+    # ── §7 Analisi + §8 Decisione: tabelle Python intercalate con testo LLM ──
+    _secs = _parse_llm_sections(analysis_md)
+    _sec7 = '## 7. Analisi dei Segnali e Diagnosi Strutturale\n\n'
+    _sec7 += '### 7.a — Overfitting Check\n\n'
+    for _en, _ev in engines.items():
+        _sec7 += _ofc6_md(_en, _ev)
+    if _secs.get('6a'):
+        _sec7 += f'{_secs["6a"]}\n\n'
+    _sec7 += '### 7.b — Monte Carlo Skill Tests\n\n'
+    for _en, _ev in engines.items():
+        _sec7 += _sk6_md(_en, _ev)
+    if _secs.get('6b'):
+        _sec7 += f'{_secs["6b"]}\n\n'
+    _sec7 += '### 7.c — Confidence Intervals\n\n'
+    for _en, _ev in engines.items():
+        _sec7 += _ci6_md(_en, _ev)
+    if _secs.get('6c'):
+        _sec7 += f'{_secs["6c"]}\n\n'
+    _sec8 = f'## 8. Decisione Finale\n\n{_secs.get("7", "")}\n\n'
 
     _card = (
         f"# PTF Card — {portfolio_title} {year}\n\n---\n\n"
@@ -12671,92 +12788,22 @@ def generate_ptf_card_md(
         f"| Parametro | Valore | Nota |\n|-----------|--------|------|\n"
         f"| WFO ratio | {wfo_config.get('ratio', 'N/A')} | Rapporto IS/OOS |\n"
         f"| WFO metric | {wfo_config.get('metric', 'N/A')} | Metrica ottimizzazione IS |\n"
-        f"| Grid size (full) | {wfo_config.get('n_full_trials', 'N/A')} combinazioni | Spazio parametrico totale |\n"
-        f"| Grid size (reduced) | {wfo_config.get('n_reduced_trials', 'N/A')} combinazioni | Dopo stability analysis |\n"
+        f"{_sec2_grid}"
         f"| Stability metric | CAGR, k=3 | Metrica e sottoperiodi |\n"
-        f"| n_bootstrap OFC | {wfo_config.get('n_bootstrap_ofc', wfo_config.get('n_bootstrap', 1000))} | Test S3 random selection |\n"
+        f"| n_bootstrap OFC | {_n_bs_ofc} | Test S3 random selection |\n"
         f"| n_bootstrap MC | {wfo_config.get('n_bootstrap_mc', wfo_config.get('n_bootstrap', 1000))} | Block A (CI) + Block B (Skill Tests) |\n"
-        f"| Risk ON/OFF | True | Filtro regime di mercato |\n"
-        f"| Clustering | {use_clustering} | Se True: WFO per cluster omogenei |\n\n---\n\n"
-        f"{_cluster_section}\n\n"
+        f"| Risk ON/OFF | True | Filtro regime di mercato |\n\n---\n\n"
         f"## 3. Metriche Comparative WFO\n"
         f"*Confronto su periodo comune {period_start} → {period_end}*\n\n"
         f"| Portfolio | Cum Return | CAGR | Sharpe | MaxDD |\n"
         f"|-----------|------------|------|--------|-------|\n"
-        f"| Cluster — Risk ON/OFF | {_m('cluster_riskoff','cum')} | {_m('cluster_riskoff','cagr')} | {_m('cluster_riskoff','sharpe')} | {_m('cluster_riskoff','maxdd')} |\n"
-        f"| Cluster — Base | {_m('cluster_base','cum')} | {_m('cluster_base','cagr')} | {_m('cluster_base','sharpe')} | {_m('cluster_base','maxdd')} |\n"
-        f"| Standard — Risk ON/OFF | {_m('std_riskoff','cum')} | {_m('std_riskoff','cagr')} | {_m('std_riskoff','sharpe')} | {_m('std_riskoff','maxdd')} |\n"
-        f"| Standard — Base | {_m('std_base','cum')} | {_m('std_base','cagr')} | {_m('std_base','sharpe')} | {_m('std_base','maxdd')} |\n"
-        f"| Benchmark ({benchmark}) | {_m('benchmark','cum')} | {_m('benchmark','cagr')} | {_m('benchmark','sharpe')} | {_m('benchmark','maxdd')} |\n\n---\n\n"
-        f"## 4. Overfitting Check (OFC)\n"
-        f"*Valuta la robustezza del processo di ottimizzazione WFO. Soglia promozione: 3/4 segnali.*\n\n"
-        f"### 4a. Path Standard\n"
-        f"| Segnale | Cosa misura | Verdetto | Valore |\n|---------|-------------|---------|--------|\n"
-        f"| S1 — Plateau proxy | Diversità parametrica: il WFO converge su un unico punto? | {_vd(_s.get('S1_plateau', {}).get('pass'))} | {_s.get('S1_plateau', {}).get('value', 'N/A')} |\n"
-        f"| S2 — Flag coherence | I filtri sono stabili tra sottoperiodi? | {_vd(_s.get('S2_coherence', {}).get('pass'))} | {_s.get('S2_coherence', {}).get('value', 'N/A')} |\n"
-        f"| S3 — Random selection | Il risultato Out-Of-Sample batte {wfo_config.get('n_bootstrap_ofc', wfo_config.get('n_bootstrap', 1000))} portafogli con parametri casuali? | {_vd(_s.get('S3_bootstrap', {}).get('pass'))} | p={_s.get('S3_bootstrap', {}).get('p_value', 'N/A')} |\n"
-        f"| S4 — DSR | Lo Sharpe è significativo dopo correzione per n. trial? | {_vd(_s.get('S4_dsr', {}).get('pass'))} | {_s.get('S4_dsr', {}).get('dsr', 'N/A')} |\n"
-        f"| **OFC Verdict** | Soglia: 3/4 segnali | **{'PROMOTED' if ofc_passed_std else 'NOT PROMOTED'}** | |\n\n"
-        f"### 4b. Path Cluster\n"
-        f"| Segnale | Cosa misura | Verdetto | Valore |\n|---------|-------------|---------|--------|\n"
-        f"| S1 — Plateau proxy | Diversità parametrica: il WFO converge su un unico punto? | {_vd(_sc.get('S1_plateau', {}).get('pass')) if _sc else 'N/A'} | {_sc.get('S1_plateau', {}).get('value', 'N/A') if _sc else 'N/A'} |\n"
-        f"| S2 — Flag coherence | I filtri sono stabili tra sottoperiodi? | {_vd(_sc.get('S2_coherence', {}).get('pass')) if _sc else 'N/A'} | {_sc.get('S2_coherence', {}).get('value', 'N/A') if _sc else 'N/A'} |\n"
-        f"| S3 — Random selection | Il risultato Out-Of-Sample batte {wfo_config.get('n_bootstrap_ofc', wfo_config.get('n_bootstrap', 1000))} portafogli con parametri casuali? | {_vd(_sc.get('S3_bootstrap', {}).get('pass')) if _sc else 'N/A'} | p={_sc.get('S3_bootstrap', {}).get('p_value', 'N/A') if _sc else 'N/A'} |\n"
-        f"| S4 — DSR | Lo Sharpe è significativo dopo correzione per n. trial? | {_vd(_sc.get('S4_dsr', {}).get('pass')) if _sc else 'N/A'} | {_sc.get('S4_dsr', {}).get('dsr', 'N/A') if _sc else 'N/A'} |\n"
-        f"| **OFC Verdict** | Soglia: 3/4 segnali | **{'PROMOTED' if ofc_passed_cluster else 'NOT PROMOTED' if ofc_passed_cluster is not None else 'N/A'}** | |\n\n---\n\n"
-        f"## 5. Monte Carlo Validation\n"
-        f"*Valuta se il motore aggiunge valore rispetto al caso (analisi indipendente per path)*\n\n"
-        f"### 5a. Skill Tests (Block B) — Path Standard\n"
-        f"| Test | Cosa misura | Verdetto | p-value |\n|------|-------------|---------|----------|\n"
-        f"| B1 — Rotation Reshuffle | La rotazione batte una selezione casuale dei titoli? | {'Pass' if reshuffle_passed else 'Fail'} | {_reshuffle_pval_str} |\n"
-        f"| B2 — Rebalance Timing | Il timing mensile batte date di ribilanciamento casuali? | {'Pass' if timing_passed else 'Fail'} | {_timing_pval_str} |\n\n"
-        f"### 5a. Skill Tests (Block B) — Path Cluster\n"
-        f"| Test | Cosa misura | Verdetto | p-value |\n|------|-------------|---------|----------|\n"
-        f"| B1 — Rotation Reshuffle | La rotazione batte una selezione casuale dei titoli? | {'Pass' if reshuffle_passed_cl else 'Fail'} | {_reshuffle_pval_str_cl} |\n"
-        f"| B2 — Rebalance Timing | Il timing mensile batte date di ribilanciamento casuali? | {'Pass' if timing_passed_cl else 'Fail'} | {_timing_pval_str_cl} |\n\n"
-        f"### 5b. Confidence Intervals (Block A) — Path Standard\n"
-        f"| Metodo | CAGR p5 | CAGR p50 | CAGR p95 | Sharpe p50 | MaxDD p50 |\n"
-        f"|--------|---------|---------|---------|-----------|----------|\n"
-        f"| A1 — IID Bootstrap | {_ci('A1 · IID Bootstrap', 'CAGR_p5')} | {_ci('A1 · IID Bootstrap', 'CAGR_p50')} | {_ci('A1 · IID Bootstrap', 'CAGR_p95')} | {_ci('A1 · IID Bootstrap', 'Sharpe_p50')} | {_ci('A1 · IID Bootstrap', 'MaxDD_p50')} |\n"
-        f"| A2 — Block Bootstrap | {_ci('A2 · Block Bootstrap', 'CAGR_p5')} | {_ci('A2 · Block Bootstrap', 'CAGR_p50')} | {_ci('A2 · Block Bootstrap', 'CAGR_p95')} | {_ci('A2 · Block Bootstrap', 'Sharpe_p50')} | {_ci('A2 · Block Bootstrap', 'MaxDD_p50')} |\n\n"
-        f"### 5b. Confidence Intervals (Block A) — Path Cluster\n"
-        f"| Metodo | CAGR p5 | CAGR p50 | CAGR p95 | Sharpe p50 | MaxDD p50 |\n"
-        f"|--------|---------|---------|---------|-----------|----------|\n"
-        f"| A1 — IID Bootstrap | {_ci_cl('A1 · IID Bootstrap', 'CAGR_p5')} | {_ci_cl('A1 · IID Bootstrap', 'CAGR_p50')} | {_ci_cl('A1 · IID Bootstrap', 'CAGR_p95')} | {_ci_cl('A1 · IID Bootstrap', 'Sharpe_p50')} | {_ci_cl('A1 · IID Bootstrap', 'MaxDD_p50')} |\n"
-        f"| A2 — Block Bootstrap | {_ci_cl('A2 · Block Bootstrap', 'CAGR_p5')} | {_ci_cl('A2 · Block Bootstrap', 'CAGR_p50')} | {_ci_cl('A2 · Block Bootstrap', 'CAGR_p95')} | {_ci_cl('A2 · Block Bootstrap', 'Sharpe_p50')} | {_ci_cl('A2 · Block Bootstrap', 'MaxDD_p50')} |\n\n---\n\n"
-        f"## 6. Skill Profile\n"
-        f"*Sintesi della capacità predittiva (Standard / Cluster)*\n\n"
-        f"| Test | Cosa misura | Standard | Cluster |\n|------|-------------|---------|---------|\n"
-        f"| MC Rotation Reshuffle | La rotazione batte il caso? | {'Pass' if reshuffle_passed else 'Fail'} | {'Pass' if reshuffle_passed_cl else 'Fail'} |\n"
-        f"| MC Rebalance Timing | Il timing batte il caso? | {'Pass' if timing_passed else 'Fail'} | {'Pass' if timing_passed_cl else 'Fail'} |\n"
-        f"| OFC S3 | Il risultato Out-Of-Sample batte parametri casuali? | {_s3_str} | {_s3_str_cl} |\n\n"
-        f"**Skill Profile: {skill_profile}**\n"
-        f"*Nota: No-skill non implica PTF non deployabile — il valore può derivare\n"
-        f"dalla struttura dell'universe, dal clustering o dal Risk ON/OFF.*\n\n---\n\n"
-        f"## 7. Decisione Finale\n"
-        f"| Dimensione | Standard | Cluster |\n|-----------|---------|----------|\n"
-        f"| OFC Verdict | {'PROMOTED' if ofc_passed_std else 'NOT PROMOTED'} | {'PROMOTED' if ofc_passed_cluster else 'NOT PROMOTED' if ofc_passed_cluster is not None else 'N/A'} |\n"
-        f"| Skill Profile | {skill_profile} | {'N/A' if mc_skill_cluster is None else skill_profile} |\n"
-        f"| CAGR vs Benchmark | {_m('std_riskoff', 'cagr')} vs {_m('benchmark', 'cagr')} | {_m('cluster_riskoff', 'cagr')} vs {_m('benchmark', 'cagr')} |\n"
-        f"| Sharpe vs Benchmark | {_m('std_riskoff', 'sharpe')} vs {_m('benchmark', 'sharpe')} | {_m('cluster_riskoff', 'sharpe')} vs {_m('benchmark', 'sharpe')} |\n"
-        f"| MaxDD vs Benchmark | {_m('std_riskoff', 'maxdd')} vs {_m('benchmark', 'maxdd')} | {_m('cluster_riskoff', 'maxdd')} vs {_m('benchmark', 'maxdd')} |\n\n"
-        f"**Path deployato**: [ STANDARD | CLUSTER | NESSUNO ] ← compilare\n"
-        f"**Motivazione**: ← compilare\n\n---\n\n"
-        f"## 8. Note e Avvertenze\n*(compilare a mano)*\n\n---\n\n"
-        f"## 9. Plot salvati\n"
-        f"| Plot | File | Disponibile |\n|------|------|-------------|\n"
-        f"| Equity Standard | equity_std.png | {_plot_ok('equity_std.png')} |\n"
-        f"| Equity Cluster | equity_cluster.png | {_plot_ok('equity_cluster.png')} |\n"
-        f"| Equity Comparison | equity_comparison.png | {_plot_ok('equity_comparison.png')} |\n"
-        f"| MC CI Block A | mc_ci.png | {_plot_ok('mc_ci.png')} |\n"
-        f"| MC Reshuffle | mc_reshuffle.png | {_plot_ok('mc_reshuffle.png')} |\n"
-        f"| MC Timing | mc_timing.png | {_plot_ok('mc_timing.png')} |\n"
-        f"| MC Skill Summary | mc_skill_summary.png | {_plot_ok('mc_skill_summary.png')} |\n"
-        f"| Cluster Heatmap | cluster_heatmap.png | {_plot_ok('cluster_heatmap.png')} |\n"
-        f"| Cluster Dendrogram | cluster_dendrogram.png | {_plot_ok('cluster_dendrogram.png')} |\n"
-        f"| Cluster Scatter | cluster_scatter.png | {_plot_ok('cluster_scatter.png')} |\n"
-        f"| MC CI Fan Chart IID | mc_ci_fanchart_iid.png | {_plot_ok('mc_ci_fanchart_iid.png')} |\n"
-        f"| MC CI Fan Chart Block | mc_ci_fanchart_block.png | {_plot_ok('mc_ci_fanchart_block.png')} |\n\n---\n"
+        f"{_sec3_rows}\n---\n\n"
+        f"{_sec4}---\n\n"
+        f"{_sec5}---\n\n"
+        f"{_sec6}"
+        f"{_sec7}\n\n---\n\n"
+        f"{_sec8}\n\n---\n\n"
+        f"## 9. Note e Avvertenze\n*(compilare a mano)*\n\n---\n"
     )
 
     output_path.write_text(_card)
@@ -12764,12 +12811,1154 @@ def generate_ptf_card_md(
     
 
 
+def _load_anthropic_key(key_file=None) -> str:
+    key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not key and key_file is not None and key_file.exists():
+        m = re.search(r"ANTHROPIC_API_KEY=['\"]?([^'\"]+)['\"]?", key_file.read_text())
+        if m:
+            key = m.group(1).strip()
+    return key
+
+
+ANTHROPIC_MODEL = "claude-sonnet-4-6"
+_TRANSIENT_CODES = {429, 502, 503, 529}
+
+
+_K_STRATEGY_KEY_SH = Path(__file__).parent.parent.parent / "K-Strategy-Agent" / "Claude-K-strategy_Key.sh"
+
+
+def _call_claude(system_prompt: str, user_message: str, max_tokens: int = 4096) -> str:
+    api_key = _load_anthropic_key(key_file=_K_STRATEGY_KEY_SH)
+    if not api_key:
+        raise RuntimeError("ANTHROPIC_API_KEY non trovata.")
+    payload = {"model": ANTHROPIC_MODEL, "max_tokens": max_tokens,
+               "system": system_prompt,
+               "messages": [{"role": "user", "content": user_message}]}
+    last_exc = None
+    for attempt in range(1, 4):
+        try:
+            resp = requests.post(
+                "https://api.anthropic.com/v1/messages", json=payload,
+                headers={"Content-Type": "application/json",
+                         "x-api-key": api_key,
+                         "anthropic-version": "2023-06-01"},
+                timeout=600)
+            if resp.status_code in _TRANSIENT_CODES:
+                time.sleep(10 * attempt)
+                last_exc = requests.HTTPError(response=resp)
+                continue
+            resp.raise_for_status()
+            _data = resp.json()
+            if _data.get("stop_reason") == "max_tokens":
+                raise RuntimeError(
+                    "generate_relazione_llm: risposta troncata per max_tokens — "
+                    "aumentare il limite o ridurre il contenuto richiesto."
+                )
+            return _data["content"][0]["text"].strip()
+        except requests.HTTPError as e:
+            last_exc = e
+            if e.response is not None and e.response.status_code not in _TRANSIENT_CODES:
+                raise
+            time.sleep(10 * attempt)
+    raise RuntimeError("generate_relazione_llm: API irraggiungibile dopo 3 tentativi") from last_exc
+
+
+
+def _run_numeric_guardrail(analysis_md: str, payload: dict, *,
+                            debug_path: str = "/tmp/relazione_llm_debug.md",
+                            tol: float = 0.01) -> None:
+    """
+    Guardrail anti-allucinazione numerico condiviso tra generate_relazione_llm
+    e generate_relazione_investitore_llm. Solleva ValueError se analysis_md
+    contiene numeri non rintracciabili nel payload (raw, /100, *100, o come
+    differenza tra coppie realized/realized_base dello stesso nome metrico,
+    se il payload contiene una struttura payload["engines"][*]["realized"/
+    "realized_base"] — altrimenti quella parte e' semplicemente vuota/no-op).
+
+    Propagare l'eccezione — non ingoiarla.
+    """
+    import json as _json
+
+    payload_json = _json.dumps(payload, indent=2, default=str)
+
+    def _norm_text(text: str) -> str:
+        text = re.sub(
+            r'\b(\d{1,3})[\s\xa0]+(\d{3})\b',
+            lambda m: m.group(1) + m.group(2),
+            text,
+        )
+        text = re.sub(r'(?<!\d)[\u2212\u2013]', '-', text)
+        return text
+
+    def _numtokens(text: str) -> list[str]:
+        return re.findall(r"-?\d+(?:[.,]\d+)?", _norm_text(text))
+
+    def _accettabile(token: str, payload_floats: frozenset,
+                     realized_diffs: frozenset = frozenset(),
+                     tol: float = tol) -> bool:
+        cleaned = token.replace(',', '.')
+        try:
+            v = float(cleaned)
+        except ValueError:
+            return True
+        candidati = {v, v / 100, v * 100}
+        if cleaned.count('.') == 1:
+            base = cleaned.lstrip('-')
+            parts = base.split('.')
+            if parts[0] != '0' and len(parts[1]) == 3 and parts[1].isdigit():
+                sign = -1.0 if cleaned.startswith('-') else 1.0
+                big = sign * float(parts[0] + parts[1])
+                candidati.update({big, big / 100, big * 100})
+        if any(abs(c - p) < tol * max(abs(p), 1.0) for c in candidati for p in payload_floats):
+            return True
+        if realized_diffs:
+            return any(abs(abs(v) - d) < tol * max(d, 1.0) for d in realized_diffs)
+        return False
+
+    _pf_raw: list[float] = []
+    for _t in _numtokens(payload_json):
+        try:
+            _pf_raw.append(float(_t.replace(',', '.')))
+        except ValueError:
+            pass
+    # Include anche il valore assoluto di ogni token: le date ISO nel payload
+    # (es. "2026-07-10") vengono tokenizzate come numeri negativi per via del
+    # trattino interpretato come segno meno ("-07", "-10"), ma quando l'LLM
+    # scrive la stessa data per esteso in prosa ("10 luglio 2026") il numero
+    # e' positivo. Senza questo fix, riferimenti a date reali nel testo
+    # vengono segnalati come falsi positivi dal guardrail.
+    payload_floats = frozenset(_pf_raw) | frozenset(abs(x) for x in _pf_raw)
+
+    _realized_raw: dict[tuple, float] = {}
+    for _eng_name, _ev in payload.get("engines", {}).items():
+        for _rv_key in ("realized", "realized_base"):
+            _rv = _ev.get(_rv_key) or {}
+            if isinstance(_rv, dict):
+                for _met, _val in _rv.items():
+                    try:
+                        _realized_raw[(_eng_name, _rv_key, _met)] = float(_val)
+                    except (TypeError, ValueError):
+                        pass
+    _rv_items = list(_realized_raw.items())
+    _diff_set: set[float] = set()
+    for _i in range(len(_rv_items)):
+        (_ei, _ki, _mi), _vi = _rv_items[_i]
+        for _j in range(_i + 1, len(_rv_items)):
+            (_ej, _kj, _mj), _vj = _rv_items[_j]
+            if _mi != _mj:
+                continue
+            _d = abs(_vi - _vj)
+            _diff_set.update({_d, _d * 100, _d * 10000})
+    realized_diffs = frozenset(_diff_set)
+
+    _ALWAYS_ACCEPT = {"6", "7"}
+    sospetti = {t for t in _numtokens(analysis_md)
+                if t not in _ALWAYS_ACCEPT and not _accettabile(t, payload_floats, realized_diffs)}
+    if sospetti:
+        from pathlib import Path as _Path
+        _dp = _Path(debug_path)
+        _dp.write_text(analysis_md)
+        print(f"[DEBUG] Testo generato salvato in {_dp} per ispezione")
+        raise ValueError(
+            f"guardrail numerico: numeri nel testo generato assenti dal "
+            f"payload di input: {sospetti}. Output scartato — probabile "
+            f"allucinazione, non pubblicare senza revisione."
+        )
+
+
+def generate_relazione_llm(
+    *,
+    engines: dict,
+    wfo_config: dict,
+    portfolio_title: str,
+    year: int,
+    profile: str,
+    benchmark_title: str,
+    benchmark_pf,
+    model: str = "claude-sonnet-4-6",
+) -> str:
+    """
+    Genera in Markdown le sezioni §6 Analisi dei Segnali e §7 Decisione Finale
+    della relazione tecnica, via LLM (Anthropic API).
+
+    Le tabelle numeriche (§1-§5) restano generate deterministicamente da Python.
+    Qui si genera SOLO testo di analisi/interpretazione su dati già calcolati.
+
+    Solleva ValueError se il testo generato contiene numeri assenti dal payload
+    (guardrail anti-allucinazione). Propagare l'eccezione — non ingoiarla.
+    """
+    import json as _json
+
+    def _pf_metrics(pf):
+        if pf is None:
+            return None
+        try:
+            return dict(pf.stats())
+        except Exception:
+            return None
+
+    payload = {
+        "portfolio_title": portfolio_title,
+        "year": year,
+        "profile": profile,
+        "benchmark_title": benchmark_title,
+        "wfo_config": wfo_config,
+        "benchmark_metrics": _pf_metrics(benchmark_pf),
+        "engines": {},
+    }
+    for name, ev in engines.items():
+        payload["engines"][name] = {
+            "skill_profile": ev.get("skill_profile"),
+            "ofc_report": ev.get("ofc_report"),
+            "mc_skill": ev.get("mc_skill"),
+            "mc_ci": ev.get("mc_ci"),
+            "ci_results": ev.get("ci_results"),
+            "realized": ev.get("realized"),
+            "realized_base": ev.get("realized_base"),
+            "pf_rot_metrics": _pf_metrics(ev.get("pf_rot")),
+            "pf_rot_base_metrics": _pf_metrics(ev.get("pf_rot_base")),
+            "n_full_trials": ev.get("n_full_trials"),
+            "n_reduced_trials": ev.get("n_reduced_trials"),
+        }
+
+    payload_json = _json.dumps(payload, indent=2, default=str)
+
+    system_prompt = """Agisci come un analista quantitativo senior con
+esperienza in risk management e validazione statistica di strategie
+sistematiche (walk-forward optimization, overfitting detection,
+bootstrap Monte Carlo). Scrivi la sezione di analisi di una relazione
+tecnica per un gestore di portafogli — uso interno, non un documento
+regolamentare.
+
+Regole non negoziabili:
+- Usa ESCLUSIVAMENTE i numeri presenti nel JSON fornito. Ogni cifra che
+  scrivi deve essere rintracciabile lì dentro. Non arrotondare in modo
+  da nascondere un risultato negativo.
+- Per ogni engine, quando menzioni "CAGR realizzato", "Sharpe realizzato",
+  "MaxDD realizzato" o "Calmar realizzato", usa SEMPRE e SOLO i valori in
+  engines[engine]["realized"] (fonte canonica: vectorbt pf_rot). Non usare
+  mai i campi "actual_metrics" in mc_skill o "Actual_*" in mc_ci per
+  esporre metriche "realizzate" nel testo — quelli sono valori di calcolo
+  interno dei test statistici e possono differire metodologicamente.
+  Se devi confrontare con la variante base, usa engines[engine]["realized_base"].
+- Il campo "note" del segnale S3_bootstrap in ofc_report contiene un valore
+  di metrica calcolato sulla concatenazione delle finestre OOS ricostruite
+  per il test bootstrap. Questo NON è il CAGR/Sharpe realizzato del portafoglio:
+  è il punteggio usato internamente dal test S3 per confrontarsi con i
+  portafogli casuali. Non citarlo mai come "CAGR realizzato" o "Sharpe
+  realizzato" — se menzioni questo valore, chiamalo esplicitamente
+  "CAGR/Sharpe nella finestra OOS ricostruita (test S3)".
+- Se un pattern nei dati contraddice un'affermazione plausibile (es.
+  un filtro di rischio con drawdown peggiore del benchmark invece che
+  migliore), scrivilo esplicitamente e senza ambiguità.
+- Confronta TUTTI gli engine presenti nel JSON — il numero non è fisso
+  a due, tratta la struttura come genuinamente variabile.
+- Non usare mai le parole "Standard" o "Cluster" — non esistono in
+  questo sistema. Usa i nomi reali degli engine.
+- Dichiara sempre esplicitamente quando un test statistico fallisce
+  (S3, B1, B2) — non minimizzare. Un p-value alto significa che il
+  risultato non è distinguibile dal caso.
+- Quando il CAGR realizzato è vicino alla mediana bootstrap, dillo: è
+  un risultato "tipico". Quando il MaxDD realizzato è peggiore del
+  MaxDD mediano bootstrap, dillo altrettanto chiaramente.
+- Nessun consiglio di investimento esplicito.
+- Non usare simboli decorativi (■, •, ▪, o altri bullet/quadratini)
+  prima o dopo verdetti (PASS/FAIL/Sì/No) o valori numerici nelle
+  tabelle — scrivi solo il testo/numero, la formattazione visiva è
+  gestita dal renderer.
+- Usa sempre la terminologia italiana per i test di significatività:
+  'Significativo' / 'Non significativo' — mai i termini inglesi
+  'significant' / 'NOT significant', anche quando i dati di input li
+  usano.
+- Scrivi i numeri interi grandi SENZA separatore delle migliaia:
+  62208, non 62.208 né 62 208 né 62,208.
+- Non usare mai un trattino (-, –, —, −) per esprimere un intervallo
+  numerico. Scrivi sempre 'tra X e Y' per esteso, mai 'X-Y' o 'X–Y'.
+  Questo vale ANCHE per i percentili ordinali con simbolo di grado:
+  ❌ NON scrivere: "al 5°–95° percentile", "5-95 percentile"
+  ✅ SCRIVERE: "tra il 5° e il 95° percentile"
+  La regola si applica a qualunque coppia di numeri unita da trattino,
+  non solo a percentuali: percentili, range di date, bps, ecc.
+- Non costruire tabelle Markdown. Le tabelle numeriche di §6 sono già
+  generate deterministicamente da Python — scrivi SOLO testo di analisi,
+  osservazioni e diagnosi. Per ciascuna sotto-sezione (6.a, 6.b, 6.c)
+  e per §7: 2-5 frasi quantitative di commento, in prosa.
+- Stile: diretto, quantitativo, zero riempitivo.
+"""
+
+    user_prompt = (
+        f'Genera in Markdown le sezioni di analisi per\n'
+        f'"{portfolio_title}" ({year}, profilo {profile}), benchmark {benchmark_title}.\n\n'
+        f'Dati — unica fonte di verità, non usare nient\'altro:\n{payload_json}\n\n'
+        f'Struttura richiesta (SOLO testo di analisi — nessuna tabella Markdown):\n'
+        f'## 6. Analisi dei Segnali e Diagnosi Strutturale\n'
+        f'### 6.a — Overfitting Check\n'
+        f'2-5 frasi: interpreta i segnali S1-S4 per ciascun engine, confronta, '
+        f'identifica pattern rilevanti.\n'
+        f'### 6.b — Monte Carlo Skill Tests\n'
+        f'2-5 frasi: commenta i p-value B1/B2 per ciascun engine, confronta, '
+        f'valuta la robustezza statistica.\n'
+        f'### 6.c — Confidence Intervals\n'
+        f'2-5 frasi: posiziona il realizzato rispetto alla distribuzione bootstrap '
+        f'(p5-p95), confronta gli engine.\n'
+        f'## 7. Decisione Finale\n'
+        f'3-5 osservazioni quantitative che un gestore userebbe per decidere '
+        f'quale engine (se uno) promuovere. Solo testo, nessuna tabella.\n'
+    )
+
+    analysis_md = _call_claude(system_prompt, user_prompt, max_tokens=64000)
+
+    # ── Guardrail anti-allucinazione (funzione condivisa) ──────────────────
+    _run_numeric_guardrail(analysis_md, payload,
+                            debug_path="/tmp/relazione_llm_debug.md")
+
+    return analysis_md
+
+
+def generate_relazione_investitore_llm(
+    *,
+    out: dict,
+    ptf_def: dict,
+    portfolio_title: str,
+    benchmark_title: str,
+    model: str = "claude-sonnet-4-6",
+) -> str:
+    """
+    Genera in Markdown la relazione investitore, via LLM (Anthropic API).
+
+    A differenza di generate_relazione_llm (che valuta SE un PTF merita il
+    deploy, tramite OFC/MC), questa funzione risponde alla domanda: il PTF
+    gia' selezionato e' compatibile con la propensione al rischio e
+    l'orizzonte temporale dell'investitore? Usa l'output di
+    generate_rotational_portfolio_performance (statistiche rolling,
+    drawdown/recovery, CAPM) come unica fonte di verita'.
+
+    Solleva ValueError se il testo generato contiene numeri assenti dal
+    payload (guardrail anti-allucinazione condiviso). Propagare
+    l'eccezione — non ingoiarla.
+    """
+    import json as _json
+
+    ptf_type = ptf_def.get("ptf_type", "systematic")  # default silenzioso
+    thesis = ptf_def.get("thesis", "")
+
+    # ── Riassunto rolling alpha/beta (non la serie intera: costo token) ────
+    ra = out["rolling_alpha"]
+    n = len(ra)
+    first_half = ra.iloc[: n // 2]
+    second_half = ra.iloc[n // 2 :]
+    last_90 = ra.tail(90)
+
+    rolling_summary = {
+        "alpha_ann_pct_prima_meta_media": float(first_half["alpha_ann_pct"].mean()),
+        "alpha_ann_pct_seconda_meta_media": float(second_half["alpha_ann_pct"].mean()),
+        "alpha_ann_pct_ultimi_90gg_media": float(last_90["alpha_ann_pct"].mean()),
+        "beta_prima_meta_media": float(first_half["beta"].mean()),
+        "beta_seconda_meta_media": float(second_half["beta"].mean()),
+        "beta_ultimi_90gg_media": float(last_90["beta"].mean()),
+        "p_alpha_ultimi_90gg_media": float(last_90["p_alpha"].mean()),
+    }
+
+    payload = {
+        "portfolio_title": portfolio_title,
+        "benchmark_title": benchmark_title,
+        "ptf_type": ptf_type,
+        "thesis": thesis,
+        "stats": out["stats_df"]["Valore"].to_dict(),
+        "capm_full_period": out["capm"],
+        "rolling_summary": rolling_summary,
+        "benchmark_meta": out["benchmark_meta"],
+    }
+
+    # Pre-calcolo conversioni giorni -> anni (252 gg/anno, convenzione trading)
+    # cosi' il modello NON deve inventare la conversione a runtime: il numero
+    # e' gia' nel payload e il guardrail lo accetta senza falsi positivi.
+    _stats_raw = out["stats_df"]["Valore"]
+    _conversioni_anni = {}
+    for _k in ("Giorni di trading", "Max Underwater Duration (giorni)",
+               "Underwater Days Now", "Durata minima in guadagno (giorni)"):
+        if _k in _stats_raw.index:
+            try:
+                _giorni = float(_stats_raw[_k])
+                _conversioni_anni[_k.replace("(giorni)", "(anni)").strip()] = round(_giorni / 252, 1)
+            except (TypeError, ValueError):
+                pass
+    payload["conversioni_giorni_anni"] = _conversioni_anni
+
+    payload_json = _json.dumps(payload, indent=2, default=str)
+
+    _thesis_instruction = (
+        "Poiche' ptf_type='thematic', un alpha rolling in aumento nella finestra "
+        "recente rispetto allo storico e' l'evidenza ATTESA che la tesi "
+        "d'investimento (vedi campo 'thesis') si sta confermando — descrivilo "
+        "come conferma, non con toni di cautela sulla persistenza."
+        if ptf_type == "thematic" else
+        "Poiche' ptf_type='systematic', un eventuale aumento di alpha nella "
+        "finestra recente va descritto come pattern da verificare nel tempo, "
+        "NON come conferma di edge strutturale."
+    )
+
+    system_prompt = f"""Agisci come un consulente finanziario senior che
+spiega a un investitore finale — non a un tecnico — se il portafoglio
+gia' selezionato e' compatibile con la sua propensione al rischio e il
+suo orizzonte temporale. Non stai valutando se il PTF merita il deploy
+(quello e' gia' deciso): stai spiegando il suo comportamento reale.
+
+Regole non negoziabili:
+- Usa ESCLUSIVAMENTE i numeri presenti nel JSON fornito. Ogni cifra che
+  scrivi deve essere rintracciabile li' dentro.
+- {_thesis_instruction}
+- Non usare mai un trattino (-, –, —, −) per esprimere un intervallo
+  numerico. Scrivi sempre 'tra X e Y' per esteso, mai 'X-Y' o 'X–Y'.
+  Questo vale ANCHE per i percentili ordinali con simbolo di grado:
+  NON scrivere: "al 5°–95° percentile"
+  SCRIVERE: "tra il 5° e il 95° percentile"
+- Nessun consiglio di investimento esplicito ne' giudizio di idoneita'
+  personale: descrivi il comportamento del portafoglio, non "dovresti
+  investire". Chiudi sempre indicando di verificare l'idoneita' con il
+  proprio consulente/gestore.
+- Usa **grassetto Markdown** (doppio asterisco) per enfatizzare i numeri
+  chiave che un investitore deve notare a colpo d'occhio: CAGR, Max
+  Drawdown, durata underwater attuale, volatilita' annua, alpha
+  annualizzato, beta. Non esagerare: 1-2 grassetti per paragrafo,
+  sui dati piu' rilevanti per quella sezione, non su ogni numero.
+- Non arrotondare un valore reale a una soglia "tonda" diversa dal dato
+  esatto per effetto retorico (es. NON scrivere "supera il 60%" se il
+  valore esatto e' 63,17% — scrivi il numero esatto, es. "63,17%" o
+  al massimo "supera il 63%"). Ogni cifra deve restare aderente al
+  valore fornito, non un'approssimazione arbitraria verso un numero
+  piu' memorabile.
+- Il Max Drawdown e l'Underwater Duration attuale vanno sempre
+  contestualizzati in termini di TEMPO (giorni/anni), non solo
+  percentuale — e' l'informazione piu' concreta per valutare l'orizzonte.
+- Il campo "Durata minima in guadagno (giorni)" indica la finestra minima
+  di detenzione (holding period) tale che, storicamente, chiunque fosse
+  entrato in QUALSIASI momento e avesse tenuto il portafoglio per almeno
+  quella durata, sarebbe sempre risultato in guadagno. NON significa
+  "tempo gia' trascorso in guadagno" — e' una soglia di sicurezza per
+  l'orizzonte temporale, non un fatto gia' avvenuto. Esprimila sempre
+  come requisito ("tenendo il portafoglio per almeno X, storicamente
+  non si sarebbe mai chiuso in perdita"), mai come durata gia' vissuta.
+- Scrivi i numeri interi grandi SENZA separatore delle migliaia.
+- Non costruire tabelle Markdown — solo testo di analisi in prosa.
+- Qualunque numero che scrivi deve essere (a) letteralmente presente nel
+  JSON, oppure (b) uno dei valori gia' pre-calcolati in
+  "conversioni_giorni_anni". NON eseguire tu conversioni, calcoli
+  illustrativi o esempi con numeri di fantasia (es. "a un movimento del
+  10% del benchmark corrispondono circa X punti", "orizzonte tipicamente
+  superiore a 10 anni", soglie empiriche non presenti nel JSON). Se vuoi
+  spiegare beta, alpha, o un requisito di orizzonte/tolleranza al rischio,
+  fallo in termini qualitativi (es. "il portafoglio si muove mediamente a
+  circa meta' dell'ampiezza del benchmark"), senza assegnare numeri che
+  non provengono direttamente dal JSON.
+- Stile: diretto, per un lettore non tecnico. Se usi termini come "beta"
+  o "alpha", spiegali in una frase semplice, senza esempi numerici
+  costruiti ad hoc.
+- Attenzione alla grammatica italiana: nei periodi ipotetici del tipo
+  "chiunque fosse entrato in qualsiasi momento e avesse mantenuto il
+  portafoglio per almeno quella durata", la conseguenza va sempre al
+  CONDIZIONALE PASSATO ("non avrebbe mai chiuso in perdita"), MAI al
+  congiuntivo ("non avesse mai chiuso in perdita") — il doppio
+  congiuntivo e' un errore grave da evitare sempre.
+- Non usare l'anglicismo tradotto "sott'acqua"/"sottacqua" (calco di
+  "underwater"). Usa terminologia italiana standard, ad esempio: "in
+  fase di ribasso rispetto al massimo storico", "al di sotto del picco
+  precedente", "non ha ancora recuperato il massimo storico".
+"""
+
+    user_prompt = (
+        f'Genera in Markdown la relazione investitore per\n'
+        f'"{portfolio_title}", benchmark {benchmark_title}.\n\n'
+        f"Dati — unica fonte di verita', non usare nient'altro:\n{payload_json}\n\n"
+        f'Struttura richiesta (SOLO testo di analisi — nessuna tabella Markdown):\n'
+        f'## Sintesi\n2-3 frasi: cosa ha fatto il portafoglio, in parole semplici.\n'
+        f'## Drawdown e Tempo di Recupero\n'
+        f'3-5 frasi su MaxDD, underwater duration attuale, tempi di recupero tipici.\n'
+        f'## Andamento del Vantaggio nel Tempo\n'
+        f'3-5 frasi su alpha storico vs recente, interpretato secondo ptf_type.\n'
+        f'## Relazione col Mercato di Riferimento\n'
+        f'2-4 frasi su beta/correlazione: quanto il PTF segue o si smarca dal benchmark.\n'
+        f"## Nota per l'Investitore\n"
+        f'2-3 frasi: per quale tipo di orizzonte/tolleranza al rischio questi numeri sono '
+        f'ragionevoli — SENZA consiglio esplicito, chiudendo con rimando al gestore.\n'
+    )
+
+    _max_attempts = 3  # tentativo iniziale + 2 retry
+    _last_error = None
+    analysis_md = None
+    for _attempt in range(1, _max_attempts + 1):
+        _suffix = "" if _attempt == 1 else f" (tentativo {_attempt}/{_max_attempts})"
+        print(f"[generate_relazione_investitore_llm] Generazione relazione per "
+              f"'{portfolio_title}' in corso{_suffix} (puo' richiedere alcuni minuti)...")
+        analysis_md = _call_claude(system_prompt, user_prompt, max_tokens=8000)
+        print(f"[generate_relazione_investitore_llm] Testo generato "
+              f"({len(analysis_md)} caratteri). Verifica guardrail anti-allucinazione...")
+        try:
+            _run_numeric_guardrail(analysis_md, payload,
+                                    debug_path="/tmp/relazione_investitore_debug.md")
+            print("[generate_relazione_investitore_llm] Guardrail superato. Relazione pronta.")
+            return analysis_md
+        except ValueError as _e:
+            _last_error = _e
+            print(f"[generate_relazione_investitore_llm] Guardrail bloccato al "
+                  f"tentativo {_attempt}/{_max_attempts}: {_e}")
+
+    # Tutti i tentativi falliti: fail-soft. Non solleva eccezione — restituisce
+    # il testo con un banner di attenzione ben visibile, per revisione manuale,
+    # invece di bloccare l'intera esecuzione per un problema di formulazione
+    # (spesso falso positivo: riformulazione aritmeticamente corretta di un
+    # numero vero, non una vera allucinazione). Il banner finisce anche nel
+    # PDF, dato che il testo passa comunque per _md_to_flowables.
+    print(f"[generate_relazione_investitore_llm] ATTENZIONE: guardrail non "
+          f"superato dopo {_max_attempts} tentativi. Restituisco il testo con "
+          f"banner di avviso — revisione manuale richiesta prima di pubblicare.")
+    _banner = (
+        "**\u26a0\ufe0f ATTENZIONE — VERIFICA MANUALE RICHIESTA.** Il controllo "
+        f"automatico anti-allucinazione non e' stato superato dopo {_max_attempts} "
+        "tentativi di generazione. Uno o piu' numeri nel testo seguente "
+        "potrebbero non essere direttamente derivabili dai dati di origine. "
+        "Verificare ogni cifra prima di condividere questo documento con "
+        f"l'investitore. Dettaglio: `{_last_error}`\n\n---\n\n"
+    )
+    return _banner + analysis_md
+
+_INVESTOR_FIG_TITLES = [
+    ("rolling_capm",      "Rolling CAPM"),
+    ("perf_ytd",          "Performance vs Benchmark (YTD)"),
+    ("rend_annuali",      "Rendimenti annuali"),
+    ("rend_mensili",      "Rendimenti mensili"),
+    ("triangolo_cagr",    "Triangolo dei rendimenti medi"),
+    ("rend_per_titolo",   "Rendimenti totali per titolo"),
+]
+
+
+def _select_investor_figs(out: dict) -> dict:
+    """
+    Seleziona, per titolo (substring match case-insensitive), i grafici
+    chiave da out['figs'] per la relazione investitore: rolling CAPM,
+    performance YTD vs benchmark, rendimenti annuali, rendimenti mensili,
+    triangolo CAGR, rendimenti per titolo.
+
+    Ritorna dict {slug: plotly.graph_objects.Figure}. Chiavi assenti se
+    il grafico corrispondente non e' stato trovato in out['figs'].
+    """
+    result = {}
+    for fig in out.get("figs", []):
+        title_obj = getattr(fig, "layout", None)
+        title_obj = getattr(title_obj, "title", None) if title_obj is not None else None
+        title_text = getattr(title_obj, "text", None) if title_obj is not None else None
+        if not title_text:
+            continue
+        for slug, needle in _INVESTOR_FIG_TITLES:
+            if slug in result:
+                continue
+            if needle.lower() in title_text.lower():
+                result[slug] = fig
+    return result
+
+
+def generate_relazione_investitore_pdf(
+    *,
+    portfolio_title: str,
+    benchmark_title: str,
+    analysis_md: str,
+    out: dict,
+    output_path,
+    gen_date: str | None = None,
+    include_figs: bool = True,
+    figs_dir=None,
+) -> _Path_doc:
+    """
+    Genera la Relazione Investitore PDF con reportlab, riusando la stessa
+    palette/header/footer/convertitore Markdown di generate_relazione_tecnica,
+    ma con struttura piu' snella: titolo, testo di analisi (Sintesi, Drawdown,
+    Alpha nel tempo, Relazione col benchmark, Nota per l'investitore) e i
+    grafici chiave selezionati da out['figs'] (rolling CAPM, performance YTD,
+    rendimenti annuali/mensili, triangolo CAGR, rendimenti per titolo).
+
+    Parameters
+    ----------
+    analysis_md : str
+        Output di generate_relazione_investitore_llm (Markdown con ## headers).
+    out : dict
+        Output di generate_rotational_portfolio_performance.
+    output_path : path-like
+        Path del PDF da generare.
+    include_figs : bool, default True
+        Se True, esporta ed embedda i grafici chiave (richiede kaleido).
+    figs_dir : path-like, optional
+        Directory per i PNG esportati temporaneamente. Default:
+        output_path.parent / "_investor_figs".
+
+    Returns
+    -------
+    Path
+        Path del PDF scritto.
+    """
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors as rl_colors
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import mm
+    from reportlab.platypus import (
+        SimpleDocTemplate, Paragraph, Spacer, HRFlowable,
+    )
+    from reportlab.platypus import Image as _RLImage
+    from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
+    try:
+        from PIL import Image as _PILImage
+        _HAS_PIL = True
+    except ImportError:
+        _HAS_PIL = False
+
+    output_path = _Path_doc(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if gen_date is None:
+        gen_date = _dt_doc.date.today().isoformat()
+
+    C_NAVY    = rl_colors.HexColor(_RL_NAVY)
+    C_NAVY_LT = rl_colors.HexColor(_RL_NAVY_LT)
+    C_GRAY_BD = rl_colors.HexColor(_RL_GRAY_BD)
+    C_WHITE   = rl_colors.white
+    C_TEXT    = rl_colors.HexColor(_RL_TEXT)
+
+    PAGE_W, PAGE_H = A4
+    MARGIN    = 20 * mm
+    CONTENT_W = PAGE_W - 2 * MARGIN
+
+    styles = getSampleStyleSheet()
+
+    def _st(name, parent='Normal', **kw):
+        return ParagraphStyle(name, parent=styles[parent], **kw)
+
+    st_title    = _st('_ri_title',  'Title', fontSize=22, textColor=C_NAVY,
+                       spaceAfter=4, alignment=TA_CENTER, fontName='Helvetica-Bold')
+    st_subtitle = _st('_ri_sub',    fontSize=10, textColor=C_NAVY_LT,
+                       spaceAfter=12, alignment=TA_CENTER)
+    st_section  = _st('_ri_sec',    fontSize=13, textColor=C_NAVY, spaceBefore=12,
+                       spaceAfter=5, fontName='Helvetica-Bold')
+    st_subsec   = _st('_ri_ssec',   fontSize=10.5, textColor=C_NAVY_LT, spaceBefore=7,
+                       spaceAfter=3, fontName='Helvetica-Bold')
+    st_body     = _st('_ri_body',   fontSize=9.5, textColor=C_TEXT, spaceAfter=6,
+                       alignment=TA_JUSTIFY, leading=14)
+    st_caption  = _st('_ri_cap',    fontSize=7.5, textColor=C_NAVY_LT, spaceAfter=6,
+                       alignment=TA_CENTER, fontName='Helvetica-Oblique')
+
+    _ptf_label  = f"{portfolio_title}"
+    _foot_label = f"Generato il {gen_date} · investia.cloud · uso interno"
+
+    def _draw_hf(canvas, doc):
+        canvas.saveState()
+        canvas.setFillColor(C_NAVY)
+        canvas.rect(0, PAGE_H - 12 * mm, PAGE_W, 12 * mm, fill=1, stroke=0)
+        canvas.setFont('Helvetica-Bold', 9)
+        canvas.setFillColor(C_WHITE)
+        canvas.drawString(MARGIN, PAGE_H - 8 * mm,
+                          'InvestIA — Relazione Investitore')
+        canvas.drawRightString(PAGE_W - MARGIN, PAGE_H - 8 * mm, _ptf_label)
+        canvas.setFont('Helvetica', 7.5)
+        canvas.setFillColor(rl_colors.HexColor('#666666'))
+        canvas.drawString(MARGIN, 8 * mm, _foot_label)
+        canvas.drawRightString(PAGE_W - MARGIN, 8 * mm, f"Pag. {doc.page}")
+        canvas.setStrokeColor(C_GRAY_BD)
+        canvas.setLineWidth(0.5)
+        canvas.line(MARGIN, 11 * mm, PAGE_W - MARGIN, 11 * mm)
+        canvas.restoreState()
+
+    # ── Esportazione grafici chiave (opzionale) ─────────────────────────────
+    _fig_captions = {
+        "rolling_capm":    "Alpha e Beta in finestra rolling.",
+        "perf_ytd":        "Performance a confronto col benchmark, anno corrente.",
+        "rend_annuali":    "Rendimenti annuali e rischio annuale.",
+        "rend_mensili":    "Rendimenti mensili del portafoglio.",
+        "triangolo_cagr":  "Rendimenti medi annui (CAGR) tra date discrete di ingresso/uscita.",
+        "rend_per_titolo": "Rendimenti totali per singolo titolo in portafoglio.",
+    }
+    _fig_paths = {}
+    if include_figs:
+        if figs_dir is None:
+            figs_dir = output_path.parent / "_investor_figs"
+        figs_dir = _Path_doc(figs_dir)
+        figs_dir.mkdir(parents=True, exist_ok=True)
+        _selected = _select_investor_figs(out)
+        for slug, fig in _selected.items():
+            _png_path = figs_dir / f"{slug}.png"
+            try:
+                fig.write_image(str(_png_path), width=1400, height=800, scale=2)
+                _fig_paths[slug] = _png_path
+            except Exception as _e:
+                print(f"[generate_relazione_investitore_pdf] WARNING: "
+                      f"impossibile esportare grafico '{slug}': {_e}")
+
+    def _img_flowable(png_path, caption=None):
+        if not png_path.exists():
+            return []
+        try:
+            from reportlab.platypus import KeepTogether
+            w = CONTENT_W
+            if _HAS_PIL:
+                with _PILImage.open(png_path) as im:
+                    iw, ih = im.size
+                h = w * (ih / iw)
+            else:
+                h = w * 0.55
+            elems = [_RLImage(str(png_path), width=w, height=h)]
+            if caption:
+                elems.append(Paragraph(caption, st_caption))
+            return [KeepTogether(elems), Spacer(1, 4 * mm)]
+        except Exception:
+            return []
+
+    # ── Story ───────────────────────────────────────────────────────────────
+    story = []
+    story.append(Spacer(1, 6 * mm))
+    story.append(Paragraph(f"Relazione per l'Investitore · {portfolio_title}", st_title))
+    story.append(Paragraph(
+        f"Benchmark {benchmark_title} · Generato il {gen_date}",
+        st_subtitle,
+    ))
+    story.append(HRFlowable(width='100%', thickness=0.75, color=C_NAVY_LT))
+    story.append(Spacer(1, 4 * mm))
+
+    _disclaimer = (
+        "Questo documento descrive il comportamento storico del portafoglio "
+        "gia' selezionato dal gestore. Non costituisce consulenza in materia "
+        "di investimenti ne' una valutazione di idoneita' personale: verificare "
+        "sempre con il proprio consulente o gestore la compatibilita' con la "
+        "propria situazione finanziaria individuale."
+    )
+    story.append(Paragraph(_disclaimer, st_caption))
+    story.append(Spacer(1, 4 * mm))
+
+    _ri_stys = {
+        'section':   st_section,
+        'subsec':    st_subsec,
+        'body':      st_body,
+        'content_w': CONTENT_W,
+    }
+    story.extend(_md_to_flowables(analysis_md, styles=_ri_stys))
+
+    # ── Grafici chiave (in coda al testo) ──────────────────────────────────
+    if _fig_paths:
+        story.append(Spacer(1, 3 * mm))
+        story.append(Paragraph("Grafici di supporto", st_section))
+        for slug, _label in _INVESTOR_FIG_TITLES:
+            if slug in _fig_paths:
+                story.extend(_img_flowable(_fig_paths[slug], _fig_captions.get(slug)))
+
+    doc = SimpleDocTemplate(
+        str(output_path), pagesize=A4,
+        topMargin=18 * mm, bottomMargin=18 * mm,
+        leftMargin=MARGIN, rightMargin=MARGIN,
+        title=f"Relazione Investitore {portfolio_title}",
+        author="InvestIA")
+    doc.build(story, onFirstPage=_draw_hf, onLaterPages=_draw_hf)
+    return output_path
+
+
+def generate_relazione_investitore_report(
+    *,
+    out: dict,
+    portfolio: dict,
+    reports_dir,
+    year: int | None = None,
+    profile: str | None = None,
+) -> dict | None:
+    """
+    Orchestratore analogo a generate_final_report: chiama
+    generate_relazione_investitore_llm (LLM, con guardrail) e poi
+    generate_relazione_investitore_pdf (rendering), salvando il PDF in
+    reports_dir. Stampa i path generati, stesso pattern di
+    generate_final_report.
+
+    Parameters
+    ----------
+    portfolio : dict
+        Dizionario di definizione del portafoglio (es. portfolio_germany_plan).
+        Deve contenere almeno le chiavi "Title" e "benchmark_title".
+        Title, benchmark_title e ptf_type/thesis vengono derivati da qui —
+        NON passare questi valori separatamente per evitare disallineamenti
+        tra portfolio e i suoi metadati (bug gia' verificatosi: thesis di
+        un PTF applicata per errore a un PTF diverso).
+
+    Returns
+    -------
+    dict | None
+        None se la generazione LLM fallisce (eccezione propagata a monte).
+        Altrimenti {"pdf_path": Path, "analysis_md": str}.
+    """
+    from datetime import date as _date
+
+    portfolio_title = portfolio["Title"]
+    benchmark_title = portfolio["benchmark_title"]
+
+    _today_iso = _date.today().isoformat()
+    _ptf_name  = portfolio_title.replace(' ', '_').lower()
+    reports_dir = _Path_doc(reports_dir)
+
+    _suffix = f"_{year}" if year else ""
+    _suffix += f"_{profile}" if profile else ""
+    _pdf_path = reports_dir / f"{_ptf_name}{_suffix}_Relazione_Investitore.pdf"
+    _pdf_path.parent.mkdir(parents=True, exist_ok=True)
+
+    _analysis_md = generate_relazione_investitore_llm(
+        out=out,
+        ptf_def=portfolio,
+        portfolio_title=portfolio_title,
+        benchmark_title=benchmark_title,
+    )
+
+    generate_relazione_investitore_pdf(
+        portfolio_title=portfolio_title,
+        benchmark_title=benchmark_title,
+        analysis_md=_analysis_md,
+        out=out,
+        output_path=_pdf_path,
+        gen_date=_today_iso,
+    )
+    print(f"Relazione investitore PDF: {_pdf_path}")
+
+
+def _test_guardrail_numtokens() -> None:
+    """
+    Suite di test per normalizzazione numerica del guardrail anti-allucinazione.
+    Eseguire manualmente: _test_guardrail_numtokens()
+    """
+    import re as _re
+
+    def _norm(text: str) -> str:
+        text = _re.sub(
+            r'\b(\d{1,3})[\s ]+(\d{3})\b',
+            lambda m: m.group(1) + m.group(2),
+            text,
+        )
+        text = _re.sub(r'(?<!\d)[−–]', '-', text)
+        return text
+
+    def _tok(text: str) -> list[str]:
+        return _re.findall(r"-?\d+(?:[.,]\d+)?", _norm(text))
+
+    # ── Migliaia con spazio (3 nuovi casi — Message 5) ────────────────────
+    assert _tok("n = 2 304 trial") == ["2304"],          f"fail: {_tok('n = 2 304 trial')}"
+    assert _tok("62 208 trial") == ["62208"],             f"fail: {_tok('62 208 trial')}"
+    assert _tok("1 260 giorni di trading") == ["1260"],   f"fail: {_tok('1 260 giorni di trading')}"
+
+    # ── EN DASH come separatore di range (non produce negativi) ──────────
+    _r = _tok("93–98%")
+    assert "-98" not in _r,   f"phantom negative: {_r}"
+    assert "93" in _r and "98" in _r, f"range perso: {_r}"
+
+    # ── Non-breaking space come separatore di migliaia ────────────────────
+    assert _tok("1 260") == ["1260"], f"fail nbsp: {_tok(chr(0x31)+chr(0x00A0)+chr(0x32)+chr(0x36)+chr(0x30))}"
+
+    # ── Unicode minus all'inizio (segno negativo legittimo) ───────────────
+    assert _tok("−62.02") == ["-62.02"],           f"fail: {_tok('−62.02')}"
+    assert _tok("rendimento −12.5%") == ["-12.5"], f"fail: {_tok('rendimento −12.5%')}"
+    assert _tok("da −10 a +10") == ["-10", "10"],  f"fail: {_tok('da −10 a +10')}"
+
+    # ── Punto come separatore migliaia italiano (pass-through a _accettabile) ─
+    assert _tok("62.208") == ["62.208"], f"fail: {_tok('62.208')}"
+    assert _tok("2.304") == ["2.304"],   f"fail: {_tok('2.304')}"
+
+    # ── EM DASH (U+2014) non presente in _norm: non crea negativi ─────────
+    _r = _tok("93—98%")
+    assert "-98" not in _r, f"em-dash phantom negative: {_r}"
+
+    # ── Trattino ASCII ordinario = meno legittimo ─────────────────────────
+    assert _tok("-5.3%") == ["-5.3"], f"fail: {_tok('-5.3%')}"
+
+    # ── Migliaia >4 cifre: "10 000" ────────────────────────────────────────
+    assert _tok("10 000 trail") == ["10000"], f"fail: {_tok('10 000 trail')}"
+
+    # ── Differenze realized/realized_base espresse in punti base ─────────
+    # Simula: realized CAGR Momentum=0.1218, realized_base CAGR Momentum=0.1408
+    # → differenza = 0.019 → 190 punti base
+    # "190" non è nel payload direttamente, ma è abs(0.1408-0.1218)*10000.
+    import re as _re2, json as _json2
+    _pf_test = {"engines": {
+        "Momentum":    {"realized": {"cagr": 0.1218}, "realized_base": {"cagr": 0.1408}},
+        "Multifactor": {"realized": {"cagr": 0.1091}, "realized_base": {"cagr": 0.1631}},
+    }}
+    _pf_json_test = _json2.dumps(_pf_test, indent=2)
+
+    def _norm2(text):
+        text = _re2.sub(r'\b(\d{1,3})[\s ]+(\d{3})\b', lambda m: m.group(1)+m.group(2), text)
+        text = _re2.sub(r'(?<!\d)[−–]', '-', text)
+        return text
+    def _tok2(text): return _re2.findall(r"-?\d+(?:[.,]\d+)?", _norm2(text))
+
+    _pf_raw_test = []
+    for _t in _tok2(_pf_json_test):
+        try: _pf_raw_test.append(float(_t.replace(',', '.')))
+        except ValueError: pass
+    _pf_floats_test = frozenset(_pf_raw_test)
+
+    _rv_raw_test: dict = {}
+    for _eng, _ev in _pf_test["engines"].items():
+        for _rk in ("realized", "realized_base"):
+            for _m, _v in (_ev.get(_rk) or {}).items():
+                _rv_raw_test[(_eng, _rk, _m)] = float(_v)
+    _rv_items_test = list(_rv_raw_test.items())
+    _diffs_test: set = set()
+    for _i in range(len(_rv_items_test)):
+        (_ei, _ki, _mi), _vi = _rv_items_test[_i]
+        for _j in range(_i+1, len(_rv_items_test)):
+            (_ej, _kj, _mj), _vj = _rv_items_test[_j]
+            if _mi != _mj: continue
+            _d = abs(_vi - _vj)
+            _diffs_test.update({_d, _d*100, _d*10000})
+    _rd_test = frozenset(_diffs_test)
+
+    def _acc_test(token):
+        cleaned = token.replace(',', '.')
+        try: v = float(cleaned)
+        except ValueError: return True
+        candidati = {v, v/100, v*100}
+        if any(abs(c-p) < 0.01*max(abs(p), 1.0) for c in candidati for p in _pf_floats_test):
+            return True
+        if _rd_test:
+            return any(abs(v-d) < 0.01*max(abs(d), 1.0) for d in _rd_test)
+        return False
+
+    assert _acc_test("190"), "fail: 190 punti base (diff realized Momentum CAGR) non accettato"
+    assert _acc_test("540"), "fail: 540 punti base (diff realized Multifactor CAGR) non accettato"
+    assert not _acc_test("999"), "fail: 999 non dovrebbe essere accettato (non è diff realized)"
+
+    print("_test_guardrail_numtokens: tutti i 18 casi OK")
+
+
+def _parse_llm_sections(md: str) -> dict:
+    """
+    Estrae le sezioni dall'output LLM (§6.a, §6.b, §6.c, §7) in un dict.
+    Chiavi: '6a', '6b', '6c', '7'. Valori: testo senza l'intestazione.
+    Robusto rispetto al livello di heading (##/###/####) e alla capitalizzazione.
+    """
+    import re as _re
+    _HDRS = [
+        ('6a', _re.compile(r'^#{1,4}\s+6\.a\b', _re.MULTILINE | _re.IGNORECASE)),
+        ('6b', _re.compile(r'^#{1,4}\s+6\.b\b', _re.MULTILINE | _re.IGNORECASE)),
+        ('6c', _re.compile(r'^#{1,4}\s+6\.c\b', _re.MULTILINE | _re.IGNORECASE)),
+        ('7',  _re.compile(r'^#{1,4}\s+7\.', _re.MULTILINE | _re.IGNORECASE)),
+    ]
+    hits = []
+    for key, pat in _HDRS:
+        m = pat.search(md)
+        if m:
+            hits.append((m.start(), key, m.end()))
+    hits.sort()
+    result = {}
+    for i, (start, key, hdr_end) in enumerate(hits):
+        end = hits[i + 1][0] if i + 1 < len(hits) else len(md)
+        body_start = md.find('\n', hdr_end)
+        body_start = body_start + 1 if body_start != -1 else hdr_end
+        result[key] = md[body_start:end].strip()
+    return result
+
+
+def _md_to_flowables(md_text: str, styles: dict) -> list:
+    """
+    Converte testo Markdown (output LLM) in lista di ReportLab flowables.
+
+    styles dict atteso:
+        'section'  → ParagraphStyle per ## headings
+        'subsec'   → ParagraphStyle per ### headings
+        'body'     → ParagraphStyle per testo normale
+        'caption'  → ParagraphStyle per caption
+        'mm'       → valore di mm (reportlab.lib.units)
+        'Spacer'   → reportlab Spacer class
+        'Paragraph'→ reportlab Paragraph class
+        'Table'    → reportlab Table class
+        'TableStyle' → reportlab TableStyle class
+        'HRFlowable'→ reportlab HRFlowable class
+    """
+    from reportlab.platypus import Paragraph, Spacer, Table, TableStyle, HRFlowable
+    from reportlab.lib.units import mm
+
+    st_section    = styles['section']
+    st_subsec     = styles['subsec']
+    st_body       = styles['body']
+    # h4/h5 fallback: derive from st_subsec if not provided by caller
+    st_subsubsec  = styles.get('subsubsec')
+    if st_subsubsec is None:
+        from reportlab.lib.styles import ParagraphStyle as _ParagraphStyle
+        st_subsubsec = _ParagraphStyle('_h4_fallback', parent=st_subsec,
+                                       fontSize=9, spaceBefore=4, spaceAfter=2)
+
+    def _escape_html(s):
+        return s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+    def _inline(s):
+        # **bold** → <b>bold</b>, *italic* → <i>italic</i>
+        import re
+        s = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', s)
+        s = re.sub(r'\*(.+?)\*',     r'<i>\1</i>', s)
+        return s
+
+    flowables = []
+    lines = md_text.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+
+        if not stripped:
+            flowables.append(Spacer(1, 2 * mm))
+            i += 1
+            continue
+
+        if stripped.startswith('---'):
+            flowables.append(HRFlowable(width='100%', thickness=0.5))
+            i += 1
+            continue
+
+        if stripped.startswith('##### '):
+            flowables.append(Paragraph(_inline(stripped[6:]), st_subsubsec))
+            i += 1
+            continue
+
+        if stripped.startswith('#### '):
+            flowables.append(Paragraph(_inline(stripped[5:]), st_subsubsec))
+            i += 1
+            continue
+
+        if stripped.startswith('### '):
+            flowables.append(Paragraph(_inline(stripped[4:]), st_subsec))
+            i += 1
+            continue
+
+        if stripped.startswith('## '):
+            flowables.append(Spacer(1, 3 * mm))
+            flowables.append(Paragraph(_inline(stripped[3:]), st_section))
+            i += 1
+            continue
+
+        if stripped.startswith('# '):
+            flowables.append(Paragraph(_inline(stripped[2:]), st_section))
+            i += 1
+            continue
+
+        # Markdown table: collect consecutive | lines
+        if stripped.startswith('|'):
+            tbl_lines = []
+            while i < len(lines) and lines[i].strip().startswith('|'):
+                tbl_lines.append(lines[i].strip())
+                i += 1
+            # Filter out separator rows (---|---)
+            data_lines = [l for l in tbl_lines
+                          if not all(c in '|-: ' for c in l)]
+            if data_lines:
+                from reportlab.lib import colors as _rlc
+                raw_rows = []
+                tbl_data = []
+                for tl in data_lines:
+                    cells = [c.strip() for c in tl.strip('|').split('|')]
+                    raw_rows.append(cells)
+                    tbl_data.append([Paragraph(_inline(c), st_body) for c in cells])
+                if tbl_data:
+                    n_cols     = max(len(r) for r in tbl_data)
+                    content_w  = styles.get('content_w', 150 * mm)
+
+                    # Proportional column widths (sum of stripped char lengths)
+                    col_lens = [0] * n_cols
+                    for row in raw_rows:
+                        for j, txt in enumerate(row[:n_cols]):
+                            col_lens[j] += len(
+                                txt.replace('✅', '').replace('❌', '').strip()
+                            )
+                    _total = sum(col_lens) or n_cols
+                    _MIN   = 12 * mm
+                    col_widths = [max(_MIN, content_w * (l / _total)) for l in col_lens]
+                    _cw_sum    = sum(col_widths)
+                    col_widths = [w * content_w / _cw_sum for w in col_widths]
+
+                    # Conditional background using palette from §4 (_RL_GREEN/_RL_RED)
+                    _C_GREEN = _rlc.HexColor(_RL_GREEN)
+                    _C_RED   = _rlc.HexColor(_RL_RED)
+
+                    def _vbg(raw: str) -> object | None:
+                        # Strip emoji then non-alphanumeric chars at both ends
+                        s = raw.replace('✅', '').replace('❌', '')
+                        s = re.sub(r'^[^\w]+|[^\w]+$', '', s).strip().upper()
+                        _GREEN = ('PASS', 'PROMOTED', 'SÌ', 'SI', 'SIGNIFICATIVO',
+                                  'SIGNIFICATIVA')
+                        _RED   = ('FAIL', 'NOT PROMOTED', 'NO',
+                                  'NON SIGNIFICATIVO', 'NON SIGNIFICATIVA',
+                                  'NOT SIGNIFICANT')
+                        if any(s.startswith(t) for t in _GREEN):
+                            return _C_GREEN
+                        if any(s.startswith(t) for t in _RED):
+                            return _C_RED
+                        return None
+
+                    ts_cmds = [
+                        ('GRID',          (0, 0), (-1, -1), 0.4, _rlc.grey),
+                        ('BACKGROUND',    (0, 0), (-1,  0), _rlc.HexColor('#E8ECF4')),
+                        ('FONTNAME',      (0, 0), (-1,  0), 'Helvetica-Bold'),
+                        ('FONTSIZE',      (0, 0), (-1, -1), 8),
+                        ('TOPPADDING',    (0, 0), (-1, -1), 3),
+                        ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+                        ('LEFTPADDING',   (0, 0), (-1, -1), 4),
+                        ('RIGHTPADDING',  (0, 0), (-1, -1), 4),
+                    ]
+                    # Apply cell colors starting from row 1 (skip header)
+                    for ri, row_raw in enumerate(raw_rows):
+                        if ri == 0:
+                            continue
+                        for ci, cell_txt in enumerate(row_raw[:n_cols]):
+                            bg = _vbg(cell_txt)
+                            if bg is not None:
+                                ts_cmds.append(
+                                    ('BACKGROUND', (ci, ri), (ci, ri), bg)
+                                )
+
+                    # Floor per colonna: max(larghezza header, floor verdetto se applicabile).
+                    # Evita word-wrap su qualsiasi header E garantisce spazio minimo
+                    # per token verdetto (PASS/FAIL/PROMOTED/…).
+                    from reportlab.pdfbase.pdfmetrics import stringWidth as _sw
+                    _PAD = 8  # somma left+right padding ReportLab
+                    _VERDICT_FLOOR = _sw("PROMOTED", "Helvetica", 8) + _PAD
+                    _adj = False
+                    for _j in range(n_cols):
+                        _vcells = [raw_rows[_ri][_j]
+                                   for _ri in range(1, len(raw_rows))
+                                   if _j < len(raw_rows[_ri])]
+                        _is_verdict = _vcells and all(_vbg(c) is not None for c in _vcells)
+                        _hdr_txt = (raw_rows[0][_j].replace('✅', '').replace('❌', '').strip()
+                                    if _j < len(raw_rows[0]) else '')
+                        _hdr_floor = (_sw(_hdr_txt, 'Helvetica-Bold', 8) + _PAD
+                                      if _hdr_txt else 0)
+                        _floor = max(_VERDICT_FLOOR if _is_verdict else 0, _hdr_floor)
+                        if _floor and col_widths[_j] < _floor:
+                            col_widths[_j] = _floor
+                            _adj = True
+                    if _adj:
+                        _cw2 = sum(col_widths)
+                        col_widths = [w * content_w / _cw2 for w in col_widths]
+
+                    tbl = Table(tbl_data, colWidths=col_widths)
+                    tbl.setStyle(TableStyle(ts_cmds))
+                    flowables.append(tbl)
+                    flowables.append(Spacer(1, 2 * mm))
+            continue
+
+        # Normal paragraph
+        flowables.append(Paragraph(_inline(_escape_html(stripped)), st_body))
+        i += 1
+
+    return flowables
+
+
 # ── Private helpers per generate_relazione_tecnica ────────────────────────────
-def _diagnose_ofc(ofc_report_std: dict, ofc_report_cluster) -> tuple:
+def _diagnose_ofc(
+    ofc_report_std: dict,
+    ofc_report_cluster,
+    *,
+    names: tuple = ('Standard', 'Cluster'),
+) -> tuple:
     '''
     Genera paragrafi diagnostici OFC adattativi (sezione 6a).
 
     Returns (std_paragraph_html, cluster_paragraph_html_or_None).
+    names: etichette per i due path (default Standard/Cluster; passa engine names per output dinamico).
     '''
     def _para(report, path_name):
         if report is None:
@@ -12862,8 +14051,8 @@ def _diagnose_ofc(ofc_report_std: dict, ofc_report_cluster) -> tuple:
                 f"La promozione del path {path_name} non è giustificata."
             )
 
-    std_txt = _para(ofc_report_std, "Standard")
-    clu_txt = _para(ofc_report_cluster, "Cluster") if ofc_report_cluster is not None else None
+    std_txt = _para(ofc_report_std, names[0])
+    clu_txt = _para(ofc_report_cluster, names[1]) if ofc_report_cluster is not None else None
     return std_txt, clu_txt
 
 
@@ -13826,47 +15015,40 @@ def generate_relazione_tecnica(
     year: int,
     profile: str,
     benchmark: str,
+    benchmark_pf=None,
     period: tuple,
     universe_size: int,
     wfo_config: dict,
-    cluster_result: dict | None,
-    metrics_comparison: dict,
-    ofc_report_std: dict,
-    ofc_report_cluster: dict | None,
-    mc_skill: dict,
-    mc_ci,
-    skill_profile: str,
-    skill_profile_cluster: str | None = None,   # B-005
+    engines: dict,
     plots_dir,
     output_path,
+    analysis_md: str,
     gen_date: str | None = None,
-    ci_results: dict | None = None,
-    mc_skill_cluster: dict | None = None,
-    mc_ci_cluster=None,
     survivorship_bias_universe: bool = False,
 ) -> _Path_doc:
-    
+
     '''
     Genera la Relazione Tecnica PDF con reportlab.
 
-    Struttura: sezione 1 Identita, 2 WFO Config, 2b Cluster,
+    Struttura: sezione 1 Identita, 2 WFO Config,
     3 Metriche, 4 OFC, 5 MC (5a skill + 5b CI),
     6 Diagnosi strutturale, 7 Decisione Finale + verdict box.
-    Incorpora 10 figure da plots_dir.
+    Incorpora figure da plots_dir (una per engine).
 
     Parameters
     ----------
-    mc_ci : pd.DataFrame
-        ci_summary_df da run_all_mc_methods_rotational.
+    engines : dict[str, dict]
+        Chiave = nome engine. Ogni valore deve contenere:
+        "ofc_report", "mc_skill", "mc_ci", "skill_profile",
+        "pf_rot" (opz.), "pf_rot_base" (opz.),
+        "plots_subdir" (opz., default = nome engine).
+    benchmark_pf : opzionale, portfolio benchmark per metriche sezione 3/7.
     plots_dir : path-like
-        Directory con i PNG salvati.
+        Directory radice PNG; immagini per engine in plots_dir/subdir/.
     output_path : path-like
         Path del PDF da generare.
     gen_date : str, optional
         Data generazione ISO (default: oggi).
-    ci_results : dict | None, optional
-        Risultato di run_mc_confidence_intervals_rotational. Se contiene la chiave 'sri',
-        aggiunge la sezione SRI/MRM PRIIPs Cat.3 nella scheda tecnica.
 
     Returns
     -------
@@ -13895,7 +15077,38 @@ def generate_relazione_tecnica(
     if gen_date is None:
         gen_date = _dt_doc.date.today().isoformat()
     period_start, period_end = (period if len(period) == 2 else (period[0], gen_date))
-    use_clustering = wfo_config.get('use_clustering', False)
+
+    # ── Per-engine aliases ────────────────────────────────────────────────────
+    _eng_list  = list(engines.items())
+    _eng_names = [n for n, _ in _eng_list]
+    # Map first engine → legacy "std" vars (used by _build_verdict_text etc.)
+    _eng1_name, _eng1 = _eng_list[0]
+    ofc_report_std     = _eng1.get('ofc_report') or {}
+    mc_skill           = _eng1.get('mc_skill')   or {}
+    mc_ci              = _eng1.get('mc_ci')
+    skill_profile      = _eng1.get('skill_profile', 'N/A')
+    # Second engine (if present) → legacy "cluster" vars
+    if len(_eng_list) >= 2:
+        _eng2_name, _eng2 = _eng_list[1]
+        ofc_report_cluster  = _eng2.get('ofc_report') or None
+        mc_skill_cluster    = _eng2.get('mc_skill')   or None
+        mc_ci_cluster       = _eng2.get('mc_ci')
+        skill_profile_cluster = _eng2.get('skill_profile', None)
+    else:
+        _eng2_name = None
+        _eng2      = None
+        ofc_report_cluster  = None
+        mc_skill_cluster    = None
+        mc_ci_cluster       = None
+        skill_profile_cluster = None
+    # Build metrics_comparison for legacy helpers
+    metrics_comparison = {'benchmark': benchmark_pf}
+    metrics_comparison['std_riskoff'] = _eng1.get('pf_rot')
+    metrics_comparison['std_base']    = _eng1.get('pf_rot_base')
+    if _eng2:
+        metrics_comparison['cluster_riskoff'] = _eng2.get('pf_rot')
+        metrics_comparison['cluster_base']    = _eng2.get('pf_rot_base')
+    # ─────────────────────────────────────────────────────────────────────────
 
     C_NAVY    = rl_colors.HexColor(_RL_NAVY)
     C_NAVY_LT = rl_colors.HexColor(_RL_NAVY_LT)
@@ -13923,6 +15136,8 @@ def generate_relazione_tecnica(
                        spaceAfter=5, fontName='Helvetica-Bold')
     st_subsec   = _st('_rt_ssec',   fontSize=10.5, textColor=C_NAVY_LT, spaceBefore=7,
                        spaceAfter=3, fontName='Helvetica-Bold')
+    st_subsubsec = ParagraphStyle('_rt_sssec', parent=st_subsec,
+                                  fontSize=9, spaceBefore=4, spaceAfter=2)
     st_body     = _st('_rt_body',   fontSize=9.5, textColor=C_TEXT, spaceAfter=6,
                        alignment=TA_JUSTIFY, leading=14)
     st_caption  = _st('_rt_cap',    fontSize=7.5, textColor=C_NAVY_LT, spaceAfter=6,
@@ -14058,19 +15273,18 @@ def generate_relazione_tecnica(
     reshuffle_pass = (reshuffle_pval is not None) and (reshuffle_pval < 0.10)
     timing_pass    = (timing_pval is not None) and (timing_pval < 0.10)
 
+    # Cluster fallback a std se non passati (retro-compat)
     if mc_skill_cluster is not None:
         reshuffle_pval_cl = mc_skill_cluster.get('rotation_reshuffle', {}).get('p_values', {}).get('CAGR')
         timing_pval_cl    = mc_skill_cluster.get('rebalance_timing', {}).get('p_values', {}).get('CAGR')
         reshuffle_pass_cl = (reshuffle_pval_cl is not None) and (reshuffle_pval_cl < 0.10)
         timing_pass_cl    = (timing_pval_cl is not None) and (timing_pval_cl < 0.10)
     else:
-        reshuffle_pval_cl = timing_pval_cl = None
-        reshuffle_pass_cl = timing_pass_cl = False
+        reshuffle_pval_cl, timing_pval_cl = reshuffle_pval, timing_pval
+        reshuffle_pass_cl, timing_pass_cl = reshuffle_pass, timing_pass
 
     def _ci_cl(row, col, pct=True):
-        if mc_ci_cluster is None:
-            return 'N/A'
-        src = mc_ci_cluster
+        src = mc_ci_cluster if mc_ci_cluster is not None else mc_ci
         try:
             v = float(src.loc[row, col])
             return f"{v*100:.1f}%" if pct else f"{v:.3f}"
@@ -14085,16 +15299,14 @@ def generate_relazione_tecnica(
     # Cover
     story.append(Spacer(1, 8 * mm))
     story.append(Paragraph(f"Relazione Tecnica · {portfolio_title} {year}", st_title))
-    use_cl_desc = 'con clustering gerarchico e ' if use_clustering else ''
+    _eng_desc = ' · '.join(_eng_names)
     story.append(Paragraph(
-        f"R-portfolio {use_cl_desc}Risk ON/OFF · "
+        f"R-portfolio ({_eng_desc}) · Risk ON/OFF · "
         f"Benchmark {benchmark} · Profilo {profile}", st_subtitle))
     story.append(_hr())
 
     # Sezione 1: Identità
     story.append(Paragraph("1. Identità del Portafoglio", st_section))
-    cl_row = ('Attivo · gerarchico Ward · k adattivo'
-              if use_clustering else 'Non attivo')
     id_data = [
         [Paragraph('Campo', st_cell_hdr), Paragraph('Valore', st_cell_hdr)],
         ['Nome',             portfolio_title],
@@ -14104,7 +15316,6 @@ def generate_relazione_tecnica(
         ['Profilo',          profile],
         ['Periodo analisi',  f"{period_start} → {period_end}"],
         ['Data generazione', gen_date],
-        ['Clustering',       cl_row],
         ['Risk ON/OFF',      'Attivo · filtro regime di mercato'],
     ]
     id_t = Table(id_data, colWidths=[55 * mm, CONTENT_W - 55 * mm])
@@ -14154,8 +15365,11 @@ def generate_relazione_tecnica(
          Paragraph('Note', st_cell_hdr)],
         ['WFO ratio',              (lambda r: str(r).replace(':', ' : ') if ':' in str(r) else f'{r} : 1')(wfo_config.get('ratio', 'N/A')),              'Rapporto IS / OOS'],
         ['Metrica ottimizzazione', str(wfo_config.get('metric', 'N/A')),                'Selezione parametri In-Sample'],
-        ['Grid size (full)',        f"{wfo_config.get('n_full_trials','N/A')} comb.",   'Spazio parametrico totale'],
-        ['Grid size (reduced)',     f"{wfo_config.get('n_reduced_trials','N/A')} comb.",'Dopo stability analysis (k=3, CAGR)'],
+        *[row for _geng, _gdata in engines.items()
+          for row in [
+              [f'Grid size full — {_geng}',    f"{_gdata.get('n_full_trials',   'N/A')} comb.", 'Spazio parametrico totale'],
+              [f'Grid size reduced — {_geng}', f"{_gdata.get('n_reduced_trials','N/A')} comb.", 'Dopo stability analysis (k=3, CAGR)'],
+          ]],
         ['Stability metric',       'CAGR · k = 3',                                'Metrica e numero di sottoperiodi'],
         ['n_bootstrap OFC',  str(wfo_config.get('n_bootstrap_ofc', wfo_config.get('n_bootstrap', 1000))),  'Test S3 random selection'],
         ['n_bootstrap MC',   str(wfo_config.get('n_bootstrap_mc',  wfo_config.get('n_bootstrap', 1000))),  'Block A (CI) + Block B (Skill Tests)'],
@@ -14164,117 +15378,33 @@ def generate_relazione_tecnica(
     wfo_t.setStyle(TableStyle(_ts_base()))
     story += [wfo_t, Spacer(1, 5 * mm)]
 
-    # Sezione 2b: Struttura Cluster (condizionale)
-    if use_clustering and cluster_result is not None:
-        _cgroups = cluster_result.get('cluster_groups', {})
-        _clabels = cluster_result.get('cluster_labels', {})
-        if _cgroups:
-            # story.append(Paragraph("2.b Struttura dei Cluster", st_subsec))
-            story.append(Paragraph("2.a Struttura dei Cluster", st_subsec))
-            
-            n_cl = len(_cgroups)
-            story.append(Paragraph(
-                "L'analisi di clustering gerarchico (linkage Ward, distanza combinata "
-                "60% correlazione + 40% feature euclidee su Vol/Mom6m/AutoCorr/MaxDD) ha "
-                f"identificato <b>{n_cl} cluster</b> sull'ultima finestra WFO. "
-                "Le etichette sono assegnate adattivamente secondo priorità "
-                "AVOID &gt; HIGH_MOMENTUM &gt; DEFENSIVE &gt; BALANCED.", st_body))
-            
-            def _fmt_t(ts):
-                ab = [t.split('.')[0] for t in ts]
-                r  = ' · '.join(ab[:10])
-                return r + (f' ... (+{len(ts)-10})' if len(ts) > 10 else '')
-
-            cl_hdr = [
-                Paragraph('Cluster', st_cell_hdrc),
-                Paragraph('Label', st_cell_hdrc),
-                Paragraph('N. Titoli', st_cell_hdrc),
-                Paragraph('Tickers', st_cell_hdr),
-            ]
-            cl_rows = [cl_hdr]
-            cl_ts   = _ts_base()
-            for ri, cid in enumerate(sorted(_cgroups.keys()), start=1):
-                lbl = _clabels.get(cid, f'C{cid}')
-                cl_rows.append([
-                    Paragraph(f'C{cid}', st_cell_ctr),
-                    Paragraph(f'<b>{lbl}</b>', st_cell_bold),
-                    Paragraph(str(len(_cgroups[cid])), st_cell_ctr),
-                    Paragraph(_fmt_t(_cgroups[cid]), st_cell),
-                ])
-                if 'AVOID' in str(lbl).upper():
-                    cl_ts += [('BACKGROUND', (1, ri), (1, ri), C_RED),
-                               ('TEXTCOLOR',  (1, ri), (1, ri), C_WHITE)]
-            # cl_t = Table(cl_rows, colWidths=[18 * mm, 30 * mm, 18 * mm, CONTENT_W - 66 * mm])
-            # Bug #4 fix: colonna Label da 30→38mm per accogliere HIGH_MOMENTUM senza wrap
-            cl_t = Table(cl_rows, colWidths=[18 * mm, 38 * mm, 18 * mm, CONTENT_W - 74 * mm])
-            cl_t.setStyle(TableStyle(cl_ts))
-            story += [cl_t, Spacer(1, 3 * mm)]
-
-            story.extend(_img('cluster_dendrogram.png',
-                # caption='Fig. 1 — Dendrogramma Ward (snapshot ultima finestra IS). Soglia di taglio produce i cluster: '
-                #         'gruppo verde = AVOID, blu = BALANCED. '
-                #         'La composizione viene ricalcolata a ogni ribilanciamento.'))
-                caption='Fig. 1 — Dendrogramma Ward (snapshot ultima finestra IS). La soglia di taglio (linea rossa tratteggiata) determina il numero di cluster; i rami sotto la soglia sono colorati per cluster di appartenenza. '
-                        'La composizione viene ricalcolata a ogni ribilanciamento.'))
-            story.extend(_img('cluster_scatter.png',
-                caption='Fig. 2 — Scatter Volatilità annualizzata vs Momentum 6 mesi (snapshot ultima finestra IS). '
-                        'Colorato per cluster. Il gruppo AVOID concentra titoli con momentum '
-                        'negativo e alta volatilità. '
-                        'La composizione viene ricalcolata a ogni ribilanciamento.'))
-            story.extend(_img('cluster_heatmap.png',
-                # caption='Fig. 3 — Matrice di correlazione su finestra coerente con WFO (snapshot ultima finestra IS). '
-                #         'Ordinata per cluster. Box blu = AVOID, box arancio = BALANCED. '
-                #         'La composizione viene ricalcolata a ogni ribilanciamento.'))
-                caption='Fig. 3 — Matrice di correlazione su finestra coerente con WFO (snapshot ultima finestra IS). '
-                        'Ordinata per cluster: i box colorati sopra la matrice delimitano i sub-gruppi e ne indicano la label. '
-                        'La composizione viene ricalcolata a ogni ribilanciamento.'))
     # Sezione 3: Metriche Comparative WFO
     story.append(Paragraph("3. Metriche Comparative WFO", st_section))
 
-    # story.append(Paragraph(
-    #     f"Confronto delle quattro varianti del motore (Standard vs Cluster, ognuna con e senza "
-    #     f"Risk ON/OFF) sul periodo comune. Il benchmark {benchmark} è riportato "
-    #     "nell'ultima riga. La variante <b>Cluster — Risk ON/OFF</b> (evidenziata) "
-    #     "è quella candidata al deploy operativo.", st_body))
-
     # §3 — tabella a 10 colonne via analyze_portfolio_metrics (coerente con JN/compare_wfo_pipelines)
-    if ofc_report_cluster is not None:
-        _s3_intro = (
-            f"Confronto delle quattro varianti del motore (Standard vs Cluster, ognuna con e senza "
-            f"Risk ON/OFF) sul periodo comune. Il benchmark <b>{benchmark}</b> è riportato "
-            "nell'ultima riga. Le metriche sono prodotte dalla stessa funzione usata in sviluppo "
-            "(JN §5c); solo le varianti Risk ON/OFF sono sottoposte a validazione OFC e Monte Carlo (§4–§7)."
-        )
-    else:
-        _s3_intro = (
-            f"Confronto delle due varianti Standard del motore (con e senza Risk ON/OFF) sul periodo comune. "
-            f"Il benchmark <b>{benchmark}</b> è riportato nell'ultima riga. Le metriche sono prodotte dalla "
-            "stessa funzione usata in sviluppo (JN §5c); solo la variante Risk ON/OFF è sottoposta a "
-            "validazione OFC e Monte Carlo (§4–§7). Il path Cluster non è stato eseguito in questa analisi."
-        )
-    story.append(Paragraph(_s3_intro, st_body))
+    story.append(Paragraph(
+        f"Confronto delle varianti del motore ({_eng_desc}, ognuna con e senza "
+        f"Risk ON/OFF) sul periodo comune. Il benchmark <b>{benchmark}</b> è riportato "
+        "nell'ultima riga. Le metriche sono prodotte dalla stessa funzione usata in sviluppo "
+        "(JN §5c); solo le varianti Risk ON/OFF sono sottoposte a validazione OFC e Monte Carlo (§4–§7).",
+        st_body))
 
     # --- Costruisci port_cumrets (base 1.0) dalle serie equity dei portfolio ---
-    _s3_key_labels = [
-        ('cluster_riskoff', 'Cluster — Risk ON/OFF'),
-        ('cluster_base',    'Cluster — Base'),
-        ('std_riskoff',     'Standard — Risk ON/OFF'),
-        ('std_base',        'Standard — Base'),
-    ]
     _s3_cum = {}
-    for _s3k, _s3lbl in _s3_key_labels:
-        _s3pf = metrics_comparison.get(_s3k)
-        if _s3pf is not None:
-            try:
-                _s3cr = _s3pf.cumulative_returns() + 1
-                _s3_cum[_s3lbl] = _s3cr.squeeze() if hasattr(_s3cr, 'squeeze') else _s3cr
-            except Exception:
-                pass
+    for _en, _ev in engines.items():
+        for _var_lbl, _pf_key in [(f'{_en} — Risk ON/OFF', 'pf_rot'),
+                                   (f'{_en} — Base', 'pf_rot_base')]:
+            _s3pf = _ev.get(_pf_key)
+            if _s3pf is not None:
+                try:
+                    _s3cr = _s3pf.cumulative_returns() + 1
+                    _s3_cum[_var_lbl] = _s3cr.squeeze() if hasattr(_s3cr, 'squeeze') else _s3cr
+                except Exception:
+                    pass
     _s3_bm_series = None
-    _s3pf_bm = metrics_comparison.get('benchmark')
-    if _s3pf_bm is not None:
+    if benchmark_pf is not None:
         try:
-            _s3bm_cr = _s3pf_bm.cumulative_returns() + 1
+            _s3bm_cr = benchmark_pf.cumulative_returns() + 1
             _s3_bm_series = _s3bm_cr.squeeze() if hasattr(_s3bm_cr, 'squeeze') else _s3bm_cr
         except Exception:
             pass
@@ -14449,9 +15579,11 @@ def generate_relazione_tecnica(
         t.setStyle(TableStyle(_ts_base() + ts_x))
         story.extend([t, Spacer(1, 5 * mm)])
 
-    _ofc_block(_s,        ofc_passed_std,     '4.a — Path Standard')
-    if ofc_report_cluster is not None:
-        _ofc_block(_sc or {}, ofc_passed_cluster, '4.b — Path Cluster')
+    for _ei, (_en, _ev) in enumerate(engines.items()):
+        _esigs    = (_ev.get('ofc_report') or {}).get('signals', {})
+        _epassed  = bool((_ev.get('ofc_report') or {}).get('promoted', False))
+        _etitle   = f"4.{chr(ord('a')+_ei)} — {_en}"
+        _ofc_block(_esigs, _epassed, _etitle)
 
     from reportlab.platypus import PageBreak as _PB
     story.append(_PB())
@@ -14486,36 +15618,27 @@ def generate_relazione_tecnica(
             story.extend([sk_t, Spacer(1, 3 * mm)])
         
     story.append(Paragraph("5.a — Skill Tests (Block B)", st_subsec))
-    
-    # ── §5.a.1 Path Standard: tabella + 3 figure ────────────────────────────
-    _sk_block("5.a.1 — Path Standard", [
-        ('B1 — Rotation Reshuffle', 'La rotazione batte una selezione casuale dei titoli?', reshuffle_pval, reshuffle_pass),
-        ('B2 — Rebalance Timing',   'Il timing mensile batte date di rebalance casuali?',   timing_pval,    timing_pass),
-    ])
-    story.extend(_img_sub('std', 'mc_reshuffle.png',
-        caption='Fig. 5a — Path Standard. Distribuzione bootstrap del CAGR sotto H0 di rotazione casuale (B1). '
-                'Linea rossa = CAGR effettivo'))
-    story.extend(_img_sub('std', 'mc_timing.png',
-        caption='Fig. 5b — Path Standard. Distribuzione bootstrap del CAGR sotto H0 di rebalance casuale (B2). '
-                'Linea rossa = CAGR effettivo'))
-    story.extend(_img_sub('std', 'mc_skill_summary.png',
-        caption='Fig. 5c — Path Standard. Skill Tests, p-value per metrica (CAGR, MaxDD, Sharpe, Calmar, Vol, Ulcer). '
-                'Soglie tratteggiate al 5% e 1%'))
 
-    # ── §5.a.2 Path Cluster: tabella + 3 figure — solo se mc_skill_cluster è presente ──
-    if mc_skill_cluster is not None:
-        _sk_block("5.a.2 — Path Cluster", [
-            ('B1 — Rotation Reshuffle', 'La rotazione batte una selezione casuale dei titoli?', reshuffle_pval_cl, reshuffle_pass_cl),
-            ('B2 — Rebalance Timing',   'Il timing mensile batte date di rebalance casuali?',   timing_pval_cl,    timing_pass_cl),
+    # ── §5.a — per-engine Skill Tests ────────────────────────────────────────
+    for _ei, (_en, _ev) in enumerate(engines.items()):
+        _emcs    = _ev.get('mc_skill') or {}
+        _esubdir = _ev.get('plots_subdir', _en)
+        _b1_pv   = _emcs.get('rotation_reshuffle', {}).get('p_values', {}).get('CAGR')
+        _b2_pv   = _emcs.get('rebalance_timing',   {}).get('p_values', {}).get('CAGR')
+        _b1_pass = (_b1_pv is not None) and (_b1_pv < 0.10)
+        _b2_pass = (_b2_pv is not None) and (_b2_pv < 0.10)
+        _sk_block(f"5.a.{_ei+1} — {_en}", [
+            ('B1 — Rotation Reshuffle', 'La rotazione batte una selezione casuale dei titoli?', _b1_pv, _b1_pass),
+            ('B2 — Rebalance Timing',   'Il timing mensile batte date di rebalance casuali?',   _b2_pv, _b2_pass),
         ])
-        story.extend(_img_sub('cluster', 'mc_reshuffle.png',
-            caption='Fig. 6a — Path Cluster. Distribuzione bootstrap del CAGR sotto H0 di rotazione casuale (B1). '
+        story.extend(_img_sub(_esubdir, 'mc_reshuffle.png',
+            caption=f'Fig. 5a.{_ei+1} — {_en}. Distribuzione bootstrap CAGR H0 rotazione casuale (B1). '
                     'Linea rossa = CAGR effettivo'))
-        story.extend(_img_sub('cluster', 'mc_timing.png',
-            caption='Fig. 6b — Path Cluster. Distribuzione bootstrap del CAGR sotto H0 di rebalance casuale (B2). '
+        story.extend(_img_sub(_esubdir, 'mc_timing.png',
+            caption=f'Fig. 5b.{_ei+1} — {_en}. Distribuzione bootstrap CAGR H0 rebalance casuale (B2). '
                     'Linea rossa = CAGR effettivo'))
-        story.extend(_img_sub('cluster', 'mc_skill_summary.png',
-            caption='Fig. 6c — Path Cluster. Skill Tests, p-value per metrica (CAGR, MaxDD, Sharpe, Calmar, Vol, Ulcer). '
+        story.extend(_img_sub(_esubdir, 'mc_skill_summary.png',
+            caption=f'Fig. 5c.{_ei+1} — {_en}. Skill Tests p-value per metrica. '
                     'Soglie tratteggiate al 5% e 1%'))
 
     def _ci_block(title, ci_func):
@@ -14540,50 +15663,48 @@ def generate_relazione_tecnica(
             story.extend([ci_t, Spacer(1, 3 * mm)])
 
     story.append(Paragraph("5.b — Confidence Intervals (Block A)", st_subsec))
-    
-    # ── §5.b.1 Path Standard: tabella + 3 figure ────────────────────────────
-    _ci_block("5.b.1 — Path Standard", _ci)
-    story.extend(_img_sub('std', 'mc_ci_fanchart_iid.png',
-        caption='Fig. 7a — Path Standard. Fan chart equity A1 \u00b7 IID Bootstrap. '
-                'Banda p5\u2013p95 azzurro, mediana blu, Actual rosso, Benchmark grigio tratteggiato.'))
-    story.extend(_img_sub('std', 'mc_ci_fanchart_block.png',
-        caption='Fig. 7b — Path Standard. Fan chart equity A2 \u00b7 Block Bootstrap. '
-                'Banda p5\u2013p95 azzurro, mediana blu, Actual rosso, Benchmark grigio tratteggiato.'))
-    story.extend(_img_sub('std', 'mc_ci.png',
-        caption='Fig. 7c — Path Standard. Confidence Intervals cross-method per CAGR e Max Drawdown. '
-                'Linea rossa tratteggiata = valore Actual del portafoglio'))
 
-    # ── §5.b.2 Path Cluster: tabella + 3 figure — solo se mc_ci_cluster è presente ──
-    if mc_ci_cluster is not None:
-        _ci_block("5.b.2 — Path Cluster",  _ci_cl)
-        story.extend(_img_sub('cluster', 'mc_ci_fanchart_iid.png',
-        caption='Fig. 8a — Path Cluster. Fan chart equity A1 \u00b7 IID Bootstrap. '
-                'Banda p5\u2013p95 azzurro, mediana blu, Actual rosso, Benchmark grigio tratteggiato.'))
-        story.extend(_img_sub('cluster', 'mc_ci_fanchart_block.png',
-        caption='Fig. 8b — Path Cluster. Fan chart equity A2 \u00b7 Block Bootstrap. '
-                'Banda p5\u2013p95 azzurro, mediana blu, Actual rosso, Benchmark grigio tratteggiato.'))
-        story.extend(_img_sub('cluster', 'mc_ci.png',
-        caption='Fig. 8c — Path Cluster. Confidence Intervals cross-method per CAGR e Max Drawdown. '
-                'Linea rossa tratteggiata = valore Actual del portafoglio'))
+    # ── §5.b — per-engine CI ──────────────────────────────────────
+    for _ei, (_en, _ev) in enumerate(engines.items()):
+        _emci    = _ev.get('mc_ci')
+        _esubdir = _ev.get('plots_subdir', _en)
+        def _eng_ci(row, col, pct=True, _df=_emci):
+            try:
+                v = float(_df.loc[row, col])
+                return f"{v*100:.1f}%" if pct else f"{v:.3f}"
+            except Exception:
+                return 'N/A'
+        _ci_block(f"5.b.{_ei+1} — {_en}", _eng_ci)
+        story.extend(_img_sub(_esubdir, 'mc_ci_fanchart_iid.png',
+            caption=f'Fig. 6a.{_ei+1} — {_en}. Fan chart equity A1 · IID Bootstrap. '
+                    'Banda p5–p95 azzurro, mediana blu, Actual rosso.'))
+        story.extend(_img_sub(_esubdir, 'mc_ci_fanchart_block.png',
+            caption=f'Fig. 6b.{_ei+1} — {_en}. Fan chart equity A2 · Block Bootstrap.'))
+        story.extend(_img_sub(_esubdir, 'mc_ci.png',
+            caption=f'Fig. 6c.{_ei+1} — {_en}. CI cross-method CAGR e MaxDD. '
+                    'Linea rossa tratteggiata = valore Actual.'))
 
 
-    # ── Sezione 5.c: SRI / MRM PRIIPs ─────────────────────────────────────────
-    _sri_data = ci_results.get('sri') if ci_results else None
-    if _sri_data is not None:
+
+    # ── Sezione 5.c: SRI / MRM PRIIPs (per engine) ───────────────────────────
+    _SRI_COLORS = ['#1A7340', '#4CAF50', '#8BC34A', '#FFC107', '#FF9800', '#F44336', '#B71C1C']
+    for _ei, (_en, _ev) in enumerate(engines.items()):
+        _sri_data = (_ev.get('ci_results') or {}).get('sri')
+        if _sri_data is None:
+            continue
         _sri_iid   = _sri_data['iid']
         _sri_blk   = _sri_data['block']
         _sri_cap   = _sri_data.get('capital_base', 10_000)
         _sri_rhp   = _sri_iid['rhp_years_effective']
         _sri_mfin  = _sri_data['mrm_class_final']
-        _SRI_COLORS = ['#1A7340', '#4CAF50', '#8BC34A', '#FFC107', '#FF9800', '#F44336', '#B71C1C']
 
         story.append(Spacer(1, 4 * mm))
-        story.append(Paragraph("5.c — Indicatore di Rischio Sintetico (metodologia PRIIPs)", st_subsec))
+        story.append(Paragraph(f"5.c.{_ei+1} — {_en} · Indicatore di Rischio Sintetico (metodologia PRIIPs)", st_subsec))
 
         # Scale 1-7: colored boxes
         _box_w = CONTENT_W / 7
-        _st_snum = _st('_sri_num', fontSize=11, fontName='Helvetica-Bold', alignment=TA_CENTER)
-        _st_slbl = _st('_sri_lbl', fontSize=6.5, alignment=TA_CENTER)
+        _st_snum = _st(f'_sri_num_{_ei}', fontSize=11, fontName='Helvetica-Bold', alignment=TA_CENTER)
+        _st_slbl = _st(f'_sri_lbl_{_ei}', fontSize=6.5, alignment=TA_CENTER)
         _scale_r1 = [Paragraph(f'<b>{cls}</b>', _st_snum) for cls in range(1, 8)]
         _scale_r2 = ([Paragraph('Rischio basso', _st_slbl)]
                      + [Paragraph('', _st_slbl)] * 5
@@ -14615,7 +15736,7 @@ def generate_relazione_tecnica(
         story += [_sc_t, Spacer(1, 4 * mm)]
 
         # Technical table
-        _st_disc = _st('_sri_disc', fontSize=7.5, textColor=C_TEXT,
+        _st_disc = _st(f'_sri_disc_{_ei}', fontSize=7.5, textColor=C_TEXT,
                         alignment=TA_JUSTIFY, leading=10)
         _sri_rows = [
             [Paragraph('Parametro', st_cell_hdr),
@@ -14634,21 +15755,13 @@ def generate_relazione_tecnica(
              Paragraph(f'{_sri_rhp:.1f} anni', st_cell_ctr),
              Paragraph('—', st_cell_ctr)],
             [Paragraph('Frequenza dati', st_cell),
-             Paragraph('mensile (+1 classe penalita’ reg.)', st_cell_ctr),
+             Paragraph('mensile (+1 classe penalita\u2019 reg.)', st_cell_ctr),
              Paragraph('', st_cell_ctr)],
-            # [Paragraph('<b>Classe MRM finale</b>', st_cell_bold),
-            #  Paragraph(f'<b>{_sri_mfin} / 7</b>', st_cell_ctr),
-            #  Paragraph('(max IID, Block)', st_cell_ctr)],
             [Paragraph('Classe MRM finale', st_cell_hdr),
              Paragraph(f'{_sri_mfin} / 7', st_cell_hdrc),
              Paragraph('(max IID, Block)', st_cell_hdrc)],
         ]
         _sri_t = Table(_sri_rows, colWidths=[65 * mm, 40 * mm, 57 * mm])
-        # _sri_ts = _ts_base() + [
-        #     ('FONTNAME',   (0, 6), (-1, 6), 'Helvetica-Bold'),
-        #     ('BACKGROUND', (0, 6), (-1, 6), C_NAVY_LT),
-        #     ('TEXTCOLOR',  (0, 6), (-1, 6), C_WHITE),
-        # ]
         _sri_ts = _ts_base() + [
             ('BACKGROUND', (0, 6), (-1, 6), C_NAVY_LT),
         ]
@@ -14663,7 +15776,7 @@ def generate_relazione_tecnica(
             "registrato e questa scheda non costituisce un Key Information Document né altro "
             "documento informativo regolamentare ai sensi della normativa europea. Il calcolo "
             "segue l'approccio Category 3 (simulazione Monte Carlo) sui rendimenti mensili OOS "
-            "della Walk-Forward Optimization, applicando la penalita’ regolamentare di +1 classe "
+            "della Walk-Forward Optimization, applicando la penalita' regolamentare di +1 classe "
             "MRM prevista per dati a frequenza mensile. La regola conservativa adottata in caso "
             "di divergenza tra metodi bootstrap (IID e Block) seleziona la classe più alta. "
             "Questa scheda non costituisce consulenza in materia di investimenti.",
@@ -14673,225 +15786,1050 @@ def generate_relazione_tecnica(
     from reportlab.platypus import PageBreak as _PB
     story.append(_PB())
 
-    # Sezione 6: Diagnosi strutturale
+    # ── §6 table closures ────────────────────────────────────────────────────
+    def _ofc6_block(title, ofc_report):
+        story.append(Paragraph(title, st_subsec))
+        ofc_rep  = ofc_report or {}
+        sigs     = ofc_rep.get('signals', {})
+        ofc_pass = ofc_rep.get('promoted')
+        n_p      = sum(1 for k in ('S1_plateau', 'S2_coherence', 'S3_bootstrap', 'S4_dsr')
+                       if (sigs or {}).get(k, {}).get('pass'))
+        ofc_lbl  = ('PROMOTED'     if ofc_pass
+                    else 'NOT PROMOTED' if ofc_pass is not None
+                    else 'N/A')
+        rows  = [[Paragraph('Segnale',  st_cell_hdr),
+                  Paragraph('Esito',    st_cell_hdrc),
+                  Paragraph('Valore',   st_cell_hdrc),
+                  Paragraph('Soglia',   st_cell_hdrc),
+                  Paragraph('Note',     st_cell_hdr)]]
+        ts_x  = []
+        for ri, (sk, slbl) in enumerate([
+            ('S1_plateau',   'S1 — Plateau'),
+            ('S2_coherence', 'S2 — Coherence'),
+            ('S3_bootstrap', 'S3 — Bootstrap'),
+            ('S4_dsr',       'S4 — DSR'),
+        ], start=1):
+            sd  = (sigs or {}).get(sk, {})
+            pss = sd.get('pass')
+            if sk == 'S3_bootstrap':
+                vs = f"p = {sd['p_value']:.3f}" if isinstance(sd.get('p_value'), float) else 'N/A'
+            elif sk == 'S4_dsr':
+                vs = f"{sd['dsr']:.3f}"          if isinstance(sd.get('dsr'),     float) else 'N/A'
+            else:
+                vs = f"{sd['value']:.3f}"         if isinstance(sd.get('value'),   float) else 'N/A'
+            thr   = sd.get('threshold')
+            thr_s = (f"{thr:.3f}" if isinstance(thr, float)
+                     else (str(thr) if thr is not None else '—'))
+            note  = str(sd.get('note') or '—')
+            vl    = 'PASS' if pss else ('FAIL' if pss is not None else 'N/A')
+            vc    = _vc(vl)
+            rows.append([
+                Paragraph(slbl,  st_cell),
+                _vp(vl),
+                Paragraph(vs,    st_cell_ctr),
+                Paragraph(thr_s, st_cell_ctr),
+                Paragraph(note,  st_cell),
+            ])
+            if vc:
+                ts_x += [('BACKGROUND', (1, ri), (1, ri), vc),
+                          ('TEXTCOLOR',  (1, ri), (1, ri), C_WHITE)]
+        ov_vc = _vc(ofc_lbl)
+        rows.append([
+            Paragraph('<b>Verdetto OFC</b>', st_cell_bold),
+            Paragraph(
+                f'<b>{"NOT<br/>PROMOTED" if ofc_lbl == "NOT PROMOTED" else ofc_lbl}</b>',
+                st_verd),
+            Paragraph(f'{n_p} / 4', st_cell_ctr),
+            Paragraph(f'≥ {minsig}/4', st_cell_ctr),
+            Paragraph('', st_cell),
+        ])
+        if ov_vc:
+            ts_x += [('BACKGROUND', (1, 5), (1, 5), ov_vc),
+                     ('TEXTCOLOR',  (1, 5), (1, 5), C_WHITE)]
+        ts_x.append(('FONTNAME', (0, 5), (-1, 5), 'Helvetica-Bold'))
+        t = Table(rows, colWidths=[32*mm, 28*mm, 22*mm, 22*mm, 66*mm])
+        t.setStyle(TableStyle(_ts_base() + ts_x))
+        story.extend([t, Spacer(1, 4*mm)])
+
+    def _sk6_block(title, mc_skill, realized=None):
+        story.append(Paragraph(title, st_subsec))
+        mcs   = mc_skill or {}
+        _rlzd = realized or {}
+        _cagr_r = _rlzd.get('cagr')
+        rows = [[Paragraph('Test',            st_cell_hdr),
+                 Paragraph('CAGR Realizzato', st_cell_hdrc),
+                 Paragraph('p-value',         st_cell_hdrc),
+                 Paragraph('Significativo?',  st_cell_hdrc)]]
+        ts_x = []
+        for ri, (mck, lbl) in enumerate([
+            ('rotation_reshuffle', 'B1 — Rotation Reshuffle'),
+            ('rebalance_timing',   'B2 — Rebalance Timing'),
+        ], start=1):
+            d    = mcs.get(mck, {})
+            pv   = d.get('p_values', {}).get('CAGR')
+            pv_s  = f"{pv:.3f}"             if isinstance(pv,     float) else 'N/A'
+            act_s = f"{_cagr_r*100:.1f}%"   if isinstance(_cagr_r, float) else 'N/A'
+            sig   = (pv is not None) and (pv < 0.10)
+            sig_lbl = 'Significativo' if sig else 'Non significativo'
+            vc    = _vc('PASS' if sig else 'FAIL')
+            rows.append([
+                Paragraph(lbl,     st_cell),
+                Paragraph(act_s,   st_cell_ctr),
+                Paragraph(pv_s,    st_cell_ctr),
+                Paragraph(sig_lbl, st_verd),
+            ])
+            if vc:
+                ts_x += [('BACKGROUND', (3, ri), (3, ri), vc),
+                          ('TEXTCOLOR',  (3, ri), (3, ri), C_WHITE)]
+        t = Table(rows, colWidths=[60*mm, 32*mm, 28*mm, 50*mm])
+        t.setStyle(TableStyle(_ts_base() + ts_x +
+                               [('ALIGN', (1, 0), (-1, -1), 'CENTER')]))
+        story.extend([t, Spacer(1, 4*mm)])
+
+    def _ci6_block(title, mc_ci, realized=None):
+        story.append(Paragraph(title, st_subsec))
+        if mc_ci is None:
+            story.append(Paragraph('N/A', st_body))
+            return
+
+        _rlzd = realized or {}
+        _met_key = {'CAGR': 'cagr', 'Sharpe': 'sharpe', 'MaxDD': 'maxdd'}
+
+        def _qtl(p5, p25, p50, p75, p95, act):
+            try:
+                v = float(act)
+                if v < float(p5):  return '< p5'
+                if v < float(p25): return 'p5–p25'
+                if v < float(p50): return 'p25–p50'
+                if v < float(p75): return 'p50–p75'
+                if v < float(p95): return 'p75–p95'
+                return '> p95'
+            except (TypeError, ValueError):
+                return '—'
+
+        rows = [[Paragraph('Metodo / Metrica',  st_cell_hdr),
+                 Paragraph('p5',                st_cell_hdrc),
+                 Paragraph('p25',               st_cell_hdrc),
+                 Paragraph('p50',               st_cell_hdrc),
+                 Paragraph('p75',               st_cell_hdrc),
+                 Paragraph('p95',               st_cell_hdrc),
+                 Paragraph('Realizzato',         st_cell_hdrc),
+                 Paragraph('Quantile',           st_cell_hdrc)]]
+        ts_x = [('ALIGN', (1, 0), (-1, -1), 'CENTER')]
+        for mkey, mlbl in [
+            ('A1 · IID Bootstrap',   'A1 — IID'),
+            ('A2 · Block Bootstrap', 'A2 — Block'),
+        ]:
+            if mkey not in mc_ci.index:
+                continue
+            rd = mc_ci.loc[mkey]
+            for met, is_pct in [('CAGR', True), ('Sharpe', False), ('MaxDD', True)]:
+                def _fv(col, _rd=rd):
+                    try:    return float(_rd[col])
+                    except Exception: return float('nan')
+                def _fs(col, _ip=is_pct, _rd=rd):
+                    try:
+                        v = float(_rd[col])
+                        return f"{v*100:.1f}%" if _ip else f"{v:.3f}"
+                    except Exception: return 'N/A'
+                _act_r = _rlzd.get(_met_key[met])
+                def _fs_r(_v=_act_r, _ip=is_pct):
+                    if not isinstance(_v, float): return 'N/A'
+                    return f"{_v*100:.1f}%" if _ip else f"{_v:.3f}"
+                qtl = _qtl(_fv(f'{met}_p5'), _fv(f'{met}_p25'), _fv(f'{met}_p50'),
+                            _fv(f'{met}_p75'), _fv(f'{met}_p95'), _act_r)
+                rows.append([
+                    Paragraph(f'{mlbl} / {met}',    st_cell),
+                    Paragraph(_fs(f'{met}_p5'),      st_cell_ctr),
+                    Paragraph(_fs(f'{met}_p25'),     st_cell_ctr),
+                    Paragraph(_fs(f'{met}_p50'),     st_cell_ctr),
+                    Paragraph(_fs(f'{met}_p75'),     st_cell_ctr),
+                    Paragraph(_fs(f'{met}_p95'),     st_cell_ctr),
+                    Paragraph(_fs_r(),               st_cell_ctr),
+                    Paragraph(qtl,                   st_cell_ctr),
+                ])
+        cw = [40*mm, 16*mm, 16*mm, 16*mm, 16*mm, 16*mm, 22*mm, 28*mm]
+        t = Table(rows, colWidths=cw)
+        t.setStyle(TableStyle(_ts_base() + ts_x))
+        story.extend([t, Spacer(1, 4*mm)])
+
+    # Parse LLM commentary into per-section text
+    _llm_secs = _parse_llm_sections(analysis_md)
+    _llm_stys = {
+        'section':   st_section,
+        'subsec':    st_subsec,
+        'subsubsec': st_subsubsec,
+        'body':      st_body,
+        'content_w': CONTENT_W,
+    }
+
+    def _llm_block(key):
+        txt = _llm_secs.get(key, '')
+        if txt:
+            story.extend(_md_to_flowables(txt, styles=_llm_stys))
+
+    # § 6 Analisi dei Segnali e Diagnosi Strutturale
     story.append(Paragraph("6. Analisi dei Segnali e Diagnosi Strutturale", st_section))
-    ofc_std_txt, ofc_clu_txt = _diagnose_ofc(ofc_report_std, ofc_report_cluster)
-    # sk_txt1, sk_txt2, ci_txt = _diagnose_mc(mc_skill, mc_ci, metrics_comparison)
-    # B-005: passa mc_skill_cluster e mc_ci_cluster per narrativa Opzione C
-    sk_txt1, sk_txt2, ci_txt = _diagnose_mc(
-        mc_skill, mc_ci, metrics_comparison,
-        mc_skill_cluster   = mc_skill_cluster,
-        mc_ci_cluster      = mc_ci_cluster,
-        ofc_report_std     = ofc_report_std,
-        ofc_report_cluster = ofc_report_cluster,
-        profile            = profile,
-    )
-    
-    story.append(Paragraph("6.a — Lettura dei segnali OFC", st_subsec))
-    story.append(Paragraph(ofc_std_txt, st_body))
-    if ofc_clu_txt:
-        story.append(Paragraph(ofc_clu_txt, st_body))
 
-    story.append(Paragraph("6.b — Lettura dei test Monte Carlo Skill", st_subsec))
-    story.append(Paragraph(sk_txt1, st_body))
-    if sk_txt2:
-        story.append(Paragraph(sk_txt2, st_body))
+    # § 6.a — Overfitting Check
+    for _ei, (_en, _ev) in enumerate(engines.items()):
+        _ofc6_block(f"6.a.{_ei+1} — {_en}", _ev.get('ofc_report'))
+    _llm_block('6a')
+    story.append(Spacer(1, 3*mm))
 
-    story.append(Paragraph("6.c — Confidence Intervals (Block A)", st_subsec))
-    story.append(Paragraph(ci_txt, st_body))
+    # § 6.b — Monte Carlo Skill Tests
+    for _ei, (_en, _ev) in enumerate(engines.items()):
+        _sk6_block(f"6.b.{_ei+1} — {_en}", _ev.get('mc_skill'), _ev.get('realized'))
+    _llm_block('6b')
+    story.append(Spacer(1, 3*mm))
 
-    # Sezione 7: Decisione Finale + verdict box
-    story.append(Paragraph("7. Decisione Finale", st_section))
-    ofc_std_v  = 'PROMOTED' if ofc_passed_std else 'NOT PROMOTED'
-    ofc_clu_v  = ('PROMOTED' if ofc_passed_cluster else
-                  'NOT PROMOTED' if ofc_passed_cluster is not None else 'N/A')
-    dec_hdr = [Paragraph('Dimensione', st_cell_hdr),
-               Paragraph('Standard', st_cell_hdrc),
-               Paragraph('Cluster', st_cell_hdrc)]
-    def _vp_or_na(text):
-        # st_verd usa textColor=C_WHITE — visibile solo su sfondo colorato.
-        # Per 'N/A' (nessun background) usa stile neutro per evitare testo bianco su bianco.
-        return _vp(text) if text != 'N/A' else Paragraph('N/A', st_cell_ctr)
+    # § 6.c — Confidence Intervals
+    for _ei, (_en, _ev) in enumerate(engines.items()):
+        _ci6_block(f"6.c.{_ei+1} — {_en}", _ev.get('mc_ci'), _ev.get('realized'))
+    _llm_block('6c')
 
-    dec_rows = [dec_hdr,
-        ['OFC Verdict',     _vp(ofc_std_v),  _vp_or_na(ofc_clu_v)],
-        # ['Skill Profile',   skill_profile,    skill_profile],
-        ['Skill Profile',   skill_profile or 'N/A',
-                            skill_profile_cluster or 'N/A'],   # B-005: no fallback su std
-        [f'CAGR vs {benchmark}',
-         f"{_m('std_riskoff','cagr')} vs {_m('benchmark','cagr')}",
-         f"{_m('cluster_riskoff','cagr')} vs {_m('benchmark','cagr')}"],
-        [f'Sharpe vs {benchmark}',
-         f"{_m('std_riskoff','sharpe')} vs {_m('benchmark','sharpe')}",
-         f"{_m('cluster_riskoff','sharpe')} vs {_m('benchmark','sharpe')}"],
-        [f'MaxDD vs {benchmark}',
-         f"{_m('std_riskoff','maxdd')} vs {_m('benchmark','maxdd')}",
-         f"{_m('cluster_riskoff','maxdd')} vs {_m('benchmark','maxdd')}"],
-    ]
-    d_ts = _ts_base() + [('ALIGN', (1, 0), (-1, -1), 'CENTER')]
-    for col_i, vl in [(1, ofc_std_v), (2, ofc_clu_v)]:
-        vc = _vc(vl)
-        if vc:
-            d_ts += [('BACKGROUND', (col_i, 1), (col_i, 1), vc),
-                     ('TEXTCOLOR',  (col_i, 1), (col_i, 1), C_WHITE)]
-    hw = (CONTENT_W - 45 * mm) / 2
-    dec_t = Table(dec_rows, colWidths=[45 * mm, hw, hw])
-    dec_t.setStyle(TableStyle(d_ts))
-    story += [dec_t, Spacer(1, 5 * mm)]
-
-    # Verdict box adattivo
-    # _verdict_text = _build_verdict_text(
-    #     ofc_report_std=ofc_report_std,
-    #     ofc_report_cluster=ofc_report_cluster,
-    #     metrics_comparison=metrics_comparison,
-    #     mc_skill=mc_skill,
-    #     skill_profile=skill_profile,
-    #     wfo_config={**wfo_config, 'profile': profile},
-    # )
-    _verdict_text, _rating_result = _build_verdict_text(
-        ofc_report_std        = ofc_report_std,
-        ofc_report_cluster    = ofc_report_cluster,
-        metrics_comparison    = metrics_comparison,
-        mc_skill              = mc_skill,
-        skill_profile         = skill_profile,
-        skill_profile_cluster = skill_profile_cluster,   # B-005
-        wfo_config            = {**wfo_config, 'profile': profile},
-    )
-    _verdict_box = Table(
-        [[Paragraph(_verdict_text, st_vbox_j)]],
-        colWidths=[CONTENT_W])
-    _verdict_box.setStyle(TableStyle([
-        ('BACKGROUND',    (0, 0), (-1, -1), rl_colors.HexColor('#EAF0FB')),
-        ('BOX',           (0, 0), (-1, -1), 1.5, C_NAVY_LT),
-        ('LEFTPADDING',   (0, 0), (-1, -1), 12),
-        ('RIGHTPADDING',  (0, 0), (-1, -1), 12),
-        ('TOPPADDING',    (0, 0), (-1, -1), 10),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 10),
-    ]))
-    story.append(_verdict_box)
     story.append(Spacer(1, 4 * mm))
 
-    # Rating table — mostrata solo nei CASI A/B/C (CASO D → _rating_result è None)
-    if _rating_result is not None:
-        _rk_keys   = _rating_result.get('eligible_keys', [])
-        _rk_scores = _rating_result.get('scores', {})
-        _rk_bkdn   = _rating_result.get('breakdown', {})
-        _rk_winner = _rating_result.get('winner')
-        _rk_wt     = _rating_result.get('weights', {})
-        _rat_hdr = [
-            Paragraph('<b>Variante</b>', st_cell_hdr),
-            Paragraph('<b>Score</b>', st_cell_hdrc),
-            Paragraph(f'<b>CAGR</b><br/><font size="7">{_rk_wt.get("cagr",0):.0%}</font>', st_cell_hdrc),
-            Paragraph(f'<b>Sharpe</b><br/><font size="7">{_rk_wt.get("sharpe",0):.0%}</font>', st_cell_hdrc),
-            Paragraph(f'<b>Sortino</b><br/><font size="7">{_rk_wt.get("sortino",0):.0%}</font>', st_cell_hdrc),
-            Paragraph(f'<b>MaxDD</b><br/><font size="7">{_rk_wt.get("maxdd",0):.0%}</font>', st_cell_hdrc),
-        ]
-        _rat_rows = [_rat_hdr]
-        for _rkey in _rk_keys:
-            _rlbl  = _VARIANT_LABELS.get(_rkey, _rkey)
-            _rsc   = _rk_scores.get(_rkey, 0.0)
-            _rbd   = _rk_bkdn.get(_rkey, {})
-            _is_w  = (_rkey == _rk_winner)
-            _rlbl_p = Paragraph(f'<b>{_rlbl}</b>' if _is_w else _rlbl, st_cell_bold if _is_w else st_cell)
-            _rat_rows.append([
-                _rlbl_p,
-                Paragraph(f'<b>{_rsc:.3f}</b>' if _is_w else f'{_rsc:.3f}', st_cell_ctr),
-                Paragraph(f'{_rbd.get("cagr",0):.2f}',    st_cell_ctr),
-                Paragraph(f'{_rbd.get("sharpe",0):.2f}',  st_cell_ctr),
-                Paragraph(f'{_rbd.get("sortino",0):.2f}', st_cell_ctr),
-                Paragraph(f'{_rbd.get("maxdd",0):.2f}',   st_cell_ctr),
-            ])
-        _cw_rat = [CONTENT_W * 0.38, CONTENT_W * 0.12,
-                   CONTENT_W * 0.125, CONTENT_W * 0.125,
-                   CONTENT_W * 0.125, CONTENT_W * 0.125]
-        _rat_ts = _ts_base() + [
-            ('ALIGN', (1, 0), (-1, -1), 'CENTER'),
-        ]
-        # Colonna 0 (Variante) — sfondo neutro per tutte le righe dati
-        for _ri in range(1, len(_rk_keys) + 1):
-            _rat_ts.append(('BACKGROUND', (0, _ri), (0, _ri),
-                            rl_colors.HexColor('#F5F5F5')))
-        # Colonne 1-5 — gradiente per-cella basato sul valore normalizzato 0-1
-        _rat_col_order = ['score', 'cagr', 'sharpe', 'sortino', 'maxdd']
-        for _ri, _rkey in enumerate(_rk_keys, start=1):
-            _rsc  = _rk_scores.get(_rkey, 0.0)
-            _rbd  = _rk_bkdn.get(_rkey, {})
-            _vals = [_rsc,
-                     _rbd.get('cagr',    None),
-                     _rbd.get('sharpe',  None),
-                     _rbd.get('sortino', None),
-                     _rbd.get('maxdd',   None)]
-            for _ci, _v in enumerate(_vals, start=1):
-                _rat_ts.append(('BACKGROUND', (_ci, _ri), (_ci, _ri),
-                                _gradient_color(_v)))
-        _rat_tbl = Table(_rat_rows, colWidths=_cw_rat)
-        _rat_tbl.setStyle(TableStyle(_rat_ts))
-        story.append(Paragraph(
-            'Tab. R — Rating ponderato delle varianti (score normalizzato 0–1 per metrica).',
-            st_caption))
-        story.append(_rat_tbl)
-        story.append(Spacer(1, 4 * mm))
-    
-    # B-005: secondo verdict box — usa il secondo classificato di _rate_variants (non coppia fissa)
-    _alt_text = None
-    if _rating_result is not None:
-        _rk_scores_all = _rating_result.get('scores', {})
-        _rk_sorted_all = sorted(_rk_scores_all.items(), key=lambda x: x[1], reverse=True)
-        if len(_rk_sorted_all) >= 2:
-            _runner_key = _rk_sorted_all[1][0]
-            _runner_ofc  = (ofc_report_cluster if _runner_key.startswith('cluster')
-                            else ofc_report_std)
-            _runner_sp   = (skill_profile_cluster if _runner_key.startswith('cluster')
-                            else skill_profile)
-            _runner_lbl  = _VARIANT_LABELS.get(_runner_key, _runner_key)
-            _alt_text = _build_verdict_text_compact(
-                alt_path_label    = _runner_lbl,
-                ofc_report_alt    = _runner_ofc,
-                metrics_comparison= metrics_comparison,
-                metrics_key       = _runner_key,
-                skill_profile_alt = _runner_sp,
-            )
-    
-    if _alt_text is not None:
-        _alt_box = Table(
-            [[Paragraph(_alt_text, st_vbox_j)]],
-            colWidths=[CONTENT_W])
-        _alt_box.setStyle(TableStyle([
-            ('BACKGROUND',    (0, 0), (-1, -1), rl_colors.HexColor('#F5F5F5')),  # grigio chiaro
-            ('BOX',           (0, 0), (-1, -1), 0.8, rl_colors.HexColor('#999999')),
-            ('LEFTPADDING',   (0, 0), (-1, -1), 12),
-            ('RIGHTPADDING',  (0, 0), (-1, -1), 12),
-            ('TOPPADDING',    (0, 0), (-1, -1), 6),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-        ]))
-        story.append(_alt_box)
-        story.append(Spacer(1, 4 * mm))
-        
-    # Placeholder manuale — compilare dopo analisi
-    vbox_data = [[Paragraph(
-        '<b>Path deployato:</b> [ STANDARD | CLUSTER | NESSUNO ] ← compilare<br/>'
-        '<b>Motivazione:</b> ← compilare a mano dopo analisi',
-        st_vbox)]]
-    vbox = Table(vbox_data, colWidths=[CONTENT_W])
-    vbox.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, -1), rl_colors.HexColor('#EAF0FB')),
-        ('BOX',        (0, 0), (-1, -1), 1.2, C_NAVY_LT),
-        ('TOPPADDING',    (0, 0), (-1, -1), 10),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 10),
-        ('LEFTPADDING',   (0, 0), (-1, -1), 12),
-        ('RIGHTPADDING',  (0, 0), (-1, -1), 12),
-    ]))
-    story.append(vbox)
+    # § 7 Decisione Finale — LLM commentary first, then Python decision table
+    story.append(Paragraph("7. Decisione Finale", st_section))
+    _llm_block('7')
+    story.append(Spacer(1, 3 * mm))
+
+    # Dynamic N-column decision table
+    def _mpf_val(pf, metric):
+        if pf is None: return 'N/A'
+        try:
+            if metric == 'cagr':   return f"{pf.annualized_return()*100:.1f}%"
+            if metric == 'sharpe': return f"{pf.sharpe_ratio():.2f}"
+            if metric == 'maxdd':  return f"{abs(pf.max_drawdown())*100:.1f}%"
+        except Exception: return 'N/A'
+        return 'N/A'
+    _bm_cagr   = _mpf_val(benchmark_pf, 'cagr')
+    _bm_sharpe = _mpf_val(benchmark_pf, 'sharpe')
+    _bm_maxdd  = _mpf_val(benchmark_pf, 'maxdd')
+
+    dec_hdr = ([Paragraph('Dimensione', st_cell_hdr)]
+               + [Paragraph(_en, st_cell_hdrc) for _en in _eng_names])
+    dec_rows = [dec_hdr]
+    # OFC row
+    _ofc_row = ['OFC Verdict']
+    _ofc_vl_list = []
+    for _en, _ev in engines.items():
+        _ov = 'PROMOTED' if bool((_ev.get('ofc_report') or {}).get('promoted')) else 'NOT PROMOTED'
+        _ofc_vl_list.append(_ov)
+        _ofc_row.append(_vp(_ov))
+    dec_rows.append(_ofc_row)
+    # Skill Profile row
+    dec_rows.append(['Skill Profile'] + [_ev.get('skill_profile') or 'N/A' for _ev in engines.values()])
+    # Metric rows — use pre-computed realized dict for engine metrics (canonical source)
+    def _fmt_realized(ev, mkey):
+        r = ev.get('realized') or {}
+        v = r.get(mkey)
+        if not isinstance(v, float):
+            return _mpf_val(ev.get('pf_rot'), mkey)
+        if mkey == 'cagr':   return f"{v*100:.1f}%"
+        if mkey == 'sharpe': return f"{v:.2f}"
+        if mkey == 'maxdd':  return f"{abs(v)*100:.1f}%"
+        return 'N/A'
+    for _mname, _mkey in [(f'CAGR vs {benchmark}', 'cagr'),
+                           (f'Sharpe vs {benchmark}', 'sharpe'),
+                           (f'MaxDD vs {benchmark}', 'maxdd')]:
+        _bm_v = {'cagr': _bm_cagr, 'sharpe': _bm_sharpe, 'maxdd': _bm_maxdd}[_mkey]
+        dec_rows.append([_mname] + [f"{_fmt_realized(_ev, _mkey)} vs {_bm_v}"
+                                     for _ev in engines.values()])
+    d_ts = _ts_base() + [('ALIGN', (1, 0), (-1, -1), 'CENTER')]
+    for _col_i, _vl in enumerate(_ofc_vl_list, start=1):
+        _vc_color = _vc(_vl)
+        if _vc_color:
+            d_ts += [('BACKGROUND', (_col_i, 1), (_col_i, 1), _vc_color),
+                     ('TEXTCOLOR',  (_col_i, 1), (_col_i, 1), C_WHITE)]
+    _hw = (CONTENT_W - 45 * mm) / max(len(_eng_names), 1)
+    dec_t = Table(dec_rows, colWidths=[45 * mm] + [_hw] * len(_eng_names))
+    dec_t.setStyle(TableStyle(d_ts))
+    story += [dec_t, Spacer(1, 5 * mm)]
 
     doc = SimpleDocTemplate(
         str(output_path), pagesize=A4,
         topMargin=18 * mm, bottomMargin=18 * mm,
         leftMargin=MARGIN, rightMargin=MARGIN,
         title=f"Relazione Tecnica {portfolio_title} {year}",
-        author="TSlab",
-    )
+        author="InvestIA")
     doc.build(story, onFirstPage=_draw_hf, onLaterPages=_draw_hf)
     return output_path
+
+
+def run_ofc_mc_pipeline(
+    results_pipeline: dict,
+    profile: str,
+    portfolio: dict,
+    stocks_data,
+    benchmark_data,
+    benchmark_data_raw,
+    tickers: list,
+    init_cash: float,
+    plots_dir,
+    show_method_plots: bool = True,
+) -> dict:
+    """
+    Esegue la pipeline OFC + Monte Carlo per ogni engine in results_pipeline.
+
+    Per ciascun engine ("Momentum", "Multifactor") costruisce il wfo_runs dict,
+    esegue quick_sanity_check, overfitting_check_rotational e (se OFC promosso)
+    run_all_mc_methods_rotational. Aggiorna results_pipeline in place con le
+    chiavi "sanity", "ofc", "mc" per ogni engine.
+
+    Parameters
+    ----------
+    results_pipeline : dict[str, dict]
+        Output di run_wfo_pipeline per ciascun engine. Modificato in place:
+        a ogni chiave engine viene aggiunto il sotto-dict con
+        ``sanity``, ``ofc``, ``mc``.
+    profile : str
+        Profilo di rischio (``"satellite"`` o ``"core"``); determina le
+        soglie OFC.
+    portfolio : dict
+        Dict di configurazione portafoglio; usato per
+        ``portfolio.get('asset_type', 'stock')``.
+    stocks_data : pd.DataFrame
+        Prezzi giornalieri degli asset dell'universo.
+    benchmark_data : pd.DataFrame
+        Prezzi giornalieri del benchmark (adjusted close).
+    benchmark_data_raw : pd.DataFrame
+        Prezzi grezzi del benchmark; passati a overfitting_check_rotational
+        come ``benchmark_prices``.
+    tickers : list[str]
+        Lista completa dei ticker dell'universo; passata a
+        run_all_mc_methods_rotational come ``tickers_master``.
+    init_cash : float
+        Capitale iniziale; passato a run_all_mc_methods_rotational.
+    plots_dir : path-like
+        Directory radice per i plot MC. Ogni engine riceve una sub-directory
+        ``plots_dir/<engine_name>/`` creata automaticamente.
+
+    Returns
+    -------
+    dict[str, dict]
+        ``wfo_runs``: per ogni engine, contiene ``summary_df``, ``param_grid``,
+        ``pf_rot``, ``pf_rot_base``, ``sel_tickers``, ``sel_tickers_base``,
+        ``regime``. Utile per save_wfo_for_runtime.
+
+    Side Effects
+    ------------
+    - Modifica results_pipeline in place (aggiunge sanity/ofc/mc per engine).
+    - Salva PNG dei plot MC in sotto-directory di plots_dir.
+    - Stampa riepilogo su stdout.
+    """
+    from pathlib import Path as _Path
+
+    wfo_runs = {}
+    for _eng in ("Momentum", "Multifactor"):
+        _rp = results_pipeline.get(_eng)
+        if _rp is None:
+            continue
+        wfo_runs[_eng] = dict(
+            summary_df       = _rp["summary_df"],
+            param_grid       = build_wfo_grid(
+                                   engine=_eng, profile=profile,
+                                   asset_type=portfolio.get("asset_type", "stock")),
+            pf_rot           = _rp["pf_rot"],
+            pf_rot_base      = _rp["pf_rot_base"],
+            sel_tickers      = _rp["sel_tickers"],
+            sel_tickers_base = _rp["sel_tickers_base"],
+            regime           = _rp.get("regime") if _eng == "Momentum" else None,
+        )
+
+    for name, cfg in wfo_runs.items():
+        print(f"\n{'#'*60}\n  {name}\n{'#'*60}")
+
+        check = quick_sanity_check(cfg["pf_rot"], cfg["pf_rot_base"], label=name)
+
+        if not check["proceed"]:
+            print(f"  [{name}] SKIP OFC/MC — sanity check fallito ({check['n_flags']} flag)")
+            results_pipeline[name].update(dict(sanity=check, ofc=None, mc=None))
+            continue
+
+        ofc_passed, ofc_report = overfitting_check_rotational(
+            wfo_summary      = cfg["summary_df"],
+            stocks_data      = stocks_data,
+            benchmark_data   = benchmark_data,
+            param_grid       = cfg["param_grid"],
+            profile          = profile,
+            benchmark_prices = benchmark_data_raw,
+            seed             = 42,
+            verbose          = True,
+        )
+
+        mc_out = None
+        if ofc_passed:
+            plots_dir_run = _Path(plots_dir) / name
+            plots_dir_run.mkdir(parents=True, exist_ok=True)
+            ci_results, ci_summary_df, skill_results, skill_summary_df = \
+                run_all_mc_methods_rotational(
+                    pf_rot                = cfg["pf_rot"],
+                    pf_rot_base           = cfg["pf_rot_base"],
+                    regime                = cfg["regime"],
+                    sel_tickers           = cfg["sel_tickers"],
+                    sel_tickers_base      = cfg["sel_tickers_base"],
+                    stocks_data           = stocks_data,
+                    benchmark_data        = benchmark_data,
+                    tickers_master        = tickers,
+                    init_cash             = init_cash,
+                    n_simulations         = 1000,
+                    seed                  = 42,
+                    block_size            = 10,
+                    vol_window            = 60,
+                    n_vol_quantiles       = 3,
+                    show_method_plots     = show_method_plots,
+                    show_method_summaries = True,
+                    save_plots            = True,
+                    plots_dir             = plots_dir_run,
+                )
+            mc_out = dict(
+                ci_results      = ci_results,
+                ci_summary_df   = ci_summary_df,
+                skill_results   = skill_results,
+                skill_summary_df= skill_summary_df,
+            )
+        else:
+            print(f"  [{name}] SKIP MC — OFC non promosso")
+
+        results_pipeline[name].update(dict(
+            sanity = check,
+            ofc    = dict(passed=ofc_passed, report=ofc_report),
+            mc     = mc_out,
+        ))
+
+    print(f"\n{'='*60}\n  RIEPILOGO\n{'='*60}")
+    for name, r in results_pipeline.items():
+        sanity_ok = r.get("sanity", {}).get("proceed")
+        ofc_ok    = r.get("ofc", {}).get("passed") if r.get("ofc") else None
+        mc_done   = r.get("mc") is not None
+        print(f"  {name:12s} | sanity={sanity_ok} | ofc={ofc_ok} | mc_eseguito={mc_done}")
+
+    return wfo_runs
+
+
+def save_wfo_for_runtime(
+    engine_scelto: str,
+    results_pipeline: dict,
+    wfo_runs: dict,
+    start_date,
+    end_date,
+    wfo_file_save: str,
+    metric: str,
+    ratio: str,
+    force_next_year_params: bool,
+    variant_scelta: str = "RISK_ON_OFF",
+) -> None:
+    """
+    Salva il WFO summary dell'engine scelto per l'uso in produzione (runtime).
+
+    Legge summary_df e param_grid dall'engine selezionato e chiama
+    save_rotational_wfo_summary, aggiungendo nei metadati le chiavi
+    ``deployed_engine`` e ``deployed_variant``.
+
+    Parameters
+    ----------
+    engine_scelto : str
+        Nome dell'engine da promuovere (es. ``"Momentum"`` o ``"Multifactor"``).
+        Deve essere una chiave presente in results_pipeline; se non lo è,
+        viene sollevato un ValueError che elenca le chiavi valide disponibili.
+    results_pipeline : dict[str, dict]
+        Risultati della pipeline per engine. Deve contenere
+        ``results_pipeline[engine_scelto]["summary_df"]``.
+    wfo_runs : dict[str, dict]
+        Dict costruito da run_ofc_mc_pipeline. Deve contenere
+        ``wfo_runs[engine_scelto]["param_grid"]``.
+    start_date : str | pd.Timestamp
+        Data di inizio del periodo dati WFO.
+    end_date : str | pd.Timestamp
+        Data di fine del periodo dati WFO.
+    wfo_file_save : str
+        Path del file CSV di output (letto dal runtime in r_run_portfolio).
+    metric : str
+        Metrica di ottimizzazione IS (es. ``"Sharpe Ratio"``).
+    ratio : str
+        Rapporto IS:OOS (es. ``"3:1"``).
+    force_next_year_params : bool
+        Se True, forza i parametri dell'anno successivo.
+    variant_scelta : str
+        Variante di rischio: ``"RISK_ON_OFF"`` (overlay difensivo attivo a runtime)
+        oppure ``"BASE"`` (nessun overlay). Default: ``"RISK_ON_OFF"``.
+
+    Returns
+    -------
+    None
+
+    Side Effects
+    ------------
+    - Scrive il file CSV su wfo_file_save.
+    - Stampa conferma su stdout.
+    """
+    _valid_variants = {"RISK_ON_OFF", "BASE"}
+    if variant_scelta not in _valid_variants:
+        raise ValueError(
+            f"variant_scelta='{variant_scelta}' non è un valore valido. "
+            f"Valori possibili: {sorted(_valid_variants)}"
+        )
+
+    valid_keys = list(results_pipeline.keys())
+    if engine_scelto not in results_pipeline:
+        raise ValueError(
+            f"engine_scelto='{engine_scelto}' non è una chiave valida in results_pipeline. "
+            f"Chiavi disponibili: {valid_keys}"
+        )
+    if engine_scelto not in wfo_runs:
+        raise ValueError(
+            f"engine_scelto='{engine_scelto}' non trovato in wfo_runs. "
+            f"Chiavi disponibili: {list(wfo_runs.keys())}"
+        )
+
+    print(f"Engine scelto per il RUNTIME: {engine_scelto}")
+    print(f"Variante Risk: {variant_scelta}")
+
+    _summary_df_runtime = results_pipeline[engine_scelto]["summary_df"]
+    _param_grid_runtime = wfo_runs[engine_scelto]["param_grid"]
+
+    save_rotational_wfo_summary(
+        summary_df             = _summary_df_runtime,
+        start_date             = start_date,
+        end_date               = end_date,
+        file_path              = wfo_file_save,
+        param_grid             = _param_grid_runtime,
+        metric                 = metric,
+        ratio                  = ratio,
+        force_next_year_params = force_next_year_params,
+        extra_meta             = {
+            "deployed_engine":  engine_scelto,
+            "deployed_variant": variant_scelta,
+        },
+    )
+
+
+def generate_final_report(
+    *,
+    results_pipeline: dict,
+    portfolio_title: str,
+    year: int,
+    profile: str,
+    benchmark_title: str,
+    tickers: list,
+    pipeline_start_date,
+    wfo_file_save: str,
+    survivorship_bias_universe: bool,
+    reports_dir,
+    plots_dir,
+    ratio: str,
+    metric: str,
+) -> dict | None:
+    """
+    Genera la decisione finale, la PTF Card Markdown e la Relazione
+    Tecnica PDF per una run R-portfolio multi-engine (Momentum +
+    Multifactor).
+
+    Raccoglie i dati OFC/MC dai risultati già calcolati in
+    ``results_pipeline``, costruisce il dict ``engines`` per-engine
+    con le grid-size reali esposte da ``run_wfo_pipeline``, chiama
+    ``generate_relazione_llm`` una sola volta e distribuisce l'output
+    a entrambi i documenti (card .md e PDF sempre insieme — blocco atomico).
+
+    Parameters
+    ----------
+    results_pipeline : dict[str, dict]
+        Output di ``run_wfo_pipeline`` per ciascun engine ("Momentum",
+        "Multifactor"). Ogni valore deve contenere le chiavi:
+        ``ofc``, ``mc``, ``pf_rot``, ``pf_rot_base``,
+        ``n_full_trials``, ``n_reduced_trials``.
+    portfolio_title : str
+        Nome leggibile del portafoglio (es. "Germany Plan — 2026").
+    year : int
+        Anno di selezione WFO (es. 2026).
+    profile : str
+        Profilo di rischio: ``"satellite"`` oppure ``"core"``.
+        Determina le soglie OFC.
+    benchmark_title : str
+        Ticker o label del benchmark (es. ``"^GDAXI"``).
+    tickers : list[str]
+        Lista completa dei ticker dell'universo; ``len(tickers)``
+        viene passato come ``universe_size`` alle funzioni di output.
+    pipeline_start_date : pd.Timestamp | str
+        Data di inizio del periodo OOS della pipeline WFO.
+    wfo_file_save : str
+        Path del file CSV WFO summary salvato su disco (incluso nella
+        §1 Identità della PTF Card e della Relazione Tecnica).
+    survivorship_bias_universe : bool
+        True se l'universo è stato risolto dinamicamente da un indice
+        (survivorship bias presente); propagato alla Relazione Tecnica.
+    reports_dir : Path | str
+        Directory di output per i file generati (PTF Card .md e
+        Relazione Tecnica .pdf). Viene creata se non esiste.
+    plots_dir : Path | str
+        Directory contenente i PNG già generati nelle celle precedenti
+        del notebook; passata a ``generate_relazione_tecnica``.
+    ratio : str
+        Rapporto IS:OOS usato per la WFO (es. ``"3:1"``).
+    metric : str
+        Metrica di ottimizzazione IS (es. ``"Sharpe Ratio"``).
+
+    Returns
+    -------
+    dict | None
+        ``None`` se nessun engine ha completato la pipeline OFC+MC.
+        Altrimenti un dict con le chiavi:
+        ``"card_path"`` (Path, PTF Card Markdown),
+        ``"pdf_path"`` (Path, Relazione Tecnica PDF),
+        ``"engines"`` (dict, struttura engines passata agli output).
+
+    Side Effects
+    ------------
+    Scrive su ``reports_dir``:
+      - ``{ptf_name}_{year}_{profile}.md``  — PTF Card Markdown
+      - ``{portfolio_title}_{year}_{profile}_Relazione_Tecnica.pdf``
+    Chiama l'API Anthropic (``generate_relazione_llm``) una volta per
+    generare le sezioni §6–§7 della relazione.
+    Stampa su stdout il riepilogo della Decisione Finale e i path dei
+    file generati.
+    """
+    from datetime import date as _date
+    from pathlib import Path as _Path
+
+    _today_iso = _date.today().isoformat()
+    _ptf_name  = portfolio_title.replace(' ', '_').lower()
+    reports_dir = _Path(reports_dir)
+    plots_dir   = _Path(plots_dir)
+
+    # ── Raccolta dati per tutti gli engine ───────────────────────────────────
+    engines = {}
+    for _eng in ["Momentum", "Multifactor"]:
+        _rp = results_pipeline.get(_eng, {})
+        if not _rp:
+            print(f"[{_eng}] SKIP — risultato non trovato in results_pipeline")
+            continue
+        if _rp.get('mc') is None:
+            print(f"[{_eng}] SKIP — MC non disponibile (OFC non promosso o sanity fallita)")
+            continue
+
+        _mc      = _rp['mc']
+        _ofc_rep = _rp['ofc']['report']
+
+        # Leggi grid-sizes da results_pipeline; se mancanti (results_pipeline
+        # precedente alla fix — stato kernel stale, non un bug di wiring),
+        # fallback su ofc_report per n_full_trials (OFC usa il full grid →
+        # stessa cardinalità). Per n_reduced_trials NON usare n_full_trials
+        # come proxy: sarebbe silenziosamente sbagliato. Mostrare 'N/A'.
+        _nf = _rp.get('n_full_trials')
+        _nr = _rp.get('n_reduced_trials')
+        if _nf is None:
+            _nf = _ofc_rep.get('resolved', {}).get('n_total_trials_used')
+        if _nr is None:
+            _nr = 'N/A'
+
+        def _safe_realized(pf):
+            if pf is None:
+                return {}
+            try:
+                s = dict(pf.stats())
+                sharpe = float(s["Sharpe Ratio"])
+                calmar = float(s["Calmar Ratio"])
+                # stats() gives MaxDD as positive percentage — convert to negative fraction
+                # to match the sign convention used by _mc_compute_metrics (MaxDD < 0)
+                maxdd = -float(s["Max Drawdown [%]"]) / 100.0
+                # CAGR: not directly in stats(); try "Annualized Return [%]" first,
+                # then compute from Start/End Value and Period (365.25-day year convention)
+                if "Annualized Return [%]" in s:
+                    cagr = float(s["Annualized Return [%]"]) / 100.0
+                else:
+                    sv      = float(s["Start Value"])
+                    ev_     = float(s["End Value"])
+                    n_years = s["Period"].days / 365.25
+                    cagr = (ev_ / sv) ** (1.0 / n_years) - 1.0 if (sv > 0 and n_years > 0) else float('nan')
+                return {'cagr': cagr, 'sharpe': sharpe, 'maxdd': maxdd, 'calmar': calmar}
+            except Exception:
+                return {}
+
+        engines[_eng] = {
+            'ofc_report':      _ofc_rep,
+            'mc_skill':        _mc['skill_results'],
+            'mc_ci':           _mc['ci_summary_df'],
+            'ci_results':      _mc.get('ci_results'),
+            'pf_rot':          _rp.get('pf_rot'),
+            'pf_rot_base':     _rp.get('pf_rot_base'),
+            'realized':        _safe_realized(_rp.get('pf_rot')),
+            'realized_base':   _safe_realized(_rp.get('pf_rot_base')),
+            'plots_subdir':    _eng.lower(),
+            'n_full_trials':   _nf,
+            'n_reduced_trials': _nr,
+        }
+        engines[_eng]['skill_profile'] = compute_skill_profile(
+            engines={_eng: engines[_eng]}
+        ).get(_eng, 'N/A')
+
+    if not engines:
+        print("[generate_final_report] Nessun engine disponibile — output non generato.")
+        return None
+
+    # ── Configurazione WFO (parametri comuni; grid sizes sono per-engine) ────
+    _wfo_config = {
+        'ratio':           ratio,
+        'metric':          metric,
+        'wfo_file_save':   wfo_file_save,
+        'use_clustering':  False,
+        'n_bootstrap_ofc': 1000,
+        'n_bootstrap_mc':  1000,
+    }
+
+    _rp0          = results_pipeline[next(iter(engines))]
+    _benchmark_pf = _rp0.get('pf_benchmark') or _rp0.get('pf_benchmark_base')
+
+    _card_path = reports_dir / f"{_ptf_name}_{year}_{profile}.md"
+    _pdf_path  = reports_dir / f"{portfolio_title}_{year}_{profile}_Relazione_Tecnica.pdf"
+    _card_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # ── Decisione finale ──────────────────────────────────────────────────────
+    # print(f"\n{'='*60}\n  Decisione Finale — {portfolio_title} ({year})\n{'='*60}")
+    print_final_decision(
+        portfolio_title = portfolio_title,
+        year            = year,
+        profile         = profile,
+        engines         = engines,
+    )
+
+    # ── Generazione LLM una sola volta (§6–§7) ────────────────────────────────
+    print("\n[generate_final_report] Generazione analisi via LLM in corso "
+          "(può richiedere alcuni minuti)...")
+    _analysis_md = generate_relazione_llm(
+        engines         = engines,
+        wfo_config      = _wfo_config,
+        portfolio_title = portfolio_title,
+        year            = year,
+        profile         = profile,
+        benchmark_title = benchmark_title,
+        benchmark_pf    = _benchmark_pf,
+    )
+    print("[generate_final_report] Analisi LLM completata.")
+
+    # ── PTF Card Markdown ─────────────────────────────────────────────────────
+    generate_ptf_card_md(
+        portfolio_title = portfolio_title,
+        year            = year,
+        profile         = profile,
+        benchmark       = benchmark_title,
+        benchmark_pf    = _benchmark_pf,
+        period          = (str(pipeline_start_date), _today_iso),
+        universe_size   = len(tickers),
+        wfo_config      = _wfo_config,
+        engines         = engines,
+        output_path     = _card_path,
+        analysis_md     = _analysis_md,
+    )
+    
+    print(f"\nPTF Card MD: {_card_path}")
+
+    # ── Relazione Tecnica PDF ─────────────────────────────────────────────────
+    generate_relazione_tecnica(
+        portfolio_title            = portfolio_title,
+        year                       = year,
+        profile                    = profile,
+        benchmark                  = benchmark_title,
+        benchmark_pf               = _benchmark_pf,
+        period                     = (str(pipeline_start_date), _today_iso),
+        universe_size              = len(tickers),
+        wfo_config                 = _wfo_config,
+        engines                    = engines,
+        plots_dir                  = plots_dir,
+        output_path                = _pdf_path,
+        analysis_md                = _analysis_md,
+        survivorship_bias_universe = survivorship_bias_universe,
+    )
+    print(f"Relazione tecnica PDF: {_pdf_path}")
+
+    return {
+        "card_path": _card_path,
+        "pdf_path":  _pdf_path,
+        "engines":   engines,
+    }
+
+
+def run_r_portfolio_n_engine_analysis(
+    portfolio_cfg: dict,
+    output_dir,
+    year: int | None = None,
+    start_date: str = "2015-01-01",
+    end_date=None,
+    profile: str = "satellite",
+    verbose: bool = False,
+    relazione_tecnica: bool = False,
+    engines: list | None = None,
+) -> dict:
+    """
+    Pipeline N-engine R-portfolio in modalità headless (CLI/batch).
+
+    Orchestra build_wfo_grid + run_wfo_pipeline (per ogni engine richiesto),
+    run_ofc_mc_pipeline e (opzionalmente) generate_final_report.
+    Usata da ``iq r-analyze``.
+
+    Parameters
+    ----------
+    portfolio_cfg : dict
+        Dict portafoglio da r_portfolios.py. Chiavi attese: ``Title``,
+        ``tickers``, ``benchmark_portfolio`` (o ``benchmark_title``),
+        ``risk_off_tickers`` (opzionale), ``init_cash`` (opzionale),
+        ``asset_type`` (opzionale).
+    output_dir : str | Path
+        Directory di output per report, plot e CSV WFO.
+    year : int | None
+        Anno di selezione WFO (default: anno corrente).
+    start_date : str
+        Inizio storico download (default: "2015-01-01").
+    end_date : str | None
+        Fine storico download (default: None = oggi).
+    profile : str
+        Profilo di rischio: ``"satellite"`` o ``"core"``.
+    verbose : bool
+        Output verboso.
+    relazione_tecnica : bool
+        Se True esegue il blocco relazione tecnica completo (LLM + PTF
+        card .md + PDF — sempre insieme, blocco atomico).
+        Se False (default) la pipeline si ferma dopo WFO+OFC+MC;
+        nessuna chiamata LLM, nessun documento generato.
+    engines : list[str] | None
+        Engine da eseguire: sottoinsieme di ``["Momentum", "Multifactor"]``.
+        None (default) esegue entrambi.
+
+    Returns
+    -------
+    dict con le chiavi:
+        ``"card_path"``     Path PTF Card .md (None se relazione_tecnica=False)
+        ``"pdf_path"``      Path Relazione Tecnica PDF (None se relazione_tecnica=False)
+        ``"engines"``       dict per-engine con ofc_report, mc_skill, skill_profile
+        ``"plots_dir"``     Path directory PNG
+        ``"wfo_file_save"`` str path CSV WFO summary
+    """
+    import matplotlib
+    matplotlib.use('Agg')
+    from pathlib import Path
+    from datetime import date, timedelta
+    import os
+
+    if engines is None:
+        engines = ["Momentum", "Multifactor"]
+
+    # 1. SETUP
+    if year is None:
+        year = date.today().year
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    plots_dir = output_dir / "plots"
+    plots_dir.mkdir(parents=True, exist_ok=True)
+
+    portfolio_title     = portfolio_cfg["Title"]
+    tickers             = portfolio_cfg["tickers"]
+    benchmark_portfolio = portfolio_cfg.get("benchmark_portfolio")
+    benchmark_title     = portfolio_cfg.get("benchmark_title")
+    from k_tickers import risk_off_tickers as _default_risk_off_tickers
+    risk_off_tickers    = portfolio_cfg.get("risk_off_tickers", _default_risk_off_tickers)
+    init_cash           = portfolio_cfg.get("init_cash", 100_000)
+    asset_type          = portfolio_cfg.get("asset_type", "stock")
+
+    survivorship_bias_universe: bool = isinstance(tickers, str)
+    tickers = (
+        extract_tickers_from_wikipedia(tickers, exclude=["GOOG"], rename={"BRK.B": "BRK-B"})
+        if isinstance(tickers, str)
+        else list(tickers)
+    )
+
+    wfo_results_dir = os.environ.get(
+        "IQ_OUTPUTS_DIR",
+        str(Path(__file__).parent.parent / "outputs")
+    )
+    wfo_file_save = f"{wfo_results_dir}/WFO_R_DEV_RESULTS/{portfolio_title}_{year}.wfo_summary.csv"
+
+    # 2. DOWNLOAD
+    lookback_buffer = 365
+    download_start = (
+        pd.to_datetime(start_date) - timedelta(days=lookback_buffer)
+    ).strftime("%Y-%m-%d")
+
+    stocks_data, _ = fetch_data_and_companies(
+        tickers, download_start, end_date, normalize=False
+    )
+    stocks_data_raw = download_data(tickers, download_start, end_date, auto_adjust=False)
+    portfolio_cfg["stocks_data"] = stocks_data
+    portfolio_cfg["init_cash"]   = init_cash
+
+    if benchmark_portfolio:
+        benchmark_data     = build_benchmark(
+            benchmark_portfolio,
+            stocks_data.index.min(), stocks_data.index.max(),
+        ).replace(0, np.nan).ffill()
+        benchmark_data_raw = build_benchmark(
+            benchmark_portfolio,
+            stocks_data.index.min(), stocks_data.index.max(),
+            auto_adjust=False,
+        ).replace(0, np.nan).ffill()
+    elif benchmark_title:
+        benchmark_data     = download_data(benchmark_title, stocks_data.index.min(), end_date)
+        benchmark_data_raw = download_data(benchmark_title, stocks_data.index.min(), end_date,
+                                           auto_adjust=False)
+    else:
+        benchmark_data = benchmark_data_raw = None
+
+    risk_off_tickers_uniq = [t for t in risk_off_tickers if t not in tickers]
+    risk_off_data = (
+        download_data(risk_off_tickers_uniq, download_start, end_date)
+        if risk_off_tickers_uniq
+        else None
+    )
+    if isinstance(risk_off_data, pd.Series):
+        risk_off_data = risk_off_data.to_frame()
+
+    # 3. PIPELINE_START_DATE
+    ratio   = "3:1"
+    metric  = "Sharpe Ratio"
+    cores   = -1
+
+    ratio_int = int(str(ratio).split(":")[0])
+    if benchmark_data is not None:
+        benchmark_start = benchmark_data.dropna(how="all").index.min()
+    else:
+        benchmark_start = stocks_data.dropna(how="all").index.min()
+    first_full_year     = pd.Timestamp(f"{benchmark_start.year + 1}-01-01")
+    pipeline_start_date = first_full_year - pd.DateOffset(years=ratio_int)
+
+    # 4. WFO LOOP (un engine alla volta)
+    results_pipeline = {}
+    for engine in engines:
+        grid = build_wfo_grid(engine=engine, profile=profile, asset_type=asset_type)
+        _ptf_key = portfolio_title.replace(' ', '_').lower()
+        wfo_audit_path_base = str(output_dir / f"{_ptf_key}_{year}")
+        results_pipeline[engine] = run_wfo_pipeline(
+            stocks_data_raw     = stocks_data_raw,
+            stocks_data         = stocks_data,
+            benchmark_data      = benchmark_data,
+            benchmark_data_raw  = benchmark_data_raw,
+            tickers             = tickers,
+            risk_off_data       = risk_off_data,
+            ratio               = ratio,
+            metric              = metric,
+            start_date          = pipeline_start_date,
+            end_date            = end_date,
+            cores               = cores,
+            verbose             = verbose,
+            force_next_year_params = False,
+            param_grid          = grid,
+            engine              = engine,
+            autoreduce          = True,
+            portfolio_title     = portfolio_title,
+            benchmark_title     = benchmark_title,
+            init_cash           = init_cash,
+            risk_on_off         = True,
+            plot                = False,
+            profile             = profile,
+            asset_type          = asset_type,
+            wfo_audit_path_base = wfo_audit_path_base,
+            benchmark_prices    = benchmark_data_raw,
+        )
+
+    # 4b. Salvataggio Portfolio object + metadati per resume §7
+    from u_functions import update_latest_symlink
+    save_wfo_portfolio_objects(
+        results_pipeline  = results_pipeline,
+        output_dir        = output_dir,
+        ptf_name          = portfolio_title,
+        year              = year,
+        profilo           = profile,
+        pipeline_constants = dict(
+            ratio                  = ratio,
+            metric                 = metric,
+            force_next_year_params = False,
+            autoreduce             = True,
+            risk_on_off            = True,
+            pipeline_start_date    = pipeline_start_date,
+        ),
+    )
+    update_latest_symlink(output_dir)
+
+    # 5. OFC + MC
+    run_ofc_mc_pipeline(
+        results_pipeline   = results_pipeline,
+        profile            = profile,
+        portfolio          = portfolio_cfg,
+        stocks_data        = stocks_data,
+        benchmark_data     = benchmark_data,
+        benchmark_data_raw = benchmark_data_raw,
+        tickers            = tickers,
+        init_cash          = init_cash,
+        plots_dir          = plots_dir,
+        show_method_plots  = False,
+    )
+
+    # 6a. Decisione finale testuale (sempre — nessun LLM, puramente deterministica)
+    # Assembla il dict engines minimale per print_final_decision.
+    _engines_display = {}
+    for _eng, _rp in results_pipeline.items():
+        if _rp.get('ofc') is None:
+            continue
+        _mc = _rp.get('mc')
+        _entry = {
+            'ofc_report': _rp['ofc']['report'],
+            'mc_skill':   _mc['skill_results'] if _mc else None,
+            'mc_ci':      _mc['ci_summary_df'] if _mc else None,
+        }
+        _entry['skill_profile'] = compute_skill_profile(
+            engines={_eng: _entry}
+        ).get(_eng, 'N/A')
+        _engines_display[_eng] = _entry
+
+    if _engines_display:
+        print_final_decision(
+            portfolio_title = portfolio_title,
+            year            = year,
+            profile         = profile,
+            engines         = _engines_display,
+        )
+
+    # 6b. Relazione tecnica completa (LLM + card .md + PDF) — solo se richiesta
+    if not relazione_tecnica:
+        return {
+            "card_path":     None,
+            "pdf_path":      None,
+            "engines":       _engines_display,
+            "plots_dir":     plots_dir,
+            "wfo_file_save": wfo_file_save,
+        }
+
+    report = generate_final_report(
+        results_pipeline           = results_pipeline,
+        portfolio_title            = portfolio_title,
+        year                       = year,
+        profile                    = profile,
+        benchmark_title            = benchmark_title,
+        tickers                    = tickers,
+        pipeline_start_date        = pipeline_start_date,
+        wfo_file_save              = wfo_file_save,
+        survivorship_bias_universe = survivorship_bias_universe,
+        reports_dir                = output_dir,
+        plots_dir                  = plots_dir,
+        ratio                      = ratio,
+        metric                     = metric,
+    )
+
+    if report is None:
+        return {
+            "card_path":     None,
+            "pdf_path":      None,
+            "engines":       _engines_display,
+            "plots_dir":     plots_dir,
+            "wfo_file_save": wfo_file_save,
+        }
+
+    return {
+        "card_path":     report["card_path"],
+        "pdf_path":      report["pdf_path"],
+        "engines":       report["engines"],
+        "plots_dir":     plots_dir,
+        "wfo_file_save": wfo_file_save,
+    }
 
 
 def run_r_portfolio_analysis(
@@ -14903,7 +16841,6 @@ def run_r_portfolio_analysis(
     profile: str = "satellite",
     verbose: bool = False,
     generate_pdf: bool = True,
-    run_cluster: bool = False,
 ) -> dict:
     """
     Esegue la pipeline completa R-portfolio in modalità headless.
@@ -15053,7 +16990,7 @@ def run_r_portfolio_analysis(
     pipeline_start_date = first_full_year - pd.DateOffset(years=ratio_int)
 
     # 5. WFO STANDARD
-    results_std = run_wfo_pipeline(
+    results_std = run_wfo_pipeline_legacy_cluster(
         stocks_data_raw        = stocks_data_raw,
         stocks_data            = stocks_data,
         benchmark_data         = benchmark_data,
@@ -15069,6 +17006,7 @@ def run_r_portfolio_analysis(
         force_next_year_params = force_next_year_params,
         use_clustering         = False,
         param_grid             = reduced_grid,
+        wfo_audit_path_base    = str(output_dir / f"{portfolio_title}_{year}"),
         portfolio_title        = portfolio_title,
         benchmark_title        = benchmark_title,
         init_cash              = init_cash,
@@ -15088,69 +17026,49 @@ def run_r_portfolio_analysis(
     sel_tickers_std      = results_std["sel_tickers"]
     sel_tickers_std_base = results_std["sel_tickers_base"]
 
-    save_rotational_wfo_summary(
-        summary_df             = summary_df_std,
-        start_date             = start_date,
-        end_date               = end_date,
-        file_path              = wfo_file_save,
-        param_grid             = reduced_grid,
-        metric                 = metric,
-        ratio                  = ratio,
+    # 6. WFO CLUSTER
+    results_cluster = run_wfo_pipeline_legacy_cluster(
+        stocks_data_raw    = stocks_data_raw,
+        stocks_data        = stocks_data,
+        benchmark_data     = benchmark_data,
+        benchmark_data_raw = benchmark_data_raw,
+        tickers            = tickers,
+        risk_off_data      = risk_off_data,
+        ratio              = ratio,
+        metric             = metric,
+        start_date         = pipeline_start_date,
+        end_date           = end_date,
+        cores              = cores,
+        verbose            = verbose,
         force_next_year_params = force_next_year_params,
-        extra_meta             = None,
+        use_clustering     = True,
+        adaptive_k         = True,
+        adaptive_k_method  = "hybrid",
+        n_clusters         = 5,
+        lookback_days      = 504,
+        n_top_min          = 2,
+        param_grid         = full_grid,
+        wfo_audit_path_base = str(output_dir / f"{portfolio_title}_{year}"),
+        portfolio_title    = portfolio_title,
+        benchmark_title    = benchmark_title,
+        init_cash          = init_cash,
+        risk_on_off        = True,
+        plot               = False,
+        save_plots         = True,
+        plots_dir          = plots_dir,
+        profile            = profile,
+        asset_type         = asset_type,
     )
-
-    # 6. WFO CLUSTER (solo se run_cluster=True)
-    if run_cluster:
-        results_cluster = run_wfo_pipeline(
-            stocks_data_raw    = stocks_data_raw,
-            stocks_data        = stocks_data,
-            benchmark_data     = benchmark_data,
-            benchmark_data_raw = benchmark_data_raw,
-            tickers            = tickers,
-            risk_off_data      = risk_off_data,
-            ratio              = ratio,
-            metric             = metric,
-            start_date         = pipeline_start_date,
-            end_date           = end_date,
-            cores              = cores,
-            verbose            = verbose,
-            force_next_year_params = force_next_year_params,
-            use_clustering     = True,
-            adaptive_k         = True,
-            adaptive_k_method  = "hybrid",
-            n_clusters         = 5,
-            lookback_days      = 504,
-            n_top_min          = 2,
-            param_grid         = full_grid,
-            portfolio_title    = portfolio_title,
-            benchmark_title    = benchmark_title,
-            init_cash          = init_cash,
-            risk_on_off        = True,
-            plot               = False,
-            save_plots         = True,
-            plots_dir          = plots_dir,
-            profile            = profile,
-            asset_type         = asset_type,
-        )
-        pf_rot_cluster       = results_cluster["pf_rot"]
-        pf_rot_cluster_base  = results_cluster["pf_rot_base"]
-        if pf_rot_cluster is None:
-            print(f"[WARN] pf_rot (Risk ON/OFF) è None per Cluster — uso pf_rot_base. "
-                  f"risk_off_tickers configurati: {risk_off_tickers}")
-            pf_rot_cluster = pf_rot_cluster_base
-        regime_cluster       = results_cluster["regime"]
-        summary_df_cluster   = results_cluster["summary_df"]
-        sel_tickers_cluster      = results_cluster["sel_tickers"]
-        sel_tickers_cluster_base = results_cluster["sel_tickers_base"]
-    else:
-        results_cluster          = None
-        pf_rot_cluster           = None
-        pf_rot_cluster_base      = None
-        regime_cluster           = None
-        summary_df_cluster       = None
-        sel_tickers_cluster      = None
-        sel_tickers_cluster_base = None
+    pf_rot_cluster       = results_cluster["pf_rot"]
+    pf_rot_cluster_base  = results_cluster["pf_rot_base"]
+    if pf_rot_cluster is None:
+        print(f"[WARN] pf_rot (Risk ON/OFF) è None per Cluster — uso pf_rot_base. "
+              f"risk_off_tickers configurati: {risk_off_tickers}")
+        pf_rot_cluster = pf_rot_cluster_base
+    regime_cluster       = results_cluster["regime"]
+    summary_df_cluster   = results_cluster["summary_df"]
+    sel_tickers_cluster      = results_cluster["sel_tickers"]
+    sel_tickers_cluster_base = results_cluster["sel_tickers_base"]
 
     # 7. COMPARE
     metrics_df = compare_wfo_pipelines(
@@ -15181,24 +17099,20 @@ def run_r_portfolio_analysis(
     with open(ofc_report_std_path, "w") as f:
         json.dump(ofc_report_std, f, default=str, indent=2)
 
-    # 9. OFC CLUSTER (solo se run_cluster=True)
-    if run_cluster:
-        ofc_passed_cluster, ofc_report_cluster = overfitting_check_rotational(
-            wfo_summary      = summary_df_cluster,
-            stocks_data      = stocks_data,
-            benchmark_data   = benchmark_data,
-            param_grid       = full_grid,
-            profile          = profile,
-            n_total_trials   = n_full_trials,
-            seed             = 42,
-            verbose          = verbose,
-        )
-        ofc_report_cluster_path = output_dir / f"{portfolio_title}_{year}_ofc_cluster.json"
-        with open(ofc_report_cluster_path, "w") as f:
-            json.dump(ofc_report_cluster, f, default=str, indent=2)
-    else:
-        ofc_passed_cluster = None
-        ofc_report_cluster = None
+    # 9. OFC CLUSTER
+    ofc_passed_cluster, ofc_report_cluster = overfitting_check_rotational(
+        wfo_summary      = summary_df_cluster,
+        stocks_data      = stocks_data,
+        benchmark_data   = benchmark_data,
+        param_grid       = full_grid,
+        profile          = profile,
+        n_total_trials   = n_full_trials,
+        seed             = 42,
+        verbose          = verbose,
+    )
+    ofc_report_cluster_path = output_dir / f"{portfolio_title}_{year}_ofc_cluster.json"
+    with open(ofc_report_cluster_path, "w") as f:
+        json.dump(ofc_report_cluster, f, default=str, indent=2)
 
     # 10. MONTE CARLO
     mc_kwargs = dict(
@@ -15224,95 +17138,103 @@ def run_r_portfolio_analysis(
         plots_dir        = plots_dir_std,
         **mc_kwargs,
     )
-    if run_cluster:
-        ci_results_cluster, ci_summary_df_cluster, skill_results_cluster, skill_summary_df_cluster = run_all_mc_methods_rotational(
-            pf_rot           = pf_rot_cluster,
-            pf_rot_base      = pf_rot_cluster_base,
-            regime           = regime_cluster,
-            sel_tickers      = sel_tickers_cluster,
-            sel_tickers_base = sel_tickers_cluster_base,
-            plots_dir        = plots_dir_cluster,
-            **mc_kwargs,
-        )
-    else:
-        ci_results_cluster     = None
-        ci_summary_df_cluster  = None
-        skill_results_cluster  = None
+    ci_results_cluster, ci_summary_df_cluster, skill_results_cluster, skill_summary_df_cluster = run_all_mc_methods_rotational(
+        pf_rot           = pf_rot_cluster,
+        pf_rot_base      = pf_rot_cluster_base,
+        regime           = regime_cluster,
+        sel_tickers      = sel_tickers_cluster,
+        sel_tickers_base = sel_tickers_cluster_base,
+        plots_dir        = plots_dir_cluster,
+        **mc_kwargs,
+    )
 
     # 11. DECISIONE
-    skill_profile_std, skill_profile_cluster = compute_skill_profile(
-        mc_skill         = skill_results,
-        mc_skill_cluster = skill_results_cluster,
-    )
+    _engines_raw = {
+        "Standard": {
+            "ofc_report":      ofc_report_std,
+            "mc_skill":        skill_results,
+            "mc_ci":           ci_summary_df,
+            "ci_results":      ci_results,
+            "pf_rot":          results_std.get("pf_rot"),
+            "pf_rot_base":     results_std.get("pf_rot_base"),
+            "plots_subdir":    "std",
+            "n_full_trials":   n_full_trials,
+            "n_reduced_trials": n_reduced_trials,
+        },
+        "Cluster": {
+            "ofc_report":      ofc_report_cluster,
+            "mc_skill":        skill_results_cluster,
+            "mc_ci":           ci_summary_df_cluster,
+            "ci_results":      ci_results_cluster if results_cluster else None,
+            "pf_rot":          results_cluster.get("pf_rot") if results_cluster else None,
+            "pf_rot_base":     results_cluster.get("pf_rot_base") if results_cluster else None,
+            "plots_subdir":    "cluster",
+            "n_full_trials":   n_full_trials,
+            "n_reduced_trials": n_reduced_trials,
+        },
+    }
+    _sp_map = compute_skill_profile(engines=_engines_raw)
+    for _ename, _edata in _engines_raw.items():
+        _edata["skill_profile"] = _sp_map.get(_ename, "N/A")
+    skill_profile_std     = _engines_raw["Standard"]["skill_profile"]
+    skill_profile_cluster = _engines_raw["Cluster"]["skill_profile"]
 
     # 12. OUTPUT
     _today_iso = date.today().isoformat()
     _wfo_config = {
-        "ratio":            ratio,
-        "metric":           metric,
-        "n_full_trials":    n_full_trials,
-        "n_reduced_trials": n_reduced_trials,
-        "wfo_file_save":    wfo_file_save,
-        "use_clustering":   run_cluster,
-        "n_bootstrap_ofc":  1000,
-        "n_bootstrap_mc":   1000,
+        "ratio":          ratio,
+        "metric":         metric,
+        "wfo_file_save":  wfo_file_save,
+        "use_clustering": True,
+        "n_bootstrap_ofc": 1000,
+        "n_bootstrap_mc":  1000,
     }
-    _cluster_result = results_cluster.get("cluster_result") if results_cluster else None
-    _metrics_comparison = {
-        "cluster_riskoff": results_cluster.get("pf_rot")      if results_cluster else None,
-        "cluster_base":    results_cluster.get("pf_rot_base") if results_cluster else None,
-        "std_riskoff":     results_std.get("pf_rot"),
-        "std_base":        results_std.get("pf_rot_base"),
-        "benchmark":       results_std.get("pf_benchmark") or results_std.get("pf_benchmark_base"),
-    }
+    _benchmark_pf = results_std.get("pf_benchmark") or results_std.get("pf_benchmark_base")
 
     _card_path = output_dir / f"{portfolio_title.replace(' ', '_').lower()}_{year}_{profile}.md"
     _pdf_path  = output_dir / f"{portfolio_title}_{year}_{profile}_Relazione_Tecnica.pdf"
 
+    _analysis_md = generate_relazione_llm(
+        engines         = _engines_raw,
+        wfo_config      = _wfo_config,
+        portfolio_title = portfolio_title,
+        year            = year,
+        profile         = profile,
+        benchmark_title = benchmark_title,
+        benchmark_pf    = _benchmark_pf,
+    )
+
     generate_ptf_card_md(
-        portfolio_title    = portfolio_title,
-        year               = year,
-        profile            = profile,
-        benchmark          = benchmark_title,
-        period             = (str(pipeline_start_date), _today_iso),
-        universe_size      = len(tickers),
-        wfo_config         = _wfo_config,
-        cluster_result     = _cluster_result,
-        metrics_comparison = _metrics_comparison,
-        ofc_report_std     = ofc_report_std,
-        ofc_report_cluster = ofc_report_cluster,
-        mc_skill           = skill_results,
-        mc_ci              = ci_summary_df,
-        mc_skill_cluster   = skill_results_cluster,
-        mc_ci_cluster      = ci_summary_df_cluster,
-        skill_profile      = skill_profile_std,
-        output_path        = str(_card_path),
+        portfolio_title = portfolio_title,
+        year            = year,
+        profile         = profile,
+        benchmark       = benchmark_title,
+        benchmark_pf    = _benchmark_pf,
+        period          = (str(pipeline_start_date), _today_iso),
+        universe_size   = len(tickers),
+        wfo_config      = _wfo_config,
+        engines         = _engines_raw,
+        output_path     = str(_card_path),
+        analysis_md     = _analysis_md,
     )
 
     # La relazione tecnica PDF è opzionale: la card .md è sempre generata
     # (sopra), mentre il PDF dipende da generate_pdf (flag --pdf di iq r-analyze).
     if generate_pdf:
         generate_relazione_tecnica(
-            portfolio_title              = portfolio_title,
-            year                         = year,
-            profile                      = profile,
-            benchmark                    = benchmark_title,
-            period                       = (str(pipeline_start_date), _today_iso),
-            universe_size                = len(tickers),
-            wfo_config                   = _wfo_config,
-            cluster_result               = _cluster_result,
-            metrics_comparison           = _metrics_comparison,
-            ofc_report_std               = ofc_report_std,
-            ofc_report_cluster           = ofc_report_cluster,
-            mc_skill                     = skill_results,
-            mc_ci                        = ci_summary_df,
-            skill_profile                = skill_profile_std,
-            skill_profile_cluster        = skill_profile_cluster,
-            plots_dir                    = str(plots_dir),
-            output_path                  = str(_pdf_path),
-            mc_skill_cluster             = skill_results_cluster,
-            mc_ci_cluster                = ci_summary_df_cluster,
-            survivorship_bias_universe   = survivorship_bias_universe,
+            portfolio_title            = portfolio_title,
+            year                       = year,
+            profile                    = profile,
+            benchmark                  = benchmark_title,
+            benchmark_pf               = _benchmark_pf,
+            period                     = (str(pipeline_start_date), _today_iso),
+            universe_size              = len(tickers),
+            wfo_config                 = _wfo_config,
+            engines                    = _engines_raw,
+            plots_dir                  = str(plots_dir),
+            output_path                = str(_pdf_path),
+            analysis_md                = _analysis_md,
+            survivorship_bias_universe = survivorship_bias_universe,
         )
     else:
         _pdf_path = None
@@ -15326,3 +17248,2038 @@ def run_r_portfolio_analysis(
         "skill_profile_cluster": skill_profile_cluster,
     }
 
+
+# =============================================================================
+# ─── V2: MULTI-FACTOR RANKING MECHANISM ──────────────────────────────────────
+# Sviluppato in parallelo all'esistente (v1). Nessuna funzione v1 modificata.
+# Suffisso _v2 su tutti i nuovi simboli pubblici.
+# =============================================================================
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Parametri v2
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class ScoreParamsV2:
+    """Parametri scoring multi-fattore v2. Nessun use_acceleration."""
+    momentum_lookback_days:   int   = 126
+    riskparity_lookback_days: int   = 20
+    momentum_weight:          float = 1.0
+    ivol_weight:              float = 0.0
+    sortino_weight:           float = 0.0
+    idio_weight:              float = 0.0
+    ema_span:                 int   = 200
+
+    def __post_init__(self):
+        for name, val in [
+            ("momentum_weight",  self.momentum_weight),
+            ("ivol_weight",      self.ivol_weight),
+            ("sortino_weight",   self.sortino_weight),
+            ("idio_weight",      self.idio_weight),
+        ]:
+            if val < 0.0:
+                raise ValueError(f"ScoreParamsV2: {name}={val} deve essere >= 0")
+        if (self.momentum_weight + self.ivol_weight
+                + self.sortino_weight + self.idio_weight) == 0.0:
+            raise ValueError(
+                "ScoreParamsV2: almeno un peso deve essere > 0 "
+                "(tutti i pesi fattore sono zero)"
+            )
+
+
+@dataclass(frozen=True)
+class EngineParamsV2:
+    """Tutti i parametri del motore rotazionale v2."""
+    score:               ScoreParamsV2  = field(default_factory=ScoreParamsV2)
+    selection:           SelectionParams = field(default_factory=SelectionParams)
+    rebalance_frequency: str             = "ME"
+    init_cash:           float           = 100_000
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "EngineParamsV2":
+        sp = ScoreParamsV2(
+            momentum_lookback_days   = int(d.get("momentum_lookback_days",   126)),
+            riskparity_lookback_days = int(d.get("riskparity_lookback_days",  20)),
+            momentum_weight          = float(d.get("momentum_weight",          1.0)),
+            ivol_weight              = float(d.get("ivol_weight",              0.0)),
+            sortino_weight           = float(d.get("sortino_weight",           0.0)),
+            idio_weight              = float(d.get("idio_weight",              0.0)),
+            ema_span                 = int(d.get("ema_span",                  200)),
+        )
+        selp = SelectionParams(
+            n_top                  = int(d.get("n_top",                  5)),
+            filter_ema             = bool(d.get("filter_ema",             False)),
+            filter_volatility      = bool(d.get("filter_volatility",      False)),
+            filter_min_momentum    = bool(d.get("filter_min_momentum",    False)),
+            volatility_quantile    = float(d.get("volatility_quantile",   0.75)),
+            min_momentum_threshold = float(d.get("min_momentum_threshold", 1.0)),
+        )
+        return cls(
+            score               = sp,
+            selection           = selp,
+            rebalance_frequency = str(d.get("rebalance_frequency", "ME")),
+        )
+
+    def required_warmup_days(self) -> int:
+        max_lb = max(
+            self.score.momentum_lookback_days,
+            self.score.riskparity_lookback_days,
+        )
+        if self.selection.filter_ema:
+            max_lb = max(max_lb, self.score.ema_span)
+        return max(int(max_lb * 1.5) + 30, 60)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Registri v2
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Ogni entry documenta il nome del parametro peso nella griglia.
+# Le funzioni di calcolo sono centralizzate in precompute_signals.
+FACTOR_REGISTRY_V2: dict[str, dict] = {
+    "momentum": {"weight_param": "momentum_weight"},
+    "ivol":     {"weight_param": "ivol_weight"},
+    "sortino":  {"weight_param": "sortino_weight"},
+    "idio":     {"weight_param": "idio_weight"},
+}
+
+# Ogni entry documenta flag e parametri extra usati in apply_filters.
+FILTER_REGISTRY_V2: dict[str, dict] = {
+    "ema":          {"flag_param": "filter_ema",          "extra_params": ["ema_span"]},
+    "volatility":   {"flag_param": "filter_volatility",   "extra_params": ["volatility_quantile"]},
+    "min_momentum": {"flag_param": "filter_min_momentum", "extra_params": ["min_momentum_threshold"]},
+}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Funzioni core v2
+# ─────────────────────────────────────────────────────────────────────────────
+
+def precompute_signals(
+    prices:           pd.DataFrame,
+    returns:          pd.DataFrame,
+    params:           "EngineParamsV2",
+    benchmark_prices: pd.Series | None = None,
+) -> dict[str, pd.DataFrame]:
+    """
+    Precomputa i segnali fattore (valori grezzi, non rankati) per ogni data e ticker.
+
+    Calcola solo i fattori con peso > 0 in params.score.
+    Calcola anche i segnali ausiliari necessari ai filtri attivi.
+
+    Se idio_weight > 0 e benchmark_prices è None → ValueError.
+
+    Ritorna dict {nome_fattore: DataFrame (n_dates × n_tickers)}.
+    Chiavi con prefisso '_' sono ausiliarie (filtri), non fattori di score.
+    """
+    sp     = params.score
+    selp   = params.selection
+    mom_lb = sp.momentum_lookback_days
+    rp_lb  = sp.riskparity_lookback_days
+    signals: dict[str, pd.DataFrame] = {}
+
+    # momentum: prices / prices.shift(mom_lb)
+    if sp.momentum_weight > 0:
+        signals["momentum"] = prices / prices.shift(mom_lb)
+
+    # ivol: 1 / rolling_std(returns, rp_lb)
+    if sp.ivol_weight > 0:
+        vol = returns.rolling(rp_lb, min_periods=1).std(ddof=0)
+        signals["ivol"] = 1.0 / vol.replace(0.0, np.nan)
+
+    # sortino: mean_ret / downside_std su finestra mom_lb; risk-free = 0
+    if sp.sortino_weight > 0:
+        mean_ret     = returns.rolling(mom_lb, min_periods=1).mean()
+        downside_std = returns.where(returns < 0, 0.0).rolling(mom_lb, min_periods=1).std(ddof=0)
+        signals["sortino"] = mean_ret / downside_std.replace(0.0, np.nan)
+
+    # idio: excess price-ratio del ticker rispetto al benchmark, finestra mom_lb
+    if sp.idio_weight > 0:
+        if benchmark_prices is None:
+            raise ValueError(
+                "precompute_signals: idio_weight > 0 ma benchmark_prices=None. "
+                "Passare la serie dei prezzi del benchmark."
+            )
+        bench = benchmark_prices.reindex(prices.index).ffill().bfill()
+        signals["idio"] = (prices / prices.shift(mom_lb)).sub(
+            bench / bench.shift(mom_lb), axis=0
+        )
+
+    # ── Segnali ausiliari per i filtri ────────────────────────────────────────
+
+    # _vol: rolling std grezzo per filter_volatility (se ivol non già calcolato)
+    if selp.filter_volatility and "ivol" not in signals:
+        signals["_vol"] = returns.rolling(rp_lb, min_periods=1).std(ddof=0)
+
+    # _ema: EWM per filter_ema
+    if selp.filter_ema:
+        signals["_ema"] = prices.ewm(span=sp.ema_span, adjust=False, min_periods=1).mean()
+
+    # _momentum_raw: price ratio grezzo per filter_min_momentum (se momentum non già calcolato)
+    if selp.filter_min_momentum and "momentum" not in signals:
+        signals["_momentum_raw"] = prices / prices.shift(mom_lb)
+
+    return signals
+
+
+def compute_combo_score(
+    signals: dict[str, pd.DataFrame],
+    weights: dict[str, float],
+) -> pd.DataFrame:
+    """
+    Combina i segnali fattore in un DataFrame di combo-score.
+
+    Per ogni fattore attivo (w_i > 0):
+        rank_i = signals[i].rank(pct=True, axis=1, na_option='bottom')
+    score = Σ(w_i * rank_i) / Σ(w_i)
+
+    Se Σ(w_i) == 0 → ValueError (combinazione degenere, non ammessa in griglia).
+    """
+    active  = {k: w for k, w in weights.items() if w > 0}
+    total_w = sum(active.values())
+    if total_w == 0.0:
+        raise ValueError(
+            "compute_combo_score: sum(weights) == 0. "
+            "Almeno un fattore deve avere peso > 0."
+        )
+
+    combo: pd.DataFrame | None = None
+    for fname, w in active.items():
+        if fname not in signals:
+            raise KeyError(f"compute_combo_score: fattore '{fname}' non in signals")
+        rank_i = signals[fname].rank(pct=True, axis=1, na_option="bottom")
+        combo  = w * rank_i if combo is None else combo + w * rank_i
+
+    return combo / total_w
+
+
+def apply_filters(
+    prices:       pd.DataFrame,
+    signals:      dict[str, pd.DataFrame],
+    sel_params:   "SelectionParams",
+    score_params: "ScoreParamsV2",
+    date:         pd.Timestamp,
+) -> pd.Series:
+    """
+    Applica i filtri attivi in FILTER_REGISTRY_V2 per una singola data.
+    Itera sul registro dei filtri e applica AND combinato.
+    Ritorna maschera booleana (True = ticker eleggibile).
+    """
+    # maschera base: almeno un segnale non-NaN
+    base_key = next(
+        (k for k in ["momentum", "_momentum_raw", "ivol", "sortino", "idio"]
+         if k in signals),
+        None,
+    )
+    mask = signals[base_key].loc[date].notna() if base_key else pd.Series(True, index=prices.columns)
+
+    # "ema" filter
+    if sel_params.filter_ema:
+        mask = mask & (prices.loc[date] > signals["_ema"].loc[date])
+
+    # "volatility" filter
+    if sel_params.filter_volatility:
+        if "_vol" in signals:
+            vol = signals["_vol"].loc[date]
+        else:
+            # ivol è disponibile; vol = 1/ivol
+            ivol = signals["ivol"].loc[date]
+            vol  = 1.0 / ivol.replace(0.0, np.nan)
+        q    = vol.quantile(sel_params.volatility_quantile)
+        mask = mask & (vol < q)
+
+    # "min_momentum" filter
+    if sel_params.filter_min_momentum:
+        mom_key = "momentum" if "momentum" in signals else "_momentum_raw"
+        mask    = mask & (signals[mom_key].loc[date] > sel_params.min_momentum_threshold)
+
+    return mask
+
+
+def select_top_n(
+    combo_score: pd.Series,
+    mask:        pd.Series,
+    n_top:       int,
+) -> pd.Series:
+    """
+    Applica la maschera e restituisce i top-N per combo_score.
+    Ritorna Series ordinata decrescente (len <= n_top).
+    """
+    masked = combo_score.where(mask)
+    valid  = masked.dropna()
+    if valid.empty:
+        return pd.Series(dtype=float)
+    return valid.nlargest(n_top)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Engine entry-point v2
+# ─────────────────────────────────────────────────────────────────────────────
+
+def run_rotational_engine(
+    prices:           pd.DataFrame,
+    params:           "EngineParamsV2",
+    benchmark_prices: pd.Series | None = None,
+    start_date:       str | pd.Timestamp | None = None,
+    debug:            bool = False,
+) -> "RotationalResult":
+    """
+    Motore rotazionale v2 multi-fattore. Stesso contratto di run_rotational_engine_legacy_cluster()
+    ma usa precompute_signals + compute_combo_score + apply_filters.
+
+    benchmark_prices : pd.Series | None
+        Obbligatorio se params.score.idio_weight > 0.
+    """
+    def _dbg(msg: str):
+        if debug:
+            print(msg)
+
+    prices = prices.dropna(axis=1, how="all").ffill().bfill().copy()
+    prices.index = _norm_dt_index(prices.index)
+    prices = prices.sort_index()
+    trading_idx = prices.index.unique()
+
+    _dbg(f"[ENGINE_V2] freq={params.rebalance_frequency}  "
+         f"prices={trading_idx.min().date()}→{trading_idx.max().date()}  "
+         f"n_assets={prices.shape[1]}")
+
+    rebal_dates = compute_rebal_dates(trading_idx, params.rebalance_frequency)
+    rebal_dates = pd.DatetimeIndex(
+        [d for d in rebal_dates if d in trading_idx]
+    ).sort_values().unique()
+
+    if len(rebal_dates) == 0:
+        _dbg("[ENGINE_V2] WARN: rebal_dates vuoto → pesi a zero (cash)")
+        empty_sel = pd.DataFrame(
+            columns=["tickers", "carried", "n_passed_filters", "universe"],
+            index=pd.DatetimeIndex([], name="rebal_date"),
+        )
+        return RotationalResult(
+            selections  = empty_sel,
+            weights     = pd.DataFrame(0.0, index=trading_idx, columns=prices.columns),
+            rankings    = pd.DataFrame(index=pd.DatetimeIndex([], name="rebal_date"), columns=prices.columns),
+            rebal_dates = rebal_dates,
+            params      = params,
+        )
+
+    returns = prices.pct_change().fillna(0.0)
+    signals = precompute_signals(prices, returns, params, benchmark_prices)
+
+    sp = params.score
+    factor_weights = {
+        "momentum": sp.momentum_weight,
+        "ivol":     sp.ivol_weight,
+        "sortino":  sp.sortino_weight,
+        "idio":     sp.idio_weight,
+    }
+    combo_df  = compute_combo_score(signals, factor_weights)
+    sel_params = params.selection
+
+    sel_records:  list[dict]                       = []
+    rank_records: dict[pd.Timestamp, pd.Series]    = {}
+    prev_top:     list[str] | None                 = None
+
+    for d in rebal_dates:
+        d = pd.Timestamp(d).normalize()
+
+        mask         = apply_filters(prices, signals, sel_params, sp, d)
+        combo_masked = combo_df.loc[d].where(mask)
+        n_passed     = int(mask.sum())
+
+        valid = combo_masked.dropna()
+        if not valid.empty:
+            top_tickers = list(valid.nlargest(sel_params.n_top).index)
+            carried     = False
+        elif prev_top:
+            top_tickers = list(prev_top)
+            carried     = True
+        else:
+            top_tickers = []
+            carried     = False
+
+        sel_records.append({
+            "rebal_date":       d,
+            "tickers":          top_tickers,
+            "carried":          carried,
+            "n_passed_filters": n_passed,
+            "universe":         list(valid.index),
+        })
+        rank_records[d] = combo_masked.sort_values(ascending=False)
+
+        if top_tickers and not carried:
+            prev_top = top_tickers
+
+        if debug:
+            status = "CARRY-FWD" if carried else ("EMPTY    " if not top_tickers else "OK       ")
+            _dbg(f"[ENGINE_V2] {status} | {d.date()} | passed={n_passed} | selected={top_tickers}")
+
+    selections = pd.DataFrame(sel_records).set_index("rebal_date")
+    selections.index.name = "rebal_date"
+
+    rankings = pd.DataFrame(rank_records).T
+    rankings.index.name = "rebal_date"
+
+    weights_matrix = build_weight_matrix(selections, trading_idx)
+    missing_cols   = [c for c in prices.columns if c not in weights_matrix.columns]
+    if missing_cols:
+        weights_matrix = pd.concat(
+            [weights_matrix, pd.DataFrame(0.0, index=weights_matrix.index, columns=missing_cols)],
+            axis=1,
+        )[prices.columns]
+
+    if start_date is not None:
+        start_ts       = pd.Timestamp(start_date).normalize()
+        weights_matrix = weights_matrix.loc[start_ts:]
+
+    _dbg(f"[ENGINE_V2] Done. selections={len(selections)}  "
+         f"carried={selections['carried'].sum()}  "
+         f"empty={(selections['tickers'].apply(len) == 0).sum()}")
+
+    return RotationalResult(
+        selections  = selections,
+        weights     = weights_matrix,
+        rankings    = rankings,
+        rebal_dates = rebal_dates,
+        params      = params,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# VBT entry-point v2
+# ─────────────────────────────────────────────────────────────────────────────
+
+def build_rotational_portfolios_vbt(
+    stocks_data:              pd.DataFrame,
+    benchmark_data:           pd.Series | None = None,
+    # ── frequenza e lookback ─────────────────────────────────────────────────
+    rebalance_frequency:      str   = "ME",
+    momentum_lookback_days:   int   = 126,
+    riskparity_lookback_days: int   = 20,
+    # ── selezione ────────────────────────────────────────────────────────────
+    n_top:                    int   = 5,
+    # ── pesi fattori v2 ──────────────────────────────────────────────────────
+    momentum_weight:          float = 1.0,
+    ivol_weight:              float = 0.0,
+    sortino_weight:           float = 0.0,
+    idio_weight:              float = 0.0,
+    # ── filtri opzionali ─────────────────────────────────────────────────────
+    filter_ema:               bool  = False,
+    filter_volatility:        bool  = False,
+    filter_min_momentum:      bool  = False,
+    ema_span:                 int   = 200,
+    volatility_quantile:      float = 0.75,
+    min_momentum_threshold:   float = 1.0,
+    # ── portafoglio ──────────────────────────────────────────────────────────
+    init_cash:                float = 100_000,
+    start_date:               str | pd.Timestamp | None = None,
+    # ── benchmark ────────────────────────────────────────────────────────────
+    benchmark_prices:         pd.Series | None = None,
+    # ── plot ─────────────────────────────────────────────────────────────────
+    plot:                     bool  = True,
+    portfolio_name:           str   = "Portafoglio rotazionale v2",
+    vbt_plot_width:           int   = 1000,
+    # ── debug ─────────────────────────────────────────────────────────────────
+    debug:                    bool  = False,
+) -> "RotationalVbtResult":
+    """
+    VBT entry-point v2: identico a build_rotational_portfolios_vbt_legacy_cluster() ma usa
+    il motore multi-fattore v2 (4 fattori, no use_acceleration).
+
+    benchmark_data   : prezzi benchmark per il B&H nel plot/stats.
+    benchmark_prices : prezzi benchmark per il fattore idio (richiesto se idio_weight > 0).
+    """
+    params = EngineParamsV2(
+        score = ScoreParamsV2(
+            momentum_lookback_days   = momentum_lookback_days,
+            riskparity_lookback_days = riskparity_lookback_days,
+            momentum_weight          = momentum_weight,
+            ivol_weight              = ivol_weight,
+            sortino_weight           = sortino_weight,
+            idio_weight              = idio_weight,
+            ema_span                 = ema_span,
+        ),
+        selection = SelectionParams(
+            n_top                  = n_top,
+            filter_ema             = filter_ema,
+            filter_volatility      = filter_volatility,
+            filter_min_momentum    = filter_min_momentum,
+            volatility_quantile    = volatility_quantile,
+            min_momentum_threshold = min_momentum_threshold,
+        ),
+        rebalance_frequency = rebalance_frequency,
+        init_cash           = init_cash,
+    )
+
+    prices = stocks_data.dropna(axis=1, how="all").ffill().bfill().copy()
+    prices.index = pd.to_datetime(prices.index).normalize()
+    prices = prices.sort_index()
+
+    bench_px = None
+    if benchmark_data is not None:
+        bench_px = benchmark_data.copy()
+        bench_px.index = pd.to_datetime(bench_px.index).normalize()
+        bench_px = bench_px.sort_index()
+
+    eng = run_rotational_engine(
+        prices           = prices,
+        params           = params,
+        benchmark_prices = benchmark_prices,
+        start_date       = start_date,
+        debug            = debug,
+    )
+
+    # Allinea pesi all'indice dei prezzi (post start_date se specificato)
+    if start_date is not None:
+        s_ts    = pd.Timestamp(start_date).normalize()
+        prices  = prices.loc[s_ts:]
+        if bench_px is not None:
+            bench_px = bench_px.loc[s_ts:]
+
+    w_rot_sh = eng.weights.reindex(
+        index=prices.index, columns=prices.columns, fill_value=0.0
+    )
+
+    pf_rot = _build_vbt_portfolio(prices, w_rot_sh, init_cash)
+    pf_bh  = _build_vbt_bh(bench_px, prices.index, init_cash) if bench_px is not None else None
+
+    if plot:
+        _plot_results(
+            pf_rot=pf_rot, pf_bh=pf_bh,
+            pf_mom=None, pf_rp=None,
+            init_cash=init_cash,
+            portfolio_name=portfolio_name,
+            width=vbt_plot_width,
+        )
+
+    sel_df = eng.selections.rename(columns={"tickers": "Top_Tickers"}).copy()
+    sel_df.index.name = "RebalanceDate"
+    rank_df = eng.rankings.copy()
+    rank_df.index.name = "RebalanceDate"
+
+    return RotationalVbtResult(
+        pf_rot=pf_rot,
+        pf_bh=pf_bh,
+        selections=sel_df,
+        rankings=rank_df,
+        rebal_dates=eng.rebal_dates,
+        pf_mom=None,
+        pf_rp=None,
+        sel_bottom=None,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Walk-forward v2
+# ─────────────────────────────────────────────────────────────────────────────
+
+def walk_forward_rotational(
+    stocks_data:            pd.DataFrame,
+    benchmark_data:         pd.Series,
+    param_grid:             List[Dict[str, Any]],
+    ratio:                  str = "3:1",
+    metric:                 str = "Sharpe Ratio",
+    verbose:                bool = True,
+    plot:                   bool = False,
+    force_next_year_params: bool = False,
+    start_date:             str | None = None,
+    end_date:               str | None = None,
+    n_jobs:                 int = -1,
+    backend:                str = "loky",
+    debug:                  bool = False,
+    benchmark_prices:       pd.Series | None = None,
+) -> pd.DataFrame:
+    """
+    Walk-Forward Optimization v2 — usa il motore multi-fattore v2.
+
+    Scelta architetturale: funzione parallela a walk_forward_rotational_legacy_cluster() (non
+    aggiunta di engine_version all'esistente), per non toccare _optimize_window()
+    e garantire la regola "nessuna funzione v1 modificata".
+
+    param_grid usa i pesi v2: momentum_weight, ivol_weight, sortino_weight,
+    idio_weight. Nessun use_acceleration.
+
+    benchmark_prices : pd.Series | None
+        Prezzi benchmark per il fattore idio. Obbligatorio se idio_weight > 0
+        in qualche combo della griglia.
+
+    Performance: _optimize_window_v2 precomputa tutti i rank UNA VOLTA per
+    finestra (non per combo), poi combina in numpy nel loop. Stessa struttura
+    di _optimize_window v1 — overhead atteso comparabile.
+    """
+    import sys
+    import traceback as _tb
+    import os
+
+    try:
+        train_y, test_y = [int(x) for x in ratio.split(":")]
+    except Exception:
+        raise ValueError(f"ratio non valido: '{ratio}'")
+    if train_y <= 0 or test_y <= 0:
+        raise ValueError("train e test devono essere > 0")
+    if stocks_data.empty:
+        raise ValueError("stocks_data è vuoto")
+
+    stocks_data    = stocks_data.sort_index()
+    benchmark_data = benchmark_data.sort_index()
+    data_min = stocks_data.index.min()
+    data_max = stocks_data.index.max()
+
+    a_start = pd.Timestamp(start_date).normalize() if start_date else pd.Timestamp(data_min).normalize()
+    a_end   = (pd.Timestamp(end_date) - pd.Timedelta(days=1)).normalize() if end_date else pd.Timestamp(data_max).normalize()
+
+    if a_end < data_min or a_start > data_max:
+        raise ValueError("Finestra di analisi fuori dal range dati")
+
+    n_jobs_eff = os.cpu_count() if n_jobs == -1 else abs(n_jobs) if n_jobs < -1 else max(1, n_jobs)
+
+    def _vprint(*args, **kw):
+        if verbose or debug:
+            print(*args, **kw)
+            sys.stdout.flush()
+
+    def _dprint(*args, **kw):
+        if debug:
+            print("[DEBUG_V2]", *args, **kw)
+            sys.stdout.flush()
+
+    # ── Buffer e finestre ────────────────────────────────────────────────────
+    def _max_grid(key):
+        vals = [int(c[key]) for c in param_grid if key in c and c[key] is not None and np.isfinite(float(c[key]))]
+        return max(vals) if vals else 0
+
+    max_lb      = max(_max_grid(k) for k in ["momentum_lookback_days", "riskparity_lookback_days", "ema_span"])
+    buffer_days = max(int(max_lb * 2 + 30), 60)
+
+    first_test_y = a_start.year + train_y
+    last_test_y  = a_end.year - (test_y - 1)
+    if first_test_y > last_test_y:
+        raise ValueError(f"Dati insufficienti per ratio={ratio} nel range {a_start.year}→{a_end.year}")
+
+    test_periods = list(range(first_test_y, last_test_y + 1, test_y))
+    if force_next_year_params and test_periods:
+        test_periods.append(test_periods[-1] + test_y)
+
+    n_windows  = len(test_periods)
+    all_combos = param_grid
+    n_combo    = len(all_combos)
+
+    # ── Helper score ─────────────────────────────────────────────────────────
+    def _score(ret: pd.Series) -> dict:
+        ret = ret.dropna()
+        if ret.empty:
+            return {"Sharpe Ratio": np.nan, "CAGR": np.nan, "Calmar": np.nan}
+        ann_r = (1 + ret.mean()) ** 252 - 1
+        ann_v = ret.std(ddof=0) * np.sqrt(252)
+        shrp  = ann_r / ann_v if ann_v and np.isfinite(ann_v) else np.nan
+        cagr  = (1 + ret).prod() ** (252 / max(len(ret), 1)) - 1
+        eq    = (1 + ret).cumprod()
+        dd    = (eq / eq.cummax() - 1).min()
+        cal   = cagr / abs(dd) if dd and np.isfinite(dd) else np.nan
+        return {"Sharpe Ratio": shrp, "CAGR": cagr, "Calmar": cal}
+
+    # ── Core: ottimizzazione singola finestra v2 ──────────────────────────────
+    def _optimize_window_v2(test_start_year: int, show_inner: bool = False):
+        train_start = f"{test_start_year - train_y}-01-01"
+        train_end   = f"{test_start_year - 1}-12-31"
+        test_start  = f"{test_start_year}-01-01"
+        test_end    = f"{test_start_year + test_y - 1}-12-31"
+
+        buf_start = pd.Timestamp(train_start) - pd.Timedelta(days=buffer_days)
+        tr_px     = stocks_data.loc[buf_start:train_end].dropna(axis=1, how='all').ffill().bfill()
+        tr_bench_prices = (
+            benchmark_prices.loc[buf_start:train_end]
+            if benchmark_prices is not None else None
+        )
+
+        if tr_px.empty or stocks_data.loc[train_start:train_end].empty:
+            _vprint(f"  ↳  {test_start}→{test_end}: skip (dati insufficienti)")
+            return None
+
+        rets    = tr_px.pct_change().fillna(0.0)
+        px_arr  = tr_px.values
+
+        # ── Raccoglie lookback distinti ───────────────────────────────────
+        mom_lbs = sorted(set(
+            int(c.get('momentum_lookback_days', 126))
+            for c in all_combos
+        )) or [126]
+
+        rp_lbs = sorted(set(
+            int(c.get('riskparity_lookback_days', 20))
+            for c in all_combos
+        )) or [20]
+
+        ema_spans_v2 = sorted(set(
+            int(c['ema_span'])
+            for c in all_combos
+            if 'ema_span' in c
+        ))
+
+        # ── Precomputo rank (UNA VOLTA per finestra) ──────────────────────
+        # momentum rank
+        rank_mom_cache: dict[int, np.ndarray] = {}
+        for lb in mom_lbs:
+            rank_mom_cache[lb] = (tr_px / tr_px.shift(lb)).rank(
+                pct=True, axis=1, na_option='bottom'
+            ).values
+
+        # ivol rank + ivol raw (per filter_volatility)
+        rank_ivol_cache: dict[int, np.ndarray] = {}
+        ivol_raw_cache:  dict[int, np.ndarray] = {}
+        for lb in rp_lbs:
+            v   = rets.rolling(lb, min_periods=1).std(ddof=0)
+            iv  = 1.0 / v.replace(0.0, np.nan)
+            rank_ivol_cache[lb] = iv.rank(pct=True, axis=1, na_option='bottom').values
+            ivol_raw_cache[lb]  = iv.values
+
+        # sortino rank
+        rank_sortino_cache: dict[int, np.ndarray] = {}
+        for lb in mom_lbs:
+            mean_ret     = rets.rolling(lb, min_periods=1).mean()
+            downside_std = rets.where(rets < 0, 0.0).rolling(lb, min_periods=1).std(ddof=0)
+            sortino      = mean_ret / downside_std.replace(0.0, np.nan)
+            rank_sortino_cache[lb] = sortino.rank(pct=True, axis=1, na_option='bottom').values
+
+        # idio rank
+        rank_idio_cache: dict[int, np.ndarray] = {}
+        has_idio = any(
+            float(c.get('idio_weight', 0)) > 0
+            for c in all_combos
+        )
+        if has_idio:
+            if tr_bench_prices is None:
+                raise ValueError(
+                    "_optimize_window_v2: idio_weight > 0 in griglia ma benchmark_prices=None"
+                )
+            bench_aligned = tr_bench_prices.reindex(tr_px.index).ffill().bfill()
+            bench_ratio_s = bench_aligned / bench_aligned.shift(1)  # placeholder shift fixed per lb
+            for lb in mom_lbs:
+                bench_ratio = (bench_aligned / bench_aligned.shift(lb)).values.reshape(-1, 1)
+                idio = (tr_px / tr_px.shift(lb)).values - bench_ratio
+                # rank su axis=1 (per data): costruiamo DataFrame temporaneo
+                idio_df = pd.DataFrame(idio, index=tr_px.index, columns=tr_px.columns)
+                rank_idio_cache[lb] = idio_df.rank(
+                    pct=True, axis=1, na_option='bottom'
+                ).values
+
+        # ema
+        ema_cache_v2: dict[int, np.ndarray] = {}
+        for sp in ema_spans_v2:
+            ema_cache_v2[sp] = tr_px.ewm(span=sp, adjust=False, min_periods=1).mean().values
+
+        # momentum raw per filter_min_momentum
+        mom_raw_cache: dict[int, np.ndarray] = {}
+        has_fmom = any(
+            bool(c.get('filter_min_momentum', False))
+            for c in all_combos
+        )
+        if has_fmom:
+            for lb in mom_lbs:
+                mom_raw_cache[lb] = (tr_px / tr_px.shift(lb)).values
+
+        # ── Rebal dates ───────────────────────────────────────────────────
+        tr_idx     = tr_px.loc[train_start:train_end].index
+        rebal_freq = next(
+            (c['rebalance_frequency'] for c in all_combos if 'rebalance_frequency' in c),
+            'ME'
+        )
+        try:
+            rebal_dates = compute_rebal_dates(tr_idx, str(rebal_freq).upper())
+            rebal_dates = pd.DatetimeIndex([d for d in rebal_dates if d in tr_idx])
+        except Exception:
+            rebal_dates = pd.DatetimeIndex(
+                pd.Series(tr_idx).groupby(tr_idx.to_period('M')).max().values
+            )
+
+        if len(rebal_dates) == 0:
+            return None
+
+        # ── Strutture numpy ───────────────────────────────────────────────
+        rets_np  = rets.values.astype(np.float64)
+        date_pos = {d: i for i, d in enumerate(rets.index)}
+
+        rebal_list = list(rebal_dates)
+        n_rebal    = len(rebal_list)
+
+        period_slices = []
+        for i, d in enumerate(rebal_list):
+            d_next  = rebal_list[i + 1] if i + 1 < n_rebal else rets.index[-1]
+            start_i = date_pos.get(d, 0)
+            end_i   = date_pos.get(d_next, len(rets) - 1) + 1
+            period_slices.append((start_i, end_i))
+
+        rebal_pos_in_full = [date_pos.get(d, 0) for d in rebal_list]
+
+        # ── Grid search ───────────────────────────────────────────────────
+        best_score  = -np.inf
+        best_params = None
+
+        pbar_i = None
+        if show_inner:
+            pbar_i = tqdm(
+                total=n_combo,
+                desc=f"  Grid {test_start_year}",
+                position=1, leave=False,
+                bar_format='{desc}: {percentage:3.0f}%|{bar}|{n_fmt}/{total_fmt} [{elapsed},{rate_fmt}]',
+            )
+
+        for params_c in all_combos:
+            try:
+                mom_lb  = int(params_c.get('momentum_lookback_days', 126))
+                rp_lb   = int(params_c.get('riskparity_lookback_days', 20))
+                n_top   = int(params_c.get('n_top', 5))
+                w_mom   = float(params_c.get('momentum_weight', 1.0))
+                w_ivol  = float(params_c.get('ivol_weight', 0.0))
+                w_sor   = float(params_c.get('sortino_weight', 0.0))
+                w_idio  = float(params_c.get('idio_weight', 0.0))
+                total_w = w_mom + w_ivol + w_sor + w_idio
+
+                # combo degenere: skip silenzioso (ValueError in ScoreParamsV2)
+                if total_w == 0.0:
+                    if pbar_i:
+                        pbar_i.update(1)
+                    continue
+
+                f_ema  = bool(params_c.get('filter_ema', False))
+                f_vol  = bool(params_c.get('filter_volatility', False))
+                f_mom  = bool(params_c.get('filter_min_momentum', False))
+                ema_sp = int(params_c.get('ema_span', 200))
+                vol_q  = float(params_c.get('volatility_quantile', 0.75))
+                min_m  = float(params_c.get('min_momentum_threshold', 1.0))
+
+                rm  = rank_mom_cache.get(mom_lb)
+                riv = rank_ivol_cache.get(rp_lb)
+                rs  = rank_sortino_cache.get(mom_lb)
+                if rm is None or riv is None or rs is None:
+                    if pbar_i:
+                        pbar_i.update(1)
+                    continue
+
+                # Combina rank in numpy — zero overhead pandas nel loop
+                combo_score_arr = (w_mom * rm + w_ivol * riv + w_sor * rs)
+                if w_idio > 0:
+                    rid = rank_idio_cache.get(mom_lb)
+                    if rid is not None:
+                        combo_score_arr = combo_score_arr + w_idio * rid
+                combo_score_arr = combo_score_arr / total_w
+
+                ema_arr = ema_cache_v2.get(ema_sp) if f_ema else None
+
+                pf_chunks   = []
+                prev_top_ci = None
+
+                for ri, (start_i, end_i) in zip(rebal_pos_in_full, period_slices):
+                    cs = combo_score_arr[ri].copy()
+
+                    if ema_arr is not None:
+                        cs = np.where(px_arr[ri] > ema_arr[ri], cs, np.nan)
+                    if f_vol:
+                        ivol_row = ivol_raw_cache[rp_lb][ri]
+                        q_thresh = np.nanquantile(ivol_row, 1.0 - vol_q)
+                        cs = np.where(ivol_row >= q_thresh, cs, np.nan)
+                    if f_mom:
+                        raw_mom_arr = mom_raw_cache.get(mom_lb)
+                        if raw_mom_arr is not None:
+                            cs = np.where(raw_mom_arr[ri] > min_m, cs, np.nan)
+
+                    valid_mask = ~np.isnan(cs)
+                    if valid_mask.sum() == 0:
+                        top_ci = prev_top_ci
+                    else:
+                        sorted_idx    = np.argsort(cs[valid_mask])[::-1]
+                        valid_indices = np.where(valid_mask)[0]
+                        top_ci        = valid_indices[sorted_idx[:n_top]]
+                        prev_top_ci   = top_ci
+
+                    if top_ci is None or len(top_ci) == 0:
+                        continue
+
+                    chunk = rets_np[start_i:end_i, :][:, top_ci]
+                    if chunk.size == 0:
+                        continue
+                    pf_chunks.append(chunk.mean(axis=1))
+
+                if not pf_chunks:
+                    if pbar_i:
+                        pbar_i.update(1)
+                    continue
+
+                pf_ret = np.concatenate(pf_chunks)
+                if len(pf_ret) == 0:
+                    if pbar_i:
+                        pbar_i.update(1)
+                    continue
+
+                ann_r = (1.0 + pf_ret.mean()) ** 252 - 1.0
+                ann_v = pf_ret.std(ddof=0) * np.sqrt(252)
+                if metric == "Sharpe Ratio":
+                    sc = ann_r / ann_v if ann_v > 0 and np.isfinite(ann_v) else np.nan
+                elif metric == "CAGR":
+                    sc = float(np.prod(1.0 + pf_ret) ** (252 / max(len(pf_ret), 1)) - 1.0)
+                elif metric == "Calmar":
+                    cagr_v = float(np.prod(1.0 + pf_ret) ** (252 / max(len(pf_ret), 1)) - 1.0)
+                    eq     = np.cumprod(1.0 + pf_ret)
+                    dd     = np.min(eq / np.maximum.accumulate(eq) - 1.0)
+                    sc     = cagr_v / abs(dd) if dd != 0 and np.isfinite(dd) else np.nan
+                else:
+                    sc = np.nan
+
+                _dprint(f"  {params_c}  {metric}={sc:.4f}" if np.isfinite(sc) else f"  {params_c}  {metric}=NaN")
+
+                if np.isfinite(sc) and sc > best_score:
+                    best_score, best_params = sc, params_c
+
+            except Exception as exc:
+                if debug:
+                    print(f"[DEBUG_V2] EXCEPTION combo={params_c}: {exc}")
+                    _tb.print_exc()
+
+            if pbar_i:
+                pbar_i.update(1)
+
+        if pbar_i:
+            pbar_i.close()
+
+        if best_params is None:
+            _dprint(f"NO VALID PARAMS: {train_start}→{train_end}")
+            return None
+
+        _dprint(f"BEST {train_start}→{train_end}: {metric}={best_score:.4f} params={best_params}")
+
+        # ── Test con best_params ──────────────────────────────────────────
+        test_score = np.nan
+        if not stocks_data.loc[test_start:test_end].empty:
+            try:
+                buf_s  = pd.Timestamp(test_start) - pd.Timedelta(days=buffer_days)
+                te_px  = stocks_data.loc[buf_s:test_end]
+                te_bch = benchmark_data.loc[buf_s:test_end]
+                te_bench_px = (
+                    benchmark_prices.loc[buf_s:test_end]
+                    if benchmark_prices is not None else None
+                )
+                pf_te_result = build_rotational_portfolios_vbt(
+                    stocks_data      = te_px,
+                    benchmark_data   = te_bch,
+                    benchmark_prices = te_bench_px,
+                    plot             = plot,
+                    **best_params,
+                )
+                test_score = _score(
+                    pf_te_result.pf_rot.returns().loc[test_start:test_end]
+                ).get(metric, np.nan)
+            except Exception as exc:
+                if debug:
+                    print(f"[DEBUG_V2] TEST exception: {exc}")
+                    _tb.print_exc()
+
+        return {
+            **best_params,
+            "Window":     f"{test_start}→{test_end}",
+            "TrainScore": best_score,
+            "TestScore":  test_score,
+        }
+
+    # ── Header ───────────────────────────────────────────────────────────────
+    _vprint()
+    _vprint("=" * 72)
+    _vprint("WALK-FORWARD OPTIMIZATION V2  (multi-fattore)")
+    _vprint("=" * 72)
+    _vprint(f"  Dati         : {data_min.date()} → {data_max.date()}")
+    _vprint(f"  Analisi      : {a_start.date()} → {a_end.date()}")
+    _vprint(f"  Ratio        : {ratio}  (train={train_y}a, test={test_y}a)")
+    _vprint(f"  Metric       : {metric}")
+    _vprint(f"  Windows      : {n_windows}")
+    _vprint(f"  Combinations : {n_combo:,}")
+    _vprint(f"  Parallel     : {'SEQUENTIAL' if n_jobs == 1 else f'n_jobs={n_jobs} (eff={n_jobs_eff}), backend={backend}'}")
+    _vprint("=" * 72)
+    _vprint()
+
+    # ── Esecuzione ────────────────────────────────────────────────────────────
+    results = []
+    t0_wfo  = time.time()
+
+    if n_jobs == 1:
+        pbar = tqdm(
+            test_periods, desc="WFO V2 Windows", position=0, leave=True,
+            bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]',
+        )
+        for test_year in pbar:
+            t0_w = time.time()
+            pbar.set_description(
+                f"WFO_V2  {test_year - train_y}–{test_year - 1} → "
+                f"{test_year}–{test_year + test_y - 1}"
+            )
+            result    = _optimize_window_v2(test_year, show_inner=True)
+            elapsed_w = time.time() - t0_w
+            if result:
+                results.append(result)
+                _vprint(
+                    f"  ✓  {result['Window']:<28} "
+                    f"Train={result['TrainScore']:+.3f}  "
+                    f"Test={result['TestScore']:+.3f}  ({elapsed_w:.0f}s)"
+                )
+            else:
+                _vprint(f"  ✗  {test_year}: fallita ({elapsed_w:.0f}s)")
+        pbar.close()
+    else:
+        pbar = tqdm(
+            total=n_windows, desc="WFO_V2 Parallel", position=0, leave=True,
+            bar_format=(
+                '{desc}: {percentage:3.0f}%|{bar}| '
+                '{n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]'
+            ),
+        )
+        gen = Parallel(n_jobs=n_jobs, backend=backend, return_as="generator")(
+            delayed(_optimize_window_v2)(y) for y in test_periods
+        )
+        for result in gen:
+            if result:
+                results.append(result)
+                _vprint(
+                    f"  ✓  {result['Window']:<28} "
+                    f"Train={result['TrainScore']:+.3f}  "
+                    f"Test={result['TestScore']:+.3f}"
+                )
+            pbar.update(1)
+        pbar.close()
+
+    elapsed_total = time.time() - t0_wfo
+    _vprint()
+    _vprint(f"WFO_V2 completata: {len(results)}/{n_windows} finestre in {elapsed_total:.0f}s")
+    _vprint("=" * 72)
+
+    if not results:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(results).set_index("Window")
+    cols_order = ["TrainScore", "TestScore"] + [
+        c for c in df.columns if c not in ("TrainScore", "TestScore")
+    ]
+    return df[[c for c in cols_order if c in df.columns]]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Griglie v2
+# ─────────────────────────────────────────────────────────────────────────────
+
+def build_cluster_grids_v2(
+    cluster_labels: dict,
+    cluster_groups: dict,
+    profile:        str = "satellite",
+    asset_type:     str = "stock",
+) -> dict:
+    """
+    Genera le griglie WFO per il motore v2 multi-fattore.
+    Pesi fattore discreti: [0, 0.5, 1.0]. Nessun use_acceleration.
+    Le combo con tutti i pesi a 0 vengono saltate silenziosamente nel loop WFO.
+    """
+    n_top  = resolve_n_top(asset_type, profile)
+    grids  = {}
+    _w     = [0, 0.5, 1.0]
+
+    for cid, label in cluster_labels.items():
+        tickers  = cluster_groups.get(cid, [])
+        n_assets = len(tickers)
+
+        print(f"\nCluster {cid} [{label}] — {n_assets} asset → n_top: {n_top}")
+
+        if label == "HIGH_MOMENTUM":
+            # rebal(1) × mom_lb(3) × rp_lb(2) × n_top(k) × w^4(81) × ema(1) × vol(2) × minmom(1)
+            # = 6k × 81 × 2 = 972k  (k = len(n_top); combo all-zero saltate: 6k × 80 × 2 = 960k effettive)
+            grid = {
+                "rebalance_frequency":     ["ME"],
+                "momentum_lookback_days":  [20, 40, 60],
+                "riskparity_lookback_days":[20, 40],
+                "n_top":                   n_top,
+                "momentum_weight":         _w,
+                "ivol_weight":             _w,
+                "sortino_weight":          _w,
+                "idio_weight":             _w,
+                "filter_ema":              [True],
+                "filter_volatility":       [True, False],
+                "filter_min_momentum":     [True],
+            }
+
+        elif label == "DEFENSIVE":
+            # rebal(2) × mom_lb(3) × rp_lb(2) × n_top(k) × w^4(81) × ema(2) × vol(1) × minmom(2)
+            # = 12k × 81 × 4 = 3888k
+            grid = {
+                "rebalance_frequency":     ["ME", "QE"],
+                "momentum_lookback_days":  [60, 120, 180],
+                "riskparity_lookback_days":[60, 120],
+                "n_top":                   n_top,
+                "momentum_weight":         _w,
+                "ivol_weight":             _w,
+                "sortino_weight":          _w,
+                "idio_weight":             _w,
+                "filter_ema":              [True, False],
+                "filter_volatility":       [True],
+                "filter_min_momentum":     [True, False],
+            }
+
+        elif label == "AVOID":
+            # Griglia ristretta: momentum/sortino dominanti, idio escluso
+            # rebal(1) × mom_lb(2) × rp_lb(2) × n_top(k) × w_mom(2) × w_ivol(2) × w_sor(2) × w_idio(1)
+            # × ema(1) × vol(1) × minmom(1) = 4k × 8 = 32k
+            grid = {
+                "rebalance_frequency":     ["ME"],
+                "momentum_lookback_days":  [60, 120],
+                "riskparity_lookback_days":[60, 120],
+                "n_top":                   n_top,
+                "momentum_weight":         [0.5, 1.0],
+                "ivol_weight":             [0,   0.5],
+                "sortino_weight":          [0,   0.5],
+                "idio_weight":             [0],
+                "filter_ema":              [True],
+                "filter_volatility":       [True],
+                "filter_min_momentum":     [True],
+            }
+
+        else:  # BALANCED
+            # rebal(2) × mom_lb(3) × rp_lb(2) × n_top(k) × w^4(81) × ema(2) × vol(2) × minmom(2)
+            # = 12k × 81 × 8 = 7776k
+            grid = {
+                "rebalance_frequency":     ["ME", "QE"],
+                "momentum_lookback_days":  [40, 60, 120],
+                "riskparity_lookback_days":[40, 60],
+                "n_top":                   n_top,
+                "momentum_weight":         _w,
+                "ivol_weight":             _w,
+                "sortino_weight":          _w,
+                "idio_weight":             _w,
+                "filter_ema":              [True, False],
+                "filter_volatility":       [True, False],
+                "filter_min_momentum":     [True, False],
+            }
+
+        grids[cid] = grid
+        n_comb = int(np.prod([len(v) for v in grid.values()]))
+        print(f"  Combinazioni totali v2: {n_comb:,}  "
+              f"(effettive senza all-zero: ~{n_comb - n_comb // 81:,})")
+
+    return grids
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# V2 GAP FUNCTIONS  (additive — no v1 code modified)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def collect_wfo_selections(
+    summary_df: pd.DataFrame,
+    stocks_data: pd.DataFrame,
+    benchmark_data: pd.Series | None = None,
+    benchmark_prices: pd.Series | None = None,
+    debug: bool = False,
+    per_window_universe: dict | None = None,
+) -> pd.DataFrame:
+    """
+    V2 counterpart of collect_wfo_selections_legacy_cluster() (riga 737).
+
+    Replays OOS selections from a v2 WFO summary_df using EngineParamsV2
+    and run_rotational_engine.  All logic is identical to v1 except:
+      - EngineParamsV2.from_dict() deserialises ivol_weight / sortino_weight /
+        idio_weight from the summary row (v1 silently ignored these).
+      - run_rotational_engine() is called instead of run_rotational_engine_legacy_cluster().
+      - benchmark_prices is forwarded when idio_weight > 0 is in use.
+
+    Parameters
+    ----------
+    summary_df : pd.DataFrame
+        Output of walk_forward_rotational(); index = strings "start→end".
+    stocks_data : pd.DataFrame
+        Full daily price history.
+    benchmark_data : pd.Series, optional
+        Accepted for API symmetry; not used in selection logic.
+    benchmark_prices : pd.Series, optional
+        Required only when idio_weight > 0 in any summary row.
+    debug : bool
+    per_window_universe : dict, optional
+        Mapping window_str → list[ticker] for cluster-path restriction.
+
+    Returns
+    -------
+    pd.DataFrame
+        Same structure as collect_wfo_selections_legacy_cluster():
+        index 'rebal_date', columns 'tickers' (list[str]), 'carried' (bool),
+        'n_passed_filters' (int).
+    """
+    if stocks_data is None or stocks_data.empty:
+        return _empty_selections()
+    if summary_df is None or summary_df.empty:
+        return _empty_selections()
+
+    stocks = stocks_data.copy()
+    stocks.index = _norm_dt_index(stocks.index)
+    stocks = stocks.sort_index()
+
+    all_sel: list[pd.DataFrame] = []
+
+    for window, row in summary_df.iterrows():
+        try:
+            start_str, end_str = str(window).split("→")
+            win_start = pd.Timestamp(start_str).normalize()
+            win_end   = pd.Timestamp(end_str).normalize()
+        except Exception:
+            if debug:
+                print(f"[WFO-v2] SKIP: parse error window='{window}'")
+            continue
+
+        last_avail = stocks.index.max()
+        slice_end  = min(win_end, last_avail)
+
+        params = EngineParamsV2.from_dict(dict(row))
+
+        buffer_days = params.required_warmup_days()
+        buf_start   = max(win_start - pd.Timedelta(days=buffer_days), stocks.index.min())
+
+        slice_prices = stocks.loc[buf_start:slice_end].copy()
+        if slice_prices.empty:
+            if debug:
+                print(f"[WFO-v2] SKIP: slice vuota | window={window}")
+            continue
+
+        if per_window_universe is not None:
+            eligible = per_window_universe.get(str(window))
+            if eligible is not None:
+                keep = [c for c in slice_prices.columns if c in set(eligible)]
+                if keep:
+                    slice_prices = slice_prices[keep]
+                    if debug:
+                        print(f"[WFO-v2] pool ristretto | window={window} | "
+                              f"{len(keep)}/{len(stocks.columns)} ticker")
+
+        engine_result = run_rotational_engine(
+            prices=slice_prices,
+            params=params,
+            benchmark_prices=benchmark_prices,
+            debug=debug,
+        )
+
+        if engine_result.selections.empty:
+            if debug:
+                print(f"[WFO-v2] SKIP: selezioni vuote | window={window}")
+            continue
+
+        sel = engine_result.selections.copy()
+        sel = sel.loc[(sel.index >= win_start) & (sel.index <= slice_end)]
+
+        if sel.empty:
+            if debug:
+                print(f"[WFO-v2] SKIP: selezioni fuori window | window={window}")
+            continue
+
+        if debug:
+            n_carried = int(sel["carried"].sum())
+            n_empty   = int((sel["tickers"].apply(len) == 0).sum())
+            print(
+                f"[WFO-v2] OK | window={window} | "
+                f"n_sel={len(sel)} | carried={n_carried} | empty={n_empty}"
+            )
+
+        all_sel.append(sel)
+
+    if not all_sel:
+        return _empty_selections()
+
+    combined = pd.concat(all_sel).sort_index()
+    combined = combined[~combined.index.duplicated(keep="last")]
+    combined.index.name = "rebal_date"
+
+    if debug:
+        print(f"\n[WFO-v2] FINAL: {len(combined)} selezioni totali | "
+              f"carried={combined['carried'].sum()} | "
+              f"empty={(combined['tickers'].apply(len) == 0).sum()}")
+
+    return combined
+
+
+def _evaluate_ptf_on_period(
+    ptf_config: dict,
+    params: "EngineParamsV2",
+    start_date,
+    end_date,
+    metric: str = "CAGR",
+    benchmark_prices: pd.Series | None = None,
+) -> float:
+    """
+    V2 counterpart of _evaluate_ptf_on_period() (riga 11322).
+
+    Runs run_rotational_engine() instead of run_rotational_engine_legacy_cluster(), then
+    delegates portfolio construction and metric computation to build_portfolio()
+    and _mc_compute_metrics() — both engine-agnostic (work on RotationalResult).
+
+    Parameters
+    ----------
+    ptf_config : dict
+        Required keys: 'stocks_data' (pd.DataFrame), 'init_cash' (float).
+    params : EngineParamsV2
+        V2 parameter set to evaluate.
+    start_date, end_date : str or pd.Timestamp
+        Evaluation window (inclusive).
+    metric : str, default "CAGR"
+        One of {"CAGR", "Sharpe", "Calmar"}.
+    benchmark_prices : pd.Series, optional
+        Required only when params.score.idio_weight > 0.
+
+    Returns
+    -------
+    float
+        Scalar metric value, or np.nan if fewer than 2 equity points in window.
+    """
+    if metric not in _STABILITY_METRICS:
+        raise ValueError(
+            f"metric={metric!r} is not supported. "
+            f"Supported: {sorted(_STABILITY_METRICS)}. "
+            f"To use lower-is-better metrics (MaxDD, Volatility, Ulcer), "
+            f"handle sign convention explicitly before calling this function."
+        )
+
+    stocks_data: pd.DataFrame = ptf_config["stocks_data"]
+    init_cash: float = float(ptf_config["init_cash"])
+
+    start = pd.Timestamp(start_date).normalize()
+    end   = pd.Timestamp(end_date).normalize()
+
+    buf_start    = start - pd.Timedelta(days=params.required_warmup_days())
+    slice_prices = stocks_data.loc[buf_start:end].copy()
+
+    if slice_prices.empty:
+        raise ValueError(
+            f"Empty price slice for [{buf_start.date()}, {end.date()}]. "
+            f"Ensure ptf_config['stocks_data'] covers at least "
+            f"{buf_start.date()} → {end.date()}."
+        )
+
+    rot_result = run_rotational_engine(
+        slice_prices, params, benchmark_prices=benchmark_prices
+    )
+
+    pf_rot, _ = build_portfolio(
+        rot_result,
+        slice_prices,
+        init_cash=init_cash,
+        start_date=start,
+        end_date=end,
+        plot=False,
+        show_report=False,
+    )
+
+    equity = pf_rot.value()
+    if isinstance(equity, pd.DataFrame):
+        equity = equity.squeeze()
+
+    if len(equity) < 2:
+        return np.nan
+
+    return float(_mc_compute_metrics(equity)[metric])
+
+
+def _evaluate_flag_stability(
+    ptf_config: dict,
+    base_params: dict,
+    flag_name: str,
+    full_start_date,
+    full_end_date,
+    metric: str = "CAGR",
+    k: int = 3,
+    n_top_anchors: list[int] | None = None,
+    benchmark_prices: pd.Series | None = None,
+) -> dict:
+    """
+    V2 counterpart of _evaluate_flag_stability() (riga 11430).
+
+    Identical logic to v1 but uses EngineParamsV2.from_dict() and
+    _evaluate_ptf_on_period(), so the flag delta is evaluated against the
+    v2 engine (momentum + ivol + sortino + idio weighted score).
+
+    The guard on _STABILITY_FLAGS is intentionally kept: 'use_acceleration' is
+    in the frozenset but never appears in v2 grids, so it is never eligible
+    (filtered out in Step 1 of reduce_grid_via_stability_v2).
+    """
+    if flag_name not in _STABILITY_FLAGS:
+        raise ValueError(
+            f"flag_name={flag_name!r} is not a supported binary flag. "
+            f"Supported: {sorted(_STABILITY_FLAGS)}."
+        )
+    if metric not in _STABILITY_METRICS:
+        raise ValueError(
+            f"metric={metric!r} is not supported. "
+            f"Supported: {sorted(_STABILITY_METRICS)}."
+        )
+    if n_top_anchors is None:
+        n_top_anchors = [3, 5, 8]
+
+    periods = _split_history_into_periods(full_start_date, full_end_date, k)
+
+    delta_per_period_per_anchor: list[list[float]] = []
+
+    for s, e in periods:
+        deltas_for_period: list[float] = []
+        for anchor in n_top_anchors:
+            params_true  = {**base_params, flag_name: True,  "n_top": anchor}
+            params_false = {**base_params, flag_name: False, "n_top": anchor}
+
+            val_true  = _evaluate_ptf_on_period(
+                ptf_config, EngineParamsV2.from_dict(params_true),  s, e, metric,
+                benchmark_prices=benchmark_prices,
+            )
+            val_false = _evaluate_ptf_on_period(
+                ptf_config, EngineParamsV2.from_dict(params_false), s, e, metric,
+                benchmark_prices=benchmark_prices,
+            )
+
+            if np.isnan(val_true) or np.isnan(val_false):
+                warnings.warn(
+                    f"_evaluate_flag_stability: NaN for {flag_name}, "
+                    f"anchor={anchor}, period={s.date()}→{e.date()} "
+                    f"(true={val_true:.4f} false={val_false:.4f}). "
+                    f"Delta set to NaN.",
+                    stacklevel=2,
+                )
+                deltas_for_period.append(float("nan"))
+            else:
+                deltas_for_period.append(val_true - val_false)
+
+        delta_per_period_per_anchor.append(deltas_for_period)
+
+    delta_per_period: list[float] = []
+    for row in delta_per_period_per_anchor:
+        valid = [d for d in row if not np.isnan(d)]
+        if not valid:
+            delta_per_period.append(float("nan"))
+        else:
+            delta_per_period.append(float(np.mean(valid)))
+
+    non_nan  = [d for d in delta_per_period if not np.isnan(d)]
+    positive = sum(1 for d in non_nan if d > 0)
+    negative = sum(1 for d in non_nan if d < 0)
+    zero     = sum(1 for d in non_nan if d == 0)
+
+    mean_delta = float(np.mean(non_nan)) if non_nan else float("nan")
+    recommended_value: bool = False
+
+    if not non_nan:
+        coherent_sign = False
+        diagnostic_note = "all periods produced NaN — insufficient data"
+    elif len(non_nan) < k:
+        coherent_sign = False
+        diagnostic_note = f"incoherent: {k - len(non_nan)} NaN period(s)"
+    elif positive == k:
+        coherent_sign = True
+        recommended_value = True
+        diagnostic_note = "coherent positive"
+    elif negative == k:
+        coherent_sign = True
+        recommended_value = False
+        diagnostic_note = "coherent negative"
+    elif zero == k:
+        coherent_sign = False
+        recommended_value = False
+        diagnostic_note = "no effect (all deltas zero)"
+    else:
+        coherent_sign = False
+        recommended_value = False
+        diagnostic_note = "incoherent: mixed signs across periods"
+
+    return {
+        "flag_name":                    flag_name,
+        "metric":                       metric,
+        "k":                            k,
+        "n_top_anchors":                list(n_top_anchors),
+        "delta_per_period":             delta_per_period,
+        "delta_per_period_per_anchor":  delta_per_period_per_anchor,
+        "mean_delta":                   mean_delta,
+        "coherent_sign":                coherent_sign,
+        "recommended_value":            recommended_value,
+        "diagnostic_note":              diagnostic_note,
+    }
+
+
+def compare_wfo_pipelines(
+    results         : dict,   # {nome: dict_risultati_run_wfo_pipeline}
+    portfolio_title : str  = "Portfolio",
+    benchmark_title : str  = "Benchmark",
+    plot_radar      : bool = True,
+    plot            : bool = True,
+    start_date      : str  = None,
+    end_date        : str  = None,
+    save_plots      : bool = False,
+    plots_dir              = None,
+    apply_gradient  : bool = True,
+) -> "Union[pd.DataFrame, pd.io.formats.style.Styler]":
+    """
+    Confronta N portafogli prodotti da N run di run_wfo_pipeline_legacy_cluster/run_wfo_pipeline,
+    ciascuno identificato da un nome scelto dall'utente.
+
+    Genera:
+    1. Grafico lineare dei rendimenti cumulativi (N portafogli base + Risk ON/OFF + benchmark).
+    2. Tabella comparativa delle metriche con heatmap (via analyze_portfolio_metrics).
+    3. Radar chart normalizzato su range assoluti (se plot_radar=True).
+
+    Parameters
+    ----------
+    results : dict[str, dict]
+        Mapping nome → dict di ritorno di run_wfo_pipeline_legacy_cluster / run_wfo_pipeline.
+        Esempio: {"v1": results_std, "v2": results_std_v2}
+        Per ciascuna entry vengono mostrati 'pf_rot' (Risk ON/OFF) e 'pf_rot_base',
+        se presenti e non None.
+    portfolio_title : str   Titolo base usato nelle etichette.
+    benchmark_title : str   Etichetta del benchmark.
+    plot_radar      : bool  Se True genera il radar chart.
+    start_date      : str   Filtro opzionale inizio (es. "2020-01-01").
+    end_date        : str   Filtro opzionale fine   (es. "2024-12-31").
+
+    Returns
+    -------
+    pd.DataFrame  Tabella metriche restituita da analyze_portfolio_metrics.
+    """
+    import plotly.graph_objects as go
+
+    # ------------------------------------------------------------------
+    # Etichette dinamiche, una coppia (Risk ON/OFF, Base) per ciascun nome
+    # ------------------------------------------------------------------
+    PALETTE = [
+        ("#1f77b4", "#aec7e8"),   # blu pieno / chiaro
+        ("#d62728", "#f5a7a7"),   # rosso pieno / chiaro
+        ("#2ca02c", "#98df8a"),   # verde pieno / chiaro
+        ("#9467bd", "#c5b0d5"),   # viola pieno / chiaro
+        ("#ff7f0e", "#ffbb78"),   # arancio pieno / chiaro
+    ]
+
+    cumrets = {}
+    COLORS, DASH, WIDTH = {}, {}, {}
+
+    def _add(pf, label, color, dash, width):
+        if pf is None:
+            return
+        cr = pf.cumulative_returns() + 1
+        cumrets[label] = cr.squeeze() if isinstance(cr, pd.DataFrame) else cr
+        COLORS[label] = color
+        DASH[label]   = dash
+        WIDTH[label]  = width
+
+    pf_bm = None
+    for i, (name, res) in enumerate(results.items()):
+        if res is None:
+            continue
+        color_on, color_base = PALETTE[i % len(PALETTE)]
+
+        lbl_on   = f"{name} \u2013 Risk ON/OFF"
+        lbl_base = f"{name} \u2013 Base"
+
+        _add(res.get('pf_rot'),      lbl_on,   color_on,   "solid", 2.5)
+        _add(res.get('pf_rot_base'), lbl_base, color_base, "dot",   1.5)
+
+        if pf_bm is None:
+            pf_bm = res.get('pf_benchmark') or res.get('pf_benchmark_base')
+
+    if not cumrets:
+        print("Nessun portafoglio disponibile per il confronto.")
+        return pd.DataFrame()
+
+    bm_cumret = None
+    if pf_bm is not None:
+        bm_cr = pf_bm.cumulative_returns() + 1
+        bm_cumret = bm_cr.squeeze() if isinstance(bm_cr, pd.DataFrame) else bm_cr
+
+    COLORS[benchmark_title] = "#7f7f7f"
+    DASH[benchmark_title]   = "dash"
+    WIDTH[benchmark_title]  = 1.5
+
+    port_cumrets = pd.DataFrame(cumrets)
+
+    # Filtro data
+    if start_date:
+        port_cumrets = port_cumrets[port_cumrets.index >= start_date]
+        if bm_cumret is not None:
+            bm_cumret = bm_cumret[bm_cumret.index >= start_date]
+    if end_date:
+        port_cumrets = port_cumrets[port_cumrets.index <= end_date]
+        if bm_cumret is not None:
+            bm_cumret = bm_cumret[bm_cumret.index <= end_date]
+
+    port_cumrets = port_cumrets.dropna(how='all')
+
+    # ------------------------------------------------------------------
+    # 1. Plot cumulativo
+    # ------------------------------------------------------------------
+    fig = go.Figure()
+    for col in port_cumrets.columns:
+        fig.add_trace(go.Scatter(
+            x    = port_cumrets.index,
+            y    = port_cumrets[col],
+            name = col,
+            mode = "lines",
+            line = dict(
+                color = COLORS.get(col, "#333333"),
+                dash  = DASH.get(col, "solid"),
+                width = WIDTH.get(col, 2),
+            ),
+        ))
+
+    if bm_cumret is not None:
+        bm_aligned = bm_cumret.reindex(port_cumrets.index, method="ffill")
+        fig.add_trace(go.Scatter(
+            x    = bm_aligned.index,
+            y    = bm_aligned.values,
+            name = benchmark_title,
+            mode = "lines",
+            line = dict(
+                color = COLORS[benchmark_title],
+                dash  = DASH[benchmark_title],
+                width = WIDTH[benchmark_title],
+            ),
+        ))
+
+    fig.update_layout(
+        title       = f"Confronto rendimenti cumulativi \u2013 {portfolio_title}",
+        xaxis_title = "Data",
+        yaxis_title = "Rendimento cumulativo (base 1.0)",
+        height      = 550,
+        width       = 1100,
+        template    = "plotly_white",
+        hovermode   = "x unified",
+        legend      = dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+
+    if save_plots and plots_dir is not None:
+        from pathlib import Path as _P
+        _pd = _P(str(plots_dir))
+        _pd.mkdir(parents=True, exist_ok=True)
+        fig.write_image(str(_pd / 'equity_comparison.png'))
+
+    if plot:
+        fig.show()
+
+    # ------------------------------------------------------------------
+    # 2. Tabella metriche + Radar (via analyze_portfolio_metrics)
+    # ------------------------------------------------------------------
+    metrics_df = analyze_portfolio_metrics(
+        port_cumrets     = port_cumrets,
+        portfolio_name   = f"Confronto WFO \u2013 {portfolio_title}",
+        benchmark_cumret = bm_cumret,
+        freq             = "D",
+        sort_by          = "CAGR (%)",
+        ascending        = False,
+        plot_radar       = plot_radar,
+        radar_metrics    = "all",
+        highlight_best   = True,
+        apply_gradient   = apply_gradient,
+    )
+
+    return metrics_df
+
+
+def run_wfo_pipeline(
+    stocks_data_raw: pd.DataFrame,
+    stocks_data: pd.DataFrame,
+    benchmark_data,
+    benchmark_data_raw,
+    tickers: list,
+    risk_off_data: pd.DataFrame = None,
+    ratio: str = '3:1',
+    metric: str = 'Sharpe Ratio',
+    start_date: str = None,
+    end_date: str = None,
+    cores: int = 1,
+    verbose: bool = False,
+    force_next_year_params: bool = True,
+    param_grid: dict = None,
+    wfo_audit_path_base=None,
+    portfolio_title: str = 'Portfolio',
+    benchmark_title: str = 'Benchmark',
+    init_cash: float = 100_000,
+    analisys_start_date: str = None,
+    analisys_end_date: str = None,
+    risk_on_off: bool = True,
+    plot: bool = True,
+    profile: str = 'satellite',
+    asset_type: str = 'stock',
+    benchmark_prices: 'pd.Series | None' = None,
+    engine: str = 'Momentum',
+    autoreduce: bool = True,
+) -> dict:
+    """
+    Entry point unificato per entrambi gli engine WFO.
+
+    engine='Momentum'     → usa walk_forward_rotational_legacy_cluster (v1, mono-fattore).
+    engine='Multifactor'  → usa walk_forward_rotational (4 pesi).
+    autoreduce=True       → chiama reduce_grid_via_stability sulla griglia
+                            prima del WFO (usa il periodo start_date/end_date).
+
+    Mirror del path use_clustering=False di run_wfo_pipeline_legacy_cluster() (riga 7967)
+    per engine='Momentum'; motore v2 multi-fattore per engine='Multifactor'.
+
+    Sostituzioni rispetto al Path B di run_wfo_pipeline_legacy_cluster:
+      - walk_forward_rotational_legacy_cluster()           → walk_forward_rotational()
+      - build_rotational_portfolios_from_wfo_result() →
+            collect_wfo_selections() + build_portfolio_from_selections()
+      - audit suffix "std_raw"              → "std_raw_v2"
+
+    Struttura di ritorno identica al Path B (13 chiavi):
+      cluster_result, cluster_grids, wfo_results, regime, merged_summary,
+      selected_k  — tutti None (nessun clustering)
+      summary_df, pf_rot, pf_benchmark, sel_tickers,
+      pf_rot_base, pf_benchmark_base, sel_tickers_base
+
+    Parameters
+    ----------
+    stocks_data_raw : pd.DataFrame
+        Prezzi grezzi (passati a walk_forward_rotational come universo WFO).
+    stocks_data : pd.DataFrame
+        Prezzi normalizzati (usati per il replay selezioni OOS in STEP 6).
+    benchmark_data : pd.Series
+        Prezzi benchmark per build_portfolio_from_selections.
+    benchmark_data_raw : pd.Series
+        Prezzi benchmark grezzi passati a walk_forward_rotational.
+    tickers : list
+        Lista ticker dell'universo.
+    risk_off_data : pd.DataFrame, optional
+        Asset risk-off per il portafoglio con Risk ON/OFF switching.
+    ratio : str
+        Rapporto train:test per WFO, es. "3:1".
+    metric : str
+        Metrica di ottimizzazione per walk_forward_rotational,
+        es. "Sharpe Ratio".
+    start_date, end_date : str, optional
+        Finestra temporale WFO.
+    cores : int
+        n_jobs per la parallelizzazione WFO.
+    verbose : bool
+    force_next_year_params : bool
+    param_grid : dict
+        Griglia v2 obbligatoria (contiene ivol_weight, sortino_weight,
+        idio_weight oltre ai parametri v1).
+    wfo_audit_path_base : str | Path | None
+        Se fornito, salva audit CSV come {wfo_audit_path_base}.std_raw_v2.csv.
+    portfolio_title : str
+    benchmark_title : str
+    init_cash : float
+    analisys_start_date, analisys_end_date : str, optional
+        Finestra di analisi per i portafogli OOS (può differire da start/end WFO).
+    risk_on_off : bool
+        Se True e risk_off_data non None, costruisce anche il portafoglio
+        con asset risk-off.
+    plot : bool
+    profile : str
+        "satellite" o "core" — usato solo per etichette.
+    asset_type : str
+    benchmark_prices : pd.Series, optional
+        Prezzi del benchmark per il calcolo del fattore idiosincratico (idio).
+        Obbligatorio solo se idio_weight > 0 nella griglia.
+
+    Returns
+    -------
+    dict con 13 chiavi (compatibile con compare_wfo_pipelines):
+        cluster_result, cluster_grids, wfo_results, regime, merged_summary,
+        selected_k, summary_df, pf_rot, pf_benchmark, sel_tickers,
+        pf_rot_base, pf_benchmark_base, sel_tickers_base.
+    """
+    if engine not in ("Momentum", "Multifactor"):
+        raise ValueError(
+            f"run_wfo_pipeline: engine={engine!r} non riconosciuto. "
+            "Valori validi: 'Momentum' | 'Multifactor'."
+        )
+
+    if not param_grid:
+        raise ValueError(
+            "run_wfo_pipeline: param_grid è obbligatorio e non può essere vuoto."
+        )
+
+    results = {}
+    results.update(dict(
+        cluster_result=None,
+        cluster_grids=None,
+        wfo_results=None,
+        regime=None,
+        merged_summary=None,
+        selected_k=None,
+    ))
+
+    _n_full_trials = len(param_grid)
+
+    if autoreduce:
+        print("\n=======================================================")
+        print("STEP 0 — Stability Analysis (autoreduce=True)")
+        print("=======================================================")
+        _ptf_config_auto = {
+            "stocks_data": stocks_data_raw[tickers],
+            "init_cash": init_cash,
+        }
+        # Converti list[dict] → dict[str, list] solo per reduce_grid_via_stability
+        _dict_grid: dict = {}
+        for key in param_grid[0]:
+            _dict_grid[key] = list(dict.fromkeys(c[key] for c in param_grid))
+        _reduced_dict, _ = reduce_grid_via_stability(
+            ptf_config=_ptf_config_auto,
+            full_grid=_dict_grid,
+            full_start_date=start_date,
+            full_end_date=end_date,
+            benchmark_prices=benchmark_prices,
+            verbose=verbose,
+        )
+        # Applica i flag fissi alla lista pre-espansa
+        _fixed_flags = {k: v[0] for k, v in _reduced_dict.items()
+                        if len(v) == 1 and k in _STABILITY_FLAGS}
+        if _fixed_flags:
+            _n_before = len(param_grid)
+            param_grid = [c for c in param_grid
+                          if all(c.get(k) == v for k, v in _fixed_flags.items())]
+            if verbose:
+                print(f"[autoreduce] {_n_before} → {len(param_grid)} combinazioni "
+                      f"(flag fissi: {_fixed_flags})")
+
+    _n_reduced_trials = len(param_grid)
+
+    print("\n=======================================================")
+    print(f"STEP 1 — WFO Standard ({engine})")
+    print("=======================================================")
+    summary_df_final = walk_forward_rotational(
+        stocks_data=stocks_data_raw[tickers],
+        benchmark_data=benchmark_data_raw,
+        param_grid=param_grid,
+        ratio=ratio,
+        metric=metric,
+        start_date=start_date,
+        end_date=end_date,
+        n_jobs=cores,
+        backend='loky',
+        plot=False,
+        verbose=verbose,
+        debug=False,
+        force_next_year_params=force_next_year_params,
+        benchmark_prices=benchmark_prices,
+    )
+
+    results['summary_df'] = summary_df_final
+
+    if wfo_audit_path_base is not None:
+        _audit_path = f"{wfo_audit_path_base}_{engine.lower()}.csv"
+        save_rotational_wfo_summary(
+            summary_df=summary_df_final,
+            start_date=start_date,
+            end_date=end_date,
+            file_path=_audit_path,
+            param_grid=param_grid,
+            metric=metric,
+            ratio=ratio,
+            force_next_year_params=force_next_year_params,
+            extra_meta=dict(
+                audit_only=True,
+                use_clustering=False,
+                engine=engine,
+                note=(
+                    "calcolo grezzo — NON usato dal runtime; il file "
+                    "runtime e' salvato separatamente dopo la decisione "
+                    "manuale (JN §8)"
+                ),
+            ),
+        )
+        print(f"[run_wfo_pipeline] Audit trail salvato ({engine}): {_audit_path}")
+        my_display(summary_df_final, title=f"WFO Results {engine} — {portfolio_title}")
+
+    print("\n=======================================================")
+    print("STEP 2 — Costruzione portafogli v2")
+    print("=======================================================")
+
+    if risk_on_off and risk_off_data is not None:
+        print(f"\n▶ Portafoglio CON Risk ON/OFF ({engine})...")
+
+        duplicate_risk_off_cols = stocks_data.columns.intersection(risk_off_data.columns)
+        if len(duplicate_risk_off_cols) > 0 and verbose:
+            print(
+                f"[WARN] Rimossi da risk_off_data ticker già presenti in "
+                f"stocks_data: {list(duplicate_risk_off_cols)}"
+            )
+
+        risk_off_clean = risk_off_data.drop(columns=duplicate_risk_off_cols, errors='ignore')
+        oos_data = pd.concat([stocks_data, risk_off_clean], axis=1)
+
+        if oos_data.columns.duplicated().any():
+            dup_cols = oos_data.columns[oos_data.columns.duplicated()].tolist()
+            raise ValueError(f"Duplicate columns in oos_data after concat: {dup_cols}")
+
+        sel = collect_wfo_selections(
+            summary_df=summary_df_final,
+            stocks_data=oos_data,
+            benchmark_prices=benchmark_prices,
+        )
+        pf_rot, pf_bm = build_portfolio_from_selections(
+            selections=sel,
+            stocks_data=oos_data,
+            benchmark_data=benchmark_data,
+            benchmark_title=benchmark_title,
+            init_cash=init_cash,
+            start_date=analisys_start_date,
+            end_date=analisys_end_date,
+            plot=plot,
+            portfolio_name=f"{portfolio_title} – Standard OOS WFO - Total Return (Risk on/off, {engine})",
+        )
+
+        results['pf_rot'] = pf_rot
+        results['pf_benchmark'] = pf_bm
+        results['sel_tickers'] = sel
+
+        if plot:
+            port_cumrets = pd.DataFrame({
+                portfolio_title: pf_rot.cumulative_returns() + 1,
+                benchmark_title: pf_bm.cumulative_returns() + 1,
+            })
+            analyze_portfolio_metrics(
+                port_cumrets=port_cumrets,
+                portfolio_name=portfolio_title,
+                freq='D',
+                sort_by='CAGR (%)',
+                ascending=False,
+                plot_radar=True,
+                radar_metrics='all',
+                highlight_best=True,
+            )
+    else:
+        results['pf_rot'] = None
+        results['pf_benchmark'] = None
+        results['sel_tickers'] = None
+
+    print(f"\n▶ Portafoglio SENZA Risk ON/OFF ({engine})...")
+
+    sel_base = collect_wfo_selections(
+        summary_df=summary_df_final,
+        stocks_data=stocks_data,
+        benchmark_prices=benchmark_prices,
+    )
+    pf_rot_base, pf_bm_base = build_portfolio_from_selections(
+        selections=sel_base,
+        stocks_data=stocks_data,
+        benchmark_data=benchmark_data,
+        benchmark_title=benchmark_title,
+        init_cash=init_cash,
+        start_date=analisys_start_date,
+        end_date=analisys_end_date,
+        plot=plot,
+        portfolio_name=f"{portfolio_title} – Standard OOS WFO - Total Return ({engine})",
+    )
+
+    results['pf_rot_base'] = pf_rot_base
+    results['pf_benchmark_base'] = pf_bm_base
+    results['sel_tickers_base'] = sel_base
+
+    if plot:
+        port_cumrets_base = pd.DataFrame({
+            portfolio_title: pf_rot_base.cumulative_returns() + 1,
+            benchmark_title: pf_bm_base.cumulative_returns() + 1,
+        })
+        analyze_portfolio_metrics(
+            port_cumrets=port_cumrets_base,
+            portfolio_name=f"{portfolio_title} (Base, {engine})",
+            freq='D',
+            sort_by='CAGR (%)',
+            ascending=False,
+            plot_radar=True,
+            radar_metrics='all',
+            highlight_best=True,
+        )
+
+    results['engine'] = engine
+    results['n_full_trials'] = _n_full_trials
+    results['n_reduced_trials'] = _n_reduced_trials
+
+    print("\n=======================================================")
+    print(f"PIPELINE {engine} COMPLETATA")
+    print("=======================================================")
+
+    _expected_keys = {
+        'selected_k', 'sel_tickers_base', 'merged_summary', 'sel_tickers',
+        'summary_df', 'cluster_grids', 'pf_rot', 'cluster_result',
+        'pf_rot_base', 'pf_benchmark_base', 'regime', 'pf_benchmark',
+        'wfo_results', 'engine', 'n_full_trials', 'n_reduced_trials',
+    }
+    assert set(results.keys()) == _expected_keys, (
+        f"run_wfo_pipeline: chiavi mancanti o in eccesso: "
+        f"{set(results.keys()) ^ _expected_keys}"
+    )
+
+    return results
+
+def quick_sanity_check(pf_rot, pf_rot_base=None, label="Portfolio", min_flags_to_fail=2):
+    """
+    Controllo qualitativo veloce su un Portfolio VBT, prima di spendere
+    tempo su OFC/MC. Usa solo pf.stats(), nessun bootstrap aggiuntivo.
+    Segnala soglie d'allarme empiriche — non sono verità statistica,
+    solo euristiche per decidere se vale la pena procedere oltre.
+
+    Returns
+    -------
+    dict con:
+        'proceed' : bool  — True se consigliato procedere a OFC/MC
+        'flags'   : list[str] — segnali d'allarme raccolti
+        'n_flags' : int
+
+    Verdetto: 'proceed' = False se il numero di segnali d'allarme
+    raggiunge o supera min_flags_to_fail (default 2). Soglia empirica,
+    non statisticamente derivata — pensata come euristica di pre-filtro,
+    non come sostituto di OFC/MC.
+    """
+    print(f"\n{'='*60}")
+    print(f"  Quick Sanity Check — {label}")
+    print(f"{'='*60}")
+
+    flags = []
+
+    def _check(pf, sublabel):
+        if pf is None:
+            print(f"  [{sublabel}] non disponibile, skip")
+            return
+        s = pf.stats()
+
+        total_trades = s.get('Total Trades', float('nan'))
+        win_rate     = s.get('Win Rate [%]', float('nan'))
+        profit_factor= s.get('Profit Factor', float('nan'))
+        expectancy   = s.get('Expectancy', float('nan'))
+        worst_trade  = s.get('Worst Trade [%]', float('nan'))
+        best_trade   = s.get('Best Trade [%]', float('nan'))
+        sharpe       = s.get('Sharpe Ratio', float('nan'))
+        max_dd       = s.get('Max Drawdown [%]', float('nan'))
+
+        print(f"\n  --- {sublabel} ---")
+        print(f"  Total Trades     : {total_trades}")
+        print(f"  Win Rate [%]     : {win_rate:.2f}")
+        print(f"  Profit Factor    : {profit_factor:.3f}")
+        print(f"  Expectancy       : {expectancy:.4f}")
+        print(f"  Sharpe Ratio     : {sharpe:.3f}")
+        print(f"  Max Drawdown [%] : {max_dd:.2f}")
+        print(f"  Best/Worst Trade : {best_trade:.2f}% / {worst_trade:.2f}%")
+
+        if profit_factor < 1.0:
+            flags.append(f"[{sublabel}] Profit Factor < 1.0 ({profit_factor:.3f}) — perdite superano i guadagni in valore assoluto")
+        if expectancy < 0:
+            flags.append(f"[{sublabel}] Expectancy negativa ({expectancy:.4f}) — il sistema perde in media per trade")
+        if sharpe < 0.3:
+            flags.append(f"[{sublabel}] Sharpe Ratio basso ({sharpe:.3f}) — rendimento risk-adjusted debole")
+        if best_trade and abs(worst_trade) > 3 * abs(best_trade):
+            flags.append(f"[{sublabel}] Worst Trade ({worst_trade:.2f}%) >> Best Trade ({best_trade:.2f}%) — possibile outlier di coda pesante")
+        if not pd.isna(total_trades) and not pd.isna(win_rate):
+            if win_rate > 55 and profit_factor < 1.05:
+                flags.append(f"[{sublabel}] Win Rate alto ({win_rate:.1f}%) ma Profit Factor vicino/sotto 1 — pattern 'tanti piccoli vincenti, poche grandi perdite'")
+
+    _check(pf_rot,      "Risk ON/OFF")
+    _check(pf_rot_base, "Base")
+
+    proceed = len(flags) < min_flags_to_fail
+
+    print(f"\n{'-'*60}")
+    if flags:
+        print(f"  ⚠ {len(flags)} segnali d'allarme:")
+        for f in flags:
+            print(f"    - {f}")
+    else:
+        print(f"  ✓ Nessun segnale d'allarme evidente.")
+
+    print(f"\n  VERDETTO: {'✓ PROCEDI con OFC/MC' if proceed else '✗ SCONSIGLIATO procedere — rivedere turnover/griglia prima'}")
+    print(f"  (soglia: {min_flags_to_fail}+ segnali = sconsigliato; trovati: {len(flags)})")
+    print(f"{'='*60}\n")
+
+    return {
+        'proceed': proceed,
+        'flags':   flags,
+        'n_flags': len(flags),
+    }

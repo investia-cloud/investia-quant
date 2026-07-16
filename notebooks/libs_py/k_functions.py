@@ -1148,6 +1148,7 @@ def wfo_strategy_panel(
         if can_cache and (not override) and _has_precheck(symbol, strat, ratio, wfo_results_dir):
             cached = _read_precheck(symbol, strat, ratio, wfo_results_dir)
             if isinstance(cached, dict) and "pass_gate" in cached:
+                cached["_from_cache"] = True
                 return bool(cached["pass_gate"]), cached
 
         key = (symbol, start_date, end_date)
@@ -1355,7 +1356,8 @@ def wfo_strategy_panel(
                         _best_str = f"{_best*100:.1f}%"  if _best is not None else "N/A"
                         _beat_str = f"{_beat*100:.1f}%"  if _beat is not None else "N/A"
 
-                        print(f"[PRECHECK] {strat}@{symbol}  (mode={_mode})")
+                        _cache_tag = " [CACHED]" if pre_payload.get("_from_cache") else ""
+                        print(f"[PRECHECK]{_cache_tag} {strat}@{symbol}  (mode={_mode})")
                         print(f"  Struttura (overfitting_opt): recommend={_rec}")
                         if precheck_require_best_is_beat_bh:
                             _g1label = "OK" if (_best is not None and _best > (_bh or 0)) else "FALLITO"
@@ -8594,6 +8596,57 @@ def run_k_strategy_analysis(
     ns = {k: v for k, v in globals().items()}
 
     # ══════════════════════════════════════════
+    # CACHE CHECK — short-circuit se tutto in cache
+    # ══════════════════════════════════════════
+    if not override and wfo_results_dir:
+        _all_pairs = [(t, s) for t in tickers for s in strategies]
+        _all_cached = all(
+            (Path(wfo_results_dir) / s / f"portfolio_{s}_{t}_{ratio}_results.pkl").exists()
+            and
+            (Path(wfo_results_dir) / s / f"portfolio_{s}_{t}_{ratio}_mc_results.pkl").exists()
+            for t, s in _all_pairs
+        )
+        if _all_cached:
+            import pandas as _pd_cc
+            _req_pairs = set(_all_pairs)
+            _csv_files = sorted(Path(wfo_results_dir).glob("classification_*.csv"), reverse=True)
+            _hit_csv = None
+            _hit_df  = None
+            for _cf in _csv_files:
+                try:
+                    _df_c = _pd_cc.read_csv(_cf)
+                    if "Ticker" not in _df_c.columns or "Strategy" not in _df_c.columns:
+                        continue
+                    _csv_pairs = set(zip(_df_c["Ticker"], _df_c["Strategy"]))
+                    if _req_pairs.issubset(_csv_pairs):
+                        _hit_csv = _cf
+                        _hit_df  = _df_c[_df_c.apply(
+                            lambda r: (r["Ticker"], r["Strategy"]) in _req_pairs, axis=1
+                        )].reset_index(drop=True)
+                        break
+                except Exception:
+                    continue
+            if _hit_csv is not None:
+                _promoted_cc = [
+                    (r["Ticker"], r["Strategy"])
+                    for _, r in _hit_df.iterrows()
+                    if r.get("Promoted") == "PASS"
+                ]
+                print(
+                    f"[CACHE HIT] Tutte le {len(_all_pairs)} combinazioni richieste sono già in cache. "
+                    f"Nessun nuovo calcolo necessario. Risultati letti da: {_hit_csv}"
+                )
+                _pio.show = _original_show
+                _plt_show_patch.stop()
+                return {
+                    "mode":              mode,
+                    "results_panel":     {},
+                    "df_classification": _hit_df,
+                    "promoted":          _promoted_cc,
+                    "plots_dir":         plots_dir,
+                }
+
+    # ══════════════════════════════════════════
     # STEP 1 — WFO
     # ══════════════════════════════════════════
     df_panel, results_panel, extra = wfo_strategy_panel(
@@ -8700,6 +8753,11 @@ def run_k_strategy_analysis(
     # ══════════════════════════════════════════
     rows = []
     promoted = []
+
+    from datetime import datetime as _dt
+    CHECKPOINT_EVERY = 50
+    _batch_ts = _dt.now().strftime('%Y%m%d_%H%M%S')
+    _checkpoint_path = Path(wfo_results_dir) / f"checkpoint_{_batch_ts}.csv" if wfo_results_dir else None
 
     for ticker, strategy in pairs_after_dsr:
         key = (ticker, strategy)
@@ -8836,6 +8894,11 @@ def run_k_strategy_analysis(
             "Promoted":    "PASS" if is_promoted      else "FAIL",
         })
 
+        if _checkpoint_path and len(rows) % CHECKPOINT_EVERY == 0:
+            pd.DataFrame(rows).to_csv(_checkpoint_path, index=False)
+            if verbose:
+                print(f"[CHECKPOINT] classification parziale salvata: {_checkpoint_path} ({len(rows)} righe)")
+
     if rows:
         df_classification = pd.DataFrame(rows).sort_values(
             "DSR", ascending=False).reset_index(drop=True)
@@ -8850,6 +8913,8 @@ def run_k_strategy_analysis(
         df_classification.to_csv(csv_path, index=False)
         if verbose:
             print(f"Classifica salvata: {csv_path}")
+        if _checkpoint_path and _checkpoint_path.exists():
+            _checkpoint_path.unlink()
 
     # ══════════════════════════════════════════
     # STEP 4 — Salva classifica PNG

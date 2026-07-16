@@ -174,7 +174,30 @@ def _resolve_recipient(mail_args, ptf_recipients: list) -> list:
     # deduplicazione mantenendo ordine
     seen = set()
     return [x for x in result if not (x in seen or seen.add(x))]
-    
+
+
+def _expand_ptf_names(ptf_str: str, registry: dict):
+    """
+    Espande una stringa --ptf in una lista di nomi portafoglio.
+    Supporta: singolo nome, lista separata da spazi, pattern glob (*, ?, []).
+    Ritorna (names: list[str], errors: list[str]).
+    """
+    import fnmatch
+    tokens = ptf_str.split()
+    seen = {}
+    errors = []
+    for token in tokens:
+        if any(c in token for c in '*?['):
+            matches = [name for name in registry if fnmatch.fnmatch(name, token)]
+            if not matches:
+                errors.append(f"Pattern '{token}' non ha trovato nessun Lazy portfolio corrispondente.")
+            for m in matches:
+                seen[m] = None
+        else:
+            seen[token] = None
+    return list(seen.keys()), errors
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -508,15 +531,16 @@ def report(ptf, all_portfolios, rotational, trading, recipient, start_date, end_
 @app.command("r-analyze", epilog=(
     "\b\nEsempi:\n"
     "  iq r-analyze --ptf alpha_fact\n"
-    "  iq r-analyze --ptf alpha_fact --pdf\n"
-    "  iq r-analyze --universe inputs/universe.csv --profile core --pdf\n"
+    "  iq r-analyze --ptf alpha_fact --relazione-tecnica\n"
+    "  iq r-analyze --ptf alpha_fact --engine Momentum\n"
+    "  iq r-analyze --universe inputs/universe.csv --profile core --relazione-tecnica\n"
 ))
 @click.option("--ptf", default=None,
               help="Nome portafoglio R da registry (es. alpha_fact)")
 @click.option("--universe", default=None,
               help="CSV con colonna 'ticker' — universo ad hoc")
 @click.option("--output-dir", default=None,
-              help="Directory output PDF + PNG (default: outputs/reports/<nome>/<data>/)")
+              help="Directory output PDF + PNG (default: outputs/r_analysis/<nome>/<timestamp>/)")
 @click.option("--profile", default="satellite",
               type=click.Choice(["satellite", "core"]),
               help="Profilo OFC: satellite (default) o core")
@@ -524,16 +548,21 @@ def report(ptf, all_portfolios, rotational, trading, recipient, start_date, end_
               help="Anno selezione WFO (default: anno corrente)")
 @click.option("--start-date", default="2015-01-01",
               help="Inizio storico download (default: 2015-01-01)")
-@click.option("--pdf", "gen_pdf", is_flag=True, default=False,
-              help="Genera la relazione tecnica PDF (default: solo pipeline, niente PDF)")
-@click.option("--cluster", "run_cluster", is_flag=True, default=False,
-              help="Esegui anche il path WFO Cluster (default: solo Standard)")
+@click.option("--relazione-tecnica", "relazione_tecnica", is_flag=True, default=False,
+              help=(
+                  "Genera la relazione tecnica completa (analisi LLM + PTF card .md + PDF). "
+                  "Senza questo flag: solo pipeline WFO+OFC+MC, nessuna chiamata LLM."
+              ))
+@click.option("--engine", default=None,
+              type=click.Choice(["Momentum", "Multifactor"]),
+              help="Engine WFO da eseguire (default: entrambi Momentum e Multifactor)")
 @click.option("--verbose", is_flag=True, default=False, help="Output verboso")
-def r_analyze(ptf, universe, output_dir, profile, year, start_date, gen_pdf, run_cluster, verbose):
-    """Pipeline R-portfolio: WFO + OFC + MC. Solo R-portfolio.
+def r_analyze(ptf, universe, output_dir, profile, year, start_date, relazione_tecnica, engine, verbose):
+    """Pipeline R-portfolio N-engine: WFO + OFC + MC. Solo R-portfolio.
 
-    Esegue sempre la pipeline di calcolo e la card .md; la relazione
-    tecnica PDF viene generata solo con --pdf.
+    Esegue sempre la pipeline WFO+OFC+MC. Con --relazione-tecnica genera
+    anche l'analisi LLM, la PTF card .md e la relazione tecnica PDF
+    (sempre insieme — blocco atomico).
     """
 
     # Validazione input
@@ -545,9 +574,9 @@ def r_analyze(ptf, universe, output_dir, profile, year, start_date, gen_pdf, run
     click.echo("[iq r-analyze] Caricamento librerie...")
     ns = _load_all_libs()
 
-    run_r_portfolio_analysis = ns.get("run_r_portfolio_analysis")
-    if run_r_portfolio_analysis is None:
-        raise click.ClickException("run_r_portfolio_analysis non trovata in r_functions.")
+    run_analysis = ns.get("run_r_portfolio_n_engine_analysis")
+    if run_analysis is None:
+        raise click.ClickException("run_r_portfolio_n_engine_analysis non trovata in r_functions.")
 
     # Risolvi portfolio_cfg
     if ptf:
@@ -582,38 +611,40 @@ def r_analyze(ptf, universe, output_dir, profile, year, start_date, gen_pdf, run
 
     # Risolvi output_dir
     if output_dir is None:
-        import datetime
-        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        today = datetime.date.today().isoformat()
-        output_dir = os.path.join(root, "outputs", "reports", ptf_name, today)
+        _get_dir = ns.get("get_analysis_output_dir")
+        output_dir = str(_get_dir("r_analysis", ptf_name=ptf_name, profilo=profile))
 
-    click.echo(f"[iq r-analyze] Portafoglio: {portfolio_obj.get('Title', ptf_name)}")
-    click.echo(f"[iq r-analyze] Output dir:  {output_dir}")
-    click.echo(f"[iq r-analyze] Profile:     {profile}")
-    click.echo(f"[iq r-analyze] PDF:         {'sì' if gen_pdf else 'no (usa --pdf per generarlo)'}")
-    click.echo(f"[iq r-analyze] Cluster:     {'sì' if run_cluster else 'no (usa --cluster per eseguirlo)'}")
+    engines_to_run = [engine] if engine else ["Momentum", "Multifactor"]
+
+    click.echo(f"[iq r-analyze] Portafoglio:         {portfolio_obj.get('Title', ptf_name)}")
+    click.echo(f"[iq r-analyze] Output dir:          {output_dir}")
+    click.echo(f"[iq r-analyze] Profile:             {profile}")
+    click.echo(f"[iq r-analyze] Engine(s):           {', '.join(engines_to_run)}")
+    click.echo(f"[iq r-analyze] Relazione tecnica:   {'sì' if relazione_tecnica else 'no (usa --relazione-tecnica)'}")
     click.echo(f"[iq r-analyze] Avvio pipeline (WFO + OFC + MC)...")
 
     try:
-        result = run_r_portfolio_analysis(
-            portfolio_cfg = portfolio_obj,
-            output_dir    = output_dir,
-            year          = year,
-            start_date    = start_date,
-            end_date      = None,
-            profile       = profile,
-            verbose       = verbose,
-            generate_pdf  = gen_pdf,
-            run_cluster   = run_cluster,
+        result = run_analysis(
+            portfolio_cfg      = portfolio_obj,
+            output_dir         = output_dir,
+            year               = year,
+            start_date         = start_date,
+            end_date           = None,
+            profile            = profile,
+            verbose            = verbose,
+            relazione_tecnica  = relazione_tecnica,
+            engines            = engines_to_run,
         )
         click.echo(f"[iq r-analyze] Completato.")
-        click.echo(f"  PDF:           {result['pdf'] if result['pdf'] else '(non generato — usa --pdf)'}")
         click.echo(f"  Plots dir:     {result['plots_dir']}")
-        click.echo(f"  OFC Standard:  {'PROMOTED' if result['ofc_std'] else 'REJECTED'}")
-        _ofc_cl = result['ofc_cluster']
-        click.echo(f"  OFC Cluster:   {'PROMOTED' if _ofc_cl else 'REJECTED' if _ofc_cl is not None else 'N/A (non eseguito)'}")
-        click.echo(f"  Skill Std:     {result['skill_profile_std']}")
-        click.echo(f"  Skill Cluster: {result['skill_profile_cluster']}")
+        for eng_name, eng_data in result.get("engines", {}).items():
+            ofc_promoted = bool((eng_data.get("ofc_report") or {}).get("promoted", False))
+            skill = eng_data.get("skill_profile", "N/A")
+            verdict = "PROMOTED" if ofc_promoted else "REJECTED"
+            click.echo(f"  OFC {eng_name:<12}: {verdict}  (skill: {skill})")
+        if relazione_tecnica:
+            click.echo(f"  Card MD:       {result['card_path'] or '(non generato)'}")
+            click.echo(f"  PDF:           {result['pdf_path'] or '(non generato)'}")
     except Exception as exc:
         raise click.ClickException(f"Pipeline fallita: {exc}")
 
@@ -635,7 +666,7 @@ def r_analyze(ptf, universe, output_dir, profile, year, start_date, gen_pdf, run
 @click.option("--ptf", default=None,
     help="Nome K-portfolio (es. us_trading_2026) — estrae tickers automaticamente")
 @click.option("--output-dir", default=None,
-    help="Directory output (default: outputs/k_analysis/<data>/)")
+    help="Directory output (default: outputs/k_analysis/<timestamp>/)")
 @click.option("--start-date", default="2015-01-01", show_default=True,
     help="Inizio storico download")
 @click.option("--end-date", default=None, help="Fine storico (default: oggi)")
@@ -711,11 +742,8 @@ def k_analyze(strategies, tickers, ptf, output_dir, start_date, end_date,
     else:
         print(f"Panel: {len(s)} strategie × {len(t)} ticker")
 
-    from datetime import datetime as _dt
-    out_dir = output_dir or str(
-        Path(__file__).parent.parent / "outputs" / "k_analysis" /
-        _dt.now().strftime("%Y%m%d_%H%M%S")
-    )
+    _get_dir = ns.get("get_analysis_output_dir")
+    out_dir = output_dir or str(_get_dir("k_analysis"))
     import importlib.util, sys as _sys
     lib = Path(__file__).parent.parent / "notebooks" / "libs_py" / "k_functions.py"
     spec = importlib.util.spec_from_file_location("k_functions", lib)
@@ -765,7 +793,7 @@ def k_analyze(strategies, tickers, ptf, output_dir, start_date, end_date,
 @click.option("--ptf", default=None,
     help="Nome Lazy portfolio, oppure 'all' per tutti i PTF nel registry")
 @click.option("--output-dir", default=None,
-    help="Directory output (default: outputs/lazy_analysis/<data>/)")
+    help="Directory output (default: outputs/l_analysis/<timestamp>/)")
 @click.option("--start-date", default="2016-01-01", show_default=True,
     help="Inizio storico backtest")
 @click.option("--end-date", default=None, help="Fine storico (default: oggi)")
@@ -791,7 +819,7 @@ def l_analyze(ptf, output_dir, start_date, end_date, benchmark,
     """Pipeline Lazy portfolio: frontiera + backtest + stability + MC A/B + DSR.
 
     Batch (--ptf all) o singolo. Con --pdf genera la relazione tecnica per
-    ogni PTF in outputs/lazy_reports/<ptf>_relazione_tecnica.pdf.
+    ogni PTF in outputs/l_analysis/<timestamp>/<ptf>_relazione_tecnica.pdf.
     """
     import warnings
     warnings.filterwarnings("ignore", category=RuntimeWarning)
@@ -820,19 +848,20 @@ def l_analyze(ptf, output_dir, start_date, end_date, benchmark,
         if verbose:
             click.echo(f"[iq l-analyze] --ptf all userà solo categoria 'lazy_': {len(ptf_names)} PTF.")
     else:
-        portfolio_obj, kind = _resolve_portfolio(ptf, ns)
-        if kind != "L":
-            raise click.ClickException(f"'{ptf}' non è un Lazy portfolio (kind={kind}).")
-        ptf_names = [ptf]
+        _lazy_reg_for_glob = ns.get("L_PORTFOLIO_LAZY") or l_registry
+        ptf_names, _glob_errors = _expand_ptf_names(ptf, _lazy_reg_for_glob)
+        if _glob_errors:
+            raise click.ClickException("\n".join(_glob_errors))
+        for _name in ptf_names:
+            _obj, _kind = _resolve_portfolio(_name, ns)
+            if _kind != "L":
+                raise click.ClickException(f"'{_name}' non è un Lazy portfolio (kind={_kind}).")
 
     if verbose:
         print(f"Lazy-analyze: {len(ptf_names)} PTF -> {ptf_names}")
 
-    from datetime import datetime as _dt
-    out_dir = output_dir or str(
-        Path(__file__).parent.parent / "outputs" / "lazy_analysis" /
-        _dt.now().strftime("%Y%m%d_%H%M%S")
-    )
+    _get_dir = ns.get("get_analysis_output_dir")
+    out_dir = output_dir or str(_get_dir("l_analysis"))
 
     run_lazy_batch_analysis_fn = ns.get("run_lazy_batch_analysis")
     if run_lazy_batch_analysis_fn is None:
@@ -886,9 +915,8 @@ def l_analyze(ptf, output_dir, start_date, end_date, benchmark,
         if generate_relazione_tecnica_lazy is None:
             raise click.ClickException(
                 "generate_relazione_tecnica_lazy non trovata in mc_functions.py.")
-        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        reports_dir = os.path.join(root, "outputs", "lazy_reports")
-        os.makedirs(reports_dir, exist_ok=True)
+        from datetime import datetime as _dt
+        os.makedirs(out_dir, exist_ok=True)
 
         for ptf_name, rich in details.items():
             try:
@@ -914,7 +942,7 @@ def l_analyze(ptf, output_dir, start_date, end_date, benchmark,
                         if verbose:
                             print(f"[WARN] proiezione capitale {ptf_name} fallita: {_pe}")
 
-                out_pdf = os.path.join(reports_dir, f"{ptf_name}_relazione_tecnica.pdf")
+                out_pdf = os.path.join(out_dir, f"{ptf_name}_relazione_tecnica.pdf")
                 generate_relazione_tecnica_lazy(
                     portfolio_title=ptf_name,
                     asset_allocation=asset_allocation,

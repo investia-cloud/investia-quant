@@ -4175,3 +4175,875 @@ def strategy_bb_mcginley(data: pd.DataFrame, params: dict, year: int | None = No
     shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
     shifted_exits   = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
     return shifted_entries, shifted_exits
+
+
+# ─────────────────────────────────────
+# Fonte: I Left My Laptop Running for 3 Nights. It Found 51 Trading Strategies While I Slept.
+# URL:   https://medium.com/@Kryptera/i-left-my-laptop-running-for-3-nights-it-found-51-trading-strategies-while-i-slept-c1959667dd95
+# Data:  2026-06-26 02:00
+# ─────────────────────────────────────
+
+############################
+# Strategy bull_cts_nvda
+############################
+
+import pandas as pd
+import numpy as np
+
+
+def ind_bull_cts_nvda_bull_power(df: pd.DataFrame, ema_period: int = 13) -> pd.Series:
+    close = df['Close']
+    ema_arr = np.empty(len(close))
+    close_arr = close.values
+    alpha = 2.0 / (ema_period + 1)
+    ema_arr[0] = close_arr[0]
+    for i in range(1, len(close_arr)):
+        ema_arr[i] = alpha * close_arr[i] + (1 - alpha) * ema_arr[i - 1]
+    ema = pd.Series(ema_arr, index=close.index)
+    bull_power = df['High'] - ema
+    return bull_power
+
+
+def ind_bull_cts_nvda_cts(df: pd.DataFrame, period: int = 20) -> pd.Series:
+    close = df['Close'].values
+    n = len(close)
+    cts = np.full(n, np.nan)
+    for i in range(period, n):
+        diff = np.diff(close[i - period: i + 1])
+        up = diff[diff > 0].sum()
+        down = -diff[diff < 0].sum()
+        total = up + down
+        if total != 0:
+            cts[i] = 100.0 * (up - down) / total
+        else:
+            cts[i] = 0.0
+    return pd.Series(cts, index=df.index)
+
+
+strategy_bull_cts_nvda_param_ranges = {
+    'ema_period_range'    : range(10, 21, 5),
+    'bull_level_range'    : range(0, 1, 1),
+    'cts_period_range'    : range(15, 26, 5),
+    'cts_lower_range'     : range(-60, -39, 10),
+    'bull_shift_range'    : range(3, 8, 2),
+    'cts_shift_range'     : range(3, 8, 2),
+}
+
+
+def strategy_bull_cts_nvda(data: pd.DataFrame, params: dict, year: int | None = None):
+    ema_period  = params.get('ema_period_range')
+    bull_level  = float(params.get('bull_level_range'))
+    cts_period  = params.get('cts_period_range')
+    cts_lower   = float(params.get('cts_lower_range'))
+    bull_shift  = params.get('bull_shift_range')
+    cts_shift   = params.get('cts_shift_range')
+
+    df = data.copy()
+
+    bull_power = ind_bull_cts_nvda_bull_power(df, ema_period=ema_period)
+    cts        = ind_bull_cts_nvda_cts(df, period=cts_period)
+
+    df['Bull_Power'] = bull_power
+    df['CTS']        = cts
+
+    # Entry: Bull Power crosses below level (was >= level, now < level)
+    bp_prev = df['Bull_Power'].shift(bull_shift)
+    entries = (bp_prev >= bull_level) & (df['Bull_Power'] < bull_level)
+
+    # Exit: CTS crosses above lower level (was <= lower, now > lower, after shift)
+    cts_prev = df['CTS'].shift(cts_shift)
+    exits = (cts_prev <= cts_lower) & (df['CTS'] > cts_lower)
+
+    if year is not None:
+        df       = df[df.index.year == int(year)]
+        entries  = entries[entries.index.year == int(year)]
+        exits    = exits[exits.index.year == int(year)]
+
+    shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    shifted_exits   = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    return shifted_entries, shifted_exits
+
+
+# ─────────────────────────────────────
+# Fonte: I Found a RMA ATR Bands Indicator on TradingView — And It Outperformed Buy and Hold on a Single…
+# URL:   https://medium.com/@Kryptera/i-found-a-rma-atr-bands-indicator-on-tradingview-and-it-outperformed-buy-and-hold-on-a-single-b735a434b3ec
+# Data:  2026-06-27 02:00
+# ─────────────────────────────────────
+
+############################
+# Strategy rma_atr_bands
+############################
+
+import pandas as pd
+import numpy as np
+
+
+def ind_rma_atr_bands_rma(series: pd.Series, period: int) -> pd.Series:
+    """Wilder RMA (Running Moving Average) smoothing."""
+    alpha = 1.0 / period
+    arr = series.values.astype(float)
+    out = np.empty(len(arr))
+    out[:] = np.nan
+    # Find first valid index
+    first_valid = 0
+    while first_valid < len(arr) and np.isnan(arr[first_valid]):
+        first_valid += 1
+    if first_valid >= len(arr):
+        return pd.Series(out, index=series.index)
+    out[first_valid] = arr[first_valid]
+    for i in range(first_valid + 1, len(arr)):
+        if np.isnan(arr[i]):
+            out[i] = out[i - 1]
+        else:
+            out[i] = alpha * arr[i] + (1.0 - alpha) * out[i - 1]
+    return pd.Series(out, index=series.index)
+
+
+def ind_rma_atr_bands_atr(df: pd.DataFrame, period: int) -> pd.Series:
+    """Wilder ATR using RMA smoothing."""
+    high = df['High'].values.astype(float)
+    low = df['Low'].values.astype(float)
+    close = df['Close'].values.astype(float)
+    hl = high - low
+    hpc = np.abs(high - np.concatenate([[close[0]], close[:-1]]))
+    lpc = np.abs(low - np.concatenate([[close[0]], close[:-1]]))
+    tr = np.maximum(np.maximum(hl, hpc), lpc)
+    tr_series = pd.Series(tr, index=df.index)
+    return ind_rma_atr_bands_rma(tr_series, period)
+
+
+def ind_rma_atr_bands_bands(df: pd.DataFrame,
+                             rma_period: int = 14,
+                             atr_period: int = 14,
+                             upper_mult: float = 0.4,
+                             lower_mult: float = 1.6):
+    """
+    Compute RMA ATR Bands.
+    - RMA applied to High price
+    - Upper band: rma_high + upper_mult * ATR
+    - Lower band: rma_high - lower_mult * ATR
+    Returns: rma_high, upper_band, lower_band, atr
+    """
+    rma_high = ind_rma_atr_bands_rma(df['High'], rma_period)
+    atr = ind_rma_atr_bands_atr(df, atr_period)
+    upper_band = rma_high + upper_mult * atr
+    lower_band = rma_high - lower_mult * atr
+    return rma_high, upper_band, lower_band, atr
+
+
+def ind_rma_atr_bands_signals(df: pd.DataFrame,
+                               upper_band: pd.Series,
+                               lower_band: pd.Series):
+    """
+    Stateful trend logic:
+    - trend flips to +1 (long entry) when close crosses above upper_band
+    - trend flips to -1 (exit) when close drops below lower_band
+    Returns: long_signals, exit_signals as boolean Series
+    """
+    close = df['Close'].values.astype(float)
+    upper = upper_band.values.astype(float)
+    lower = lower_band.values.astype(float)
+    n = len(close)
+    trend = np.zeros(n, dtype=np.int8)
+    long_sig = np.zeros(n, dtype=bool)
+    exit_sig = np.zeros(n, dtype=bool)
+
+    current_trend = 0
+    for i in range(n):
+        if np.isnan(upper[i]) or np.isnan(lower[i]):
+            trend[i] = current_trend
+            continue
+        if close[i] > upper[i]:
+            if current_trend != 1:
+                long_sig[i] = True
+            current_trend = 1
+        elif close[i] < lower[i]:
+            if current_trend != -1:
+                exit_sig[i] = True
+            current_trend = -1
+        trend[i] = current_trend
+
+    return (pd.Series(long_sig, index=df.index),
+            pd.Series(exit_sig, index=df.index))
+
+
+strategy_rma_atr_bands_param_ranges = {
+    'rma_period_range': range(10, 25, 7),   # [10, 17, 24] -> 3 values
+    'atr_period_range': range(10, 25, 7),   # [10, 17, 24] -> 3 values
+    'upper_mult_range': range(3, 7, 2),     # [3, 5] -> 2 values (divide by 10)
+    'lower_mult_range': range(12, 22, 5),   # [12, 17] -> 2 values (divide by 10)
+}
+# Total: 3 * 3 * 2 * 2 = 36 combinations — well within limit
+
+
+def strategy_rma_atr_bands(data: pd.DataFrame, params: dict, year: int | None = None):
+    rma_period  = params.get('rma_period_range')
+    atr_period  = params.get('atr_period_range')
+    upper_mult  = params.get('upper_mult_range') / 10.0
+    lower_mult  = params.get('lower_mult_range') / 10.0
+
+    df = data.copy()
+
+    rma_high, upper_band, lower_band, atr = ind_rma_atr_bands_bands(
+        df,
+        rma_period=rma_period,
+        atr_period=atr_period,
+        upper_mult=upper_mult,
+        lower_mult=lower_mult
+    )
+
+    df['RMA_High']   = rma_high
+    df['Upper_Band'] = upper_band
+    df['Lower_Band'] = lower_band
+    df['ATR']        = atr
+
+    long_sig, exit_sig = ind_rma_atr_bands_signals(df, df['Upper_Band'], df['Lower_Band'])
+    df['LongSig'] = long_sig
+    df['ExitSig'] = exit_sig
+
+    if year is not None:
+        df = df[df.index.year == int(year)]
+
+    entries = df['LongSig']
+    exits   = df['ExitSig']
+
+    shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    shifted_exits   = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    return shifted_entries, shifted_exits
+
+
+# ─────────────────────────────────────
+# Fonte: I Left My Desktop App Running Overnight.
+# URL:   https://medium.com/@Kryptera/i-left-my-desktop-app-running-overnight-313832b440b1
+# Data:  2026-06-28 02:00
+# ─────────────────────────────────────
+
+############################
+# Strategy ao_er_amt
+############################
+
+def ind_ao_er_amt_ao(df: pd.DataFrame, short_period: int = 5, long_period: int = 34) -> pd.Series:
+    median_price = (df['High'] + df['Low']) / 2.0
+    sma_short = median_price.rolling(window=short_period, min_periods=1).mean()
+    sma_long  = median_price.rolling(window=long_period,  min_periods=1).mean()
+    ao = sma_short - sma_long
+    return ao
+
+
+def ind_ao_er_amt_ao_falling_consecutive(ao: pd.Series, bars: int = 3) -> pd.Series:
+    cond = (ao < ao.shift(1)).astype(float)
+    result = cond.rolling(bars, min_periods=bars).sum() == bars
+    return result.fillna(False)
+
+
+def ind_ao_er_amt_er(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    close = df['Close']
+    change = close.diff(period).abs()
+    volatility = close.diff().abs().rolling(period, min_periods=period).sum()
+    safe_vol = np.where(volatility.values != 0, volatility.values, 1.0)
+    er_vals = np.where(volatility.values != 0, change.values / safe_vol, 0.0)
+    er = pd.Series(er_vals, index=close.index)
+    return er
+
+
+strategy_ao_er_amt_param_ranges = {
+    'ao_short_range'  : range(3, 8,  2),   # 3 values: [3, 5, 7]
+    'ao_long_range'   : range(24, 40, 8),  # 2 values: [24, 32] ~approx 34
+    'ao_bars_range'   : range(2, 5,  1),   # 3 values: [2, 3, 4]
+    'er_period_range' : range(10, 20, 4),  # 3 values: [10, 14, 18]
+    'er_level_range'  : range(6, 9,  1),   # 3 values: [6, 7, 8]  → divide by 10
+}
+
+
+def strategy_ao_er_amt(data: pd.DataFrame, params: dict, year: int | None = None):
+    ao_short = params.get('ao_short_range')
+    ao_long  = params.get('ao_long_range')
+    ao_bars  = params.get('ao_bars_range')
+    er_per   = params.get('er_period_range')
+    er_level = params.get('er_level_range') / 10.0
+
+    df = data.copy()
+
+    ao = ind_ao_er_amt_ao(df, short_period=ao_short, long_period=ao_long)
+    ao_falling = ind_ao_er_amt_ao_falling_consecutive(ao, bars=ao_bars)
+    er = ind_ao_er_amt_er(df, period=er_per)
+
+    df['AO']         = ao
+    df['AO_Falling'] = ao_falling
+    df['ER']         = er
+
+    if year is not None:
+        df = df[df.index.year == int(year)]
+
+    entries = df['AO_Falling']
+
+    er_trend_up = (df['ER'] > er_level) & (df['Close'] > df['Close'].shift(1))
+    exits = er_trend_up
+
+    shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    shifted_exits   = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    return shifted_entries, shifted_exits
+
+
+# ─────────────────────────────────────
+# Fonte: I Built a Hidden Markov Model to Detect Gold Market Regimes — Here’s What the Data Revealed
+# URL:   https://medium.com/@Kryptera/i-built-a-hidden-markov-model-to-detect-gold-market-regimes-heres-what-the-data-revealed-46c84f2ca83d
+# Data:  2026-06-29 02:00
+# ─────────────────────────────────────
+
+############################
+# Strategy hmm_regime_gold
+############################
+
+import numpy as np
+import pandas as pd
+
+
+def ind_hmm_regime_gold_features(df: pd.DataFrame, vol_window: int = 10) -> pd.DataFrame:
+    close = df['Close']
+    high = df['High']
+    low = df['Low']
+
+    log_ret = np.log(close / close.shift(1))
+    returns = close.pct_change()
+    vol = returns.rolling(vol_window, min_periods=1).std()
+    safe_close = np.where(close.values != 0, close.values, 1.0)
+    hl_range = (high.values - low.values) / safe_close
+
+    out = df.copy()
+    out['log_ret'] = log_ret
+    out['returns'] = returns
+    out['vol_rolling'] = vol
+    out['hl_range'] = pd.Series(hl_range, index=df.index)
+    return out
+
+
+def ind_hmm_regime_gold_regime(df_feat: pd.DataFrame,
+                                train_window: int = 60,
+                                smooth_window: int = 5) -> pd.Series:
+    """
+    Approximate HMM regime detection using pandas/numpy only.
+    We use a rolling k-means style clustering on 3 features:
+      log_ret, vol_rolling, hl_range
+    States are sorted by mean log_ret: 0=Bearish, 1=Ranging, 2=Bullish
+    Then apply majority-vote smoothing.
+    """
+    log_ret = df_feat['log_ret'].values
+    vol = df_feat['vol_rolling'].values
+    hl = df_feat['hl_range'].values
+    n = len(df_feat)
+
+    raw_states = np.full(n, np.nan)
+
+    for i in range(train_window, n):
+        window_log = log_ret[i - train_window:i]
+        window_vol = vol[i - train_window:i]
+        window_hl = hl[i - train_window:i]
+
+        # Normalize features
+        def safe_norm(arr):
+            mu = np.nanmean(arr)
+            sd = np.nanstd(arr)
+            if sd == 0:
+                return arr - mu
+            return (arr - mu) / sd
+
+        f0 = safe_norm(window_log)
+        f1 = safe_norm(window_vol)
+        f2 = safe_norm(window_hl)
+
+        # Simple k-means with 3 clusters initialized by percentiles
+        # Initialize centroids by percentile splits on log_ret
+        p33 = np.nanpercentile(f0, 33)
+        p67 = np.nanpercentile(f0, 67)
+
+        c0 = np.array([np.nanmean(f0[f0 <= p33]),
+                       np.nanmean(f1[f0 <= p33]),
+                       np.nanmean(f2[f0 <= p33])])
+        mask_mid = (f0 > p33) & (f0 <= p67)
+        c1 = np.array([np.nanmean(f0[mask_mid]) if mask_mid.sum() > 0 else 0.0,
+                       np.nanmean(f1[mask_mid]) if mask_mid.sum() > 0 else 0.0,
+                       np.nanmean(f2[mask_mid]) if mask_mid.sum() > 0 else 0.0])
+        c2 = np.array([np.nanmean(f0[f0 > p67]),
+                       np.nanmean(f1[f0 > p67]),
+                       np.nanmean(f2[f0 > p67])])
+
+        centroids = np.array([c0, c1, c2])
+
+        # Replace NaN centroids
+        for ci in range(3):
+            for fi in range(3):
+                if np.isnan(centroids[ci, fi]):
+                    centroids[ci, fi] = 0.0
+
+        # K-means iterations
+        features_mat = np.column_stack([f0, f1, f2])
+        valid_mask = ~np.any(np.isnan(features_mat), axis=1)
+        features_valid = features_mat[valid_mask]
+
+        for _ in range(10):
+            # Assign
+            dists = np.array([
+                np.sum((features_valid - centroids[k]) ** 2, axis=1)
+                for k in range(3)
+            ])
+            labels = np.argmin(dists, axis=0)
+            # Update
+            new_centroids = np.zeros((3, 3))
+            for k in range(3):
+                mk = labels == k
+                if mk.sum() > 0:
+                    new_centroids[k] = features_valid[mk].mean(axis=0)
+                else:
+                    new_centroids[k] = centroids[k]
+            if np.allclose(centroids, new_centroids, atol=1e-6):
+                break
+            centroids = new_centroids
+
+        # Sort states by mean log_ret of centroid (0=bearish, 1=ranging, 2=bullish)
+        centroid_ret = centroids[:, 0]
+        sort_order = np.argsort(centroid_ret)  # ascending
+        rank_map = np.empty(3, dtype=int)
+        for rank, orig in enumerate(sort_order):
+            rank_map[orig] = rank
+
+        # Current point
+        cur_log = log_ret[i]
+        cur_vol = vol[i]
+        cur_hl = hl[i]
+
+        if np.isnan(cur_log) or np.isnan(cur_vol) or np.isnan(cur_hl):
+            raw_states[i] = np.nan
+            continue
+
+        # Normalize current point using train window stats
+        def norm_val(val, arr):
+            mu = np.nanmean(arr)
+            sd = np.nanstd(arr)
+            if sd == 0:
+                return 0.0
+            return (val - mu) / sd
+
+        cur_f0 = norm_val(cur_log, window_log)
+        cur_f1 = norm_val(cur_vol, window_vol)
+        cur_f2 = norm_val(cur_hl, window_hl)
+        cur_feat = np.array([cur_f0, cur_f1, cur_f2])
+
+        dists_cur = np.array([np.sum((cur_feat - centroids[k]) ** 2) for k in range(3)])
+        assigned = np.argmin(dists_cur)
+        raw_states[i] = rank_map[assigned]
+
+    # Build series
+    regime_raw = pd.Series(raw_states, index=df_feat.index)
+
+    # Majority vote smoothing
+    def majority_vote(x):
+        counts = np.bincount(x[~np.isnan(x)].astype(int), minlength=3)
+        return float(np.argmax(counts))
+
+    regime_smooth = regime_raw.rolling(smooth_window, min_periods=1).apply(
+        lambda x: majority_vote(x), raw=True
+    )
+
+    return regime_smooth
+
+
+strategy_hmm_regime_gold_param_ranges = {
+    'train_window_range': range(40, 81, 20),
+    'vol_window_range': range(5, 16, 5),
+    'smooth_window_range': range(3, 10, 3),
+}
+
+
+def strategy_hmm_regime_gold(data: pd.DataFrame, params: dict, year: int | None = None):
+    train_window = params.get('train_window_range')
+    vol_window = params.get('vol_window_range')
+    smooth_window = params.get('smooth_window_range')
+
+    df = data.copy()
+
+    df_feat = ind_hmm_regime_gold_features(df, vol_window=vol_window)
+
+    regime = ind_hmm_regime_gold_regime(
+        df_feat,
+        train_window=train_window,
+        smooth_window=smooth_window
+    )
+
+    df['regime'] = regime
+    df['log_ret'] = df_feat['log_ret']
+    df['vol_rolling'] = df_feat['vol_rolling']
+
+    if year is not None:
+        df = df[df.index.year == int(year)]
+
+    # Entry: regime switches to Bullish (2)
+    # Exit: regime switches to Bearish (0) or Ranging (1)
+    regime_s = df['regime']
+    prev_regime = regime_s.shift(1)
+
+    entries = (regime_s == 2.0) & (prev_regime != 2.0)
+    exits = (regime_s != 2.0) & (prev_regime == 2.0)
+
+    shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    shifted_exits = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    return shifted_entries, shifted_exits
+
+
+# ─────────────────────────────────────
+# Fonte: The Regime Report: How to Find the Strategy Inside Your Strategy
+# URL:   https://medium.com/@Kryptera/the-regime-report-how-to-find-the-strategy-inside-your-strategy-1fa10a6ae4d1
+# Data:  2026-07-08 02:00
+# ─────────────────────────────────────
+
+############################
+# Strategy bears_power_cts_regime
+############################
+
+import pandas as pd
+import numpy as np
+
+
+def ind_bears_power_cts_regime_bears_power(df: pd.DataFrame, bp_period: int = 13) -> pd.Series:
+    close = df['Close']
+    ema = close.ewm(span=bp_period, adjust=False, min_periods=1).mean()
+    bears_power = df['Low'] - ema
+    return bears_power
+
+
+def ind_bears_power_cts_regime_cts(df: pd.DataFrame, cts_period: int = 20, cts_mult: float = 1.5) -> tuple:
+    close = df['Close']
+    ma = close.rolling(cts_period, min_periods=1).mean()
+    std = close.rolling(cts_period, min_periods=1).std(ddof=0)
+    lower = ma - cts_mult * std
+    return ma, lower
+
+
+def ind_bears_power_cts_regime_regime(df: pd.DataFrame, vol_lookback: int = 20, trend_lookback: int = 200) -> pd.Series:
+    close = df['Close']
+    sma200 = close.rolling(trend_lookback, min_periods=1).mean()
+    is_trending = close > sma200
+
+    ret = close.pct_change()
+    realized_vol = ret.rolling(vol_lookback, min_periods=1).std()
+    vol_median = realized_vol.expanding(min_periods=60).median()
+
+    safe_med = np.where(vol_median.notna() & (vol_median != 0), vol_median, np.nan)
+    is_high_vol = realized_vol > pd.Series(safe_med, index=realized_vol.index)
+
+    conditions = [
+        (is_trending & is_high_vol),
+        (is_trending & ~is_high_vol),
+        (~is_trending & is_high_vol),
+        (~is_trending & ~is_high_vol),
+    ]
+    regime = np.select(conditions,
+                       ['trend_highvol', 'trend_lowvol', 'chop_highvol', 'chop_lowvol'],
+                       default='unknown')
+    return pd.Series(regime, index=df.index)
+
+
+strategy_bears_power_cts_regime_param_ranges = {
+    'bp_period_range'     : range(10, 21, 5),
+    'cts_period_range'    : range(15, 31, 5),
+    'cts_mult_range'      : range(10, 25, 5),
+    'vol_lookback_range'  : range(15, 31, 5),
+    'trend_lookback_range': range(150, 251, 50),
+}
+
+
+def strategy_bears_power_cts_regime(data: pd.DataFrame, params: dict, year: int | None = None):
+    bp_period      = params.get('bp_period_range')
+    cts_period     = params.get('cts_period_range')
+    cts_mult       = params.get('cts_mult_range') / 10.0
+    vol_lookback   = params.get('vol_lookback_range')
+    trend_lookback = params.get('trend_lookback_range')
+
+    df = data.copy()
+
+    bears_power = ind_bears_power_cts_regime_bears_power(df, bp_period=bp_period)
+    cts_ma, cts_lower = ind_bears_power_cts_regime_cts(df, cts_period=cts_period, cts_mult=cts_mult)
+    regime = ind_bears_power_cts_regime_regime(df, vol_lookback=vol_lookback, trend_lookback=trend_lookback)
+
+    df['BearsPower']  = bears_power
+    df['CTS_MA']      = cts_ma
+    df['CTS_Lower']   = cts_lower
+    df['regime']      = regime
+
+    # Bears Power is falling: current value < previous value
+    bp_falling = df['BearsPower'] < df['BearsPower'].shift(1)
+
+    # CTS cross above lower: close crosses above lower band
+    cts_cross_above_lower = (df['Close'] > df['CTS_Lower']) & (df['Close'].shift(1) <= df['CTS_Lower'].shift(1))
+
+    # Regime gate: allow entries only in trend_lowvol or chop_highvol
+    ALLOWED_REGIMES = {'trend_lowvol', 'chop_highvol'}
+    regime_gate = df['regime'].shift(1).isin(ALLOWED_REGIMES)
+
+    entries = bp_falling & regime_gate
+    exits   = cts_cross_above_lower
+
+    if year is not None:
+        df_year = df[df.index.year == int(year)]
+        entries = entries[df_year.index]
+        exits   = exits[df_year.index]
+
+    shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    shifted_exits   = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    return shifted_entries, shifted_exits
+
+
+# ─────────────────────────────────────
+# Fonte: Does Volume Actually Time the Crowd? I Tested It on the One Stock Where the Crowd Is Loudest.
+# URL:   https://medium.com/@Kryptera/does-volume-actually-time-the-crowd-i-tested-it-on-the-one-stock-where-the-crowd-is-loudest-91135a89aa0b
+# Data:  2026-07-09 02:00
+# ─────────────────────────────────────
+
+############################
+# Strategy crowd_timer
+############################
+
+import numpy as np
+import pandas as pd
+
+
+def ind_crowd_timer_signals(
+    df: pd.DataFrame,
+    run_window: int = 20,
+    vol_baseline: int = 60,
+    z_threshold_scaled: int = 20,
+    quantile_window: int = 252,
+    run_pctl_scaled: int = 90,
+) -> tuple:
+    close = df['Close']
+    volume = df['Volume']
+
+    z_threshold = z_threshold_scaled / 10.0
+    run_pctl = run_pctl_scaled / 100.0
+
+    # N-day cumulative price run
+    price_run = close.pct_change(run_window)
+
+    # Volume z-score
+    vol_mean = volume.rolling(vol_baseline, min_periods=1).mean()
+    vol_std = volume.rolling(vol_baseline, min_periods=1).std(ddof=1)
+    vol_std_arr = vol_std.values
+    vol_mean_arr = vol_mean.values
+    volume_arr = volume.values
+    safe_std = np.where(vol_std_arr != 0, vol_std_arr, 1.0)
+    volz_arr = np.where(vol_std_arr != 0, (volume_arr - vol_mean_arr) / safe_std, 0.0)
+    vol_z = pd.Series(volz_arr, index=df.index)
+
+    # Rolling quantile thresholds (no look-ahead)
+    up_run_th = price_run.rolling(quantile_window, min_periods=max(1, quantile_window // 4)).quantile(run_pctl)
+    down_run_th = price_run.rolling(quantile_window, min_periods=max(1, quantile_window // 4)).quantile(1.0 - run_pctl)
+
+    # SignalTop: extended up run + volume spike -> expect pullback (contrarian: go short / exit long)
+    signal_top = (price_run > up_run_th) & (vol_z > z_threshold)
+
+    # SignalBottom: extended down run + volume spike -> expect bounce (contrarian: go long)
+    signal_bottom = (price_run < down_run_th) & (vol_z > z_threshold)
+
+    return signal_top, signal_bottom
+
+
+strategy_crowd_timer_param_ranges = {
+    'run_window_range': range(10, 31, 10),
+    'vol_baseline_range': range(40, 81, 20),
+    'z_threshold_scaled_range': range(15, 26, 5),
+    'run_pctl_scaled_range': range(80, 96, 5),
+}
+
+
+def strategy_crowd_timer(data: pd.DataFrame, params: dict, year: int | None = None):
+    run_window = params.get('run_window_range')
+    vol_baseline = params.get('vol_baseline_range')
+    z_threshold_scaled = params.get('z_threshold_scaled_range')
+    run_pctl_scaled = params.get('run_pctl_scaled_range')
+
+    df = data.copy()
+
+    signal_top, signal_bottom = ind_crowd_timer_signals(
+        df,
+        run_window=run_window,
+        vol_baseline=vol_baseline,
+        z_threshold_scaled=z_threshold_scaled,
+        quantile_window=252,
+        run_pctl_scaled=run_pctl_scaled,
+    )
+
+    df['SignalTop'] = signal_top
+    df['SignalBottom'] = signal_bottom
+
+    if year is not None:
+        df = df[df.index.year == int(year)]
+
+    # Entry: SignalBottom (contrarian long on capitulation)
+    entries = df['SignalBottom']
+
+    # Exit: SignalTop fires (crowd-top / extended up run with volume spike)
+    exits = df['SignalTop']
+
+    shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    shifted_exits = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    return shifted_entries, shifted_exits
+
+
+# ─────────────────────────────────────
+# Fonte: A Massive Backtest on AMAT — and Why the Monte Carlo Simulation Made Me Pump the Brakes
+# URL:   https://medium.com/@Kryptera/a-massive-backtest-on-amat-and-why-the-monte-carlo-simulation-made-me-pump-the-brakes-1d110e268ca7
+# Data:  2026-07-14 02:00
+# ─────────────────────────────────────
+
+############################
+# Strategy cci_ema_amat
+############################
+
+import pandas as pd
+import numpy as np
+
+
+def ind_cci_ema_amat_cci(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    tp = (df['High'] + df['Low'] + df['Close']) / 3.0
+    sma_tp = tp.rolling(period, min_periods=1).mean()
+    mean_dev = tp.rolling(period, min_periods=1).apply(
+        lambda x: np.mean(np.abs(x - np.mean(x))), raw=True
+    )
+    safe_den = np.where(mean_dev != 0, mean_dev.values, 1.0)
+    cci_vals = np.where(
+        mean_dev.values != 0,
+        (tp.values - sma_tp.values) / (0.015 * safe_den),
+        0.0
+    )
+    return pd.Series(cci_vals, index=df.index)
+
+
+def ind_cci_ema_amat_ema(df: pd.DataFrame, period: int = 20) -> pd.Series:
+    ema = df['Close'].ewm(span=period, adjust=False, min_periods=1).mean()
+    return ema
+
+
+strategy_cci_ema_amat_param_ranges = {
+    'cci_period_range' : range(11, 25, 4),
+    'cci_level_range'  : range(-10, 11, 10),
+    'ema_period_range' : range(16, 25, 4),
+}
+
+
+def strategy_cci_ema_amat(data: pd.DataFrame, params: dict, year: int | None = None):
+    cci_period = params.get('cci_period_range')
+    cci_level  = params.get('cci_level_range')
+    ema_period = params.get('ema_period_range')
+
+    df = data.copy()
+
+    cci = ind_cci_ema_amat_cci(df, period=cci_period)
+    ema = ind_cci_ema_amat_ema(df, period=ema_period)
+
+    df['CCI'] = cci
+    df['EMA'] = ema
+
+    if year is not None:
+        df = df[df.index.year == int(year)]
+
+    # Entry: CCI drops below the threshold level
+    entries = df['CCI'] < cci_level
+
+    # Exit: Open crosses below EMA after having been above it the prior bar
+    open_below_ema       = df['Open'] < df['EMA']
+    open_above_ema_prev  = df['Open'].shift(1) > df['EMA'].shift(1)
+    exits = open_below_ema & open_above_ema_prev
+
+    shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    shifted_exits   = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    return shifted_entries, shifted_exits
+
+
+# ─────────────────────────────────────
+# Fonte: The Santa Claus Rally
+# URL:   https://medium.com/@Kryptera/the-santa-claus-rally-53e47ecb9e17
+# Data:  2026-07-15 02:00
+# ─────────────────────────────────────
+
+############################
+# Strategy santa_claus_rally
+############################
+
+import pandas as pd
+import numpy as np
+
+
+def ind_santa_claus_rally_signals(df: pd.DataFrame, dec_day_threshold: int = 14, exit_trading_day: int = 3):
+    """
+    Entry: Buy at close of first Friday after December <dec_day_threshold>
+    Exit:  Sell at close of the <exit_trading_day>-th trading day of the new year
+    """
+    index = df.index
+    n = len(index)
+    
+    entries = pd.Series(False, index=index)
+    exits = pd.Series(False, index=index)
+    
+    years = index.year.unique()
+    
+    for year in years:
+        # Find first Friday after December dec_day_threshold of this year
+        target = pd.Timestamp(year=int(year), month=12, day=dec_day_threshold)
+        candidate = target + pd.Timedelta(days=1)
+        # Find next Friday (dayofweek == 4)
+        while candidate.dayofweek != 4:
+            candidate += pd.Timedelta(days=1)
+        
+        # Find the closest trading day on or after candidate
+        future_mask = index >= candidate
+        if future_mask.any():
+            entry_date = index[future_mask][0]
+            # Only mark entry if it's still in December
+            if entry_date.month == 12:
+                entries.loc[entry_date] = True
+        
+        # Find exit: 3rd trading day of next year
+        next_year = int(year) + 1
+        next_year_mask = index.year == next_year
+        if next_year_mask.any():
+            next_year_days = index[next_year_mask]
+            if len(next_year_days) >= exit_trading_day:
+                exit_date = next_year_days[exit_trading_day - 1]
+                exits.loc[exit_date] = True
+    
+    return entries, exits
+
+
+strategy_santa_claus_rally_param_ranges = {
+    'dec_day_threshold_range': range(8, 18, 3),   # [8, 11, 14, 17] -> 4 values
+    'exit_trading_day_range' : range(2, 5, 1),    # [2, 3, 4] -> 3 values
+}
+# Total: 4 * 3 = 12 combinations
+
+
+def strategy_santa_claus_rally(data: pd.DataFrame, params: dict, year: int | None = None):
+    dec_day_threshold = params.get('dec_day_threshold_range')
+    exit_trading_day  = params.get('exit_trading_day_range')
+
+    df = data.copy()
+
+    # Calculate signals on entire df (signals depend on calendar, need full history)
+    entries, exits = ind_santa_claus_rally_signals(
+        df,
+        dec_day_threshold=dec_day_threshold,
+        exit_trading_day=exit_trading_day
+    )
+
+    df['entries'] = entries
+    df['exits']   = exits
+
+    if year is not None:
+        df = df[df.index.year == int(year)]
+
+    entries_filtered = df['entries']
+    exits_filtered   = df['exits']
+
+    shifted_entries = entries_filtered.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    shifted_exits   = exits_filtered.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+
+    return shifted_entries, shifted_exits
