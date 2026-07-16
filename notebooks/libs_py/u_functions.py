@@ -1702,6 +1702,7 @@ def generate_portfolio_performance(pf, portfolio_title: str, pf_b_h=None,
 
 def generate_rotational_portfolio_performance(pf=None, portfolio_title: str = None, sel_tickers=None,
                                                results_pipeline=None, engine=None,
+                                               variant_scelta: str = "RISK_ON_OFF",
                                                benchmark: str = 'SPY', benchmark_data=None,
                                                plot_start_date=None, plot_end_date=None,
                                                method=None, freq=None, alpha_analysis: bool = True,
@@ -1710,13 +1711,23 @@ def generate_rotational_portfolio_performance(pf=None, portfolio_title: str = No
     # Risoluzione pf/sel_tickers da results_pipeline+engine, se forniti (alternativa
     # a passare pf/sel_tickers gia' estratti a mano dal chiamante).
     if results_pipeline is not None and engine is not None:
+        _valid_variants = {"RISK_ON_OFF", "BASE"}
+        if variant_scelta not in _valid_variants:
+            raise ValueError(
+                f"variant_scelta='{variant_scelta}' non valido. "
+                f"Valori possibili: {sorted(_valid_variants)}"
+            )
         if engine not in results_pipeline:
             raise ValueError(
                 f"engine {engine!r} non presente in results_pipeline "
                 f"(disponibili: {list(results_pipeline.keys())})"
             )
-        pf = results_pipeline[engine]["pf_rot"]
-        sel_tickers = results_pipeline[engine]["sel_tickers"]
+        if variant_scelta == "BASE":
+            pf = results_pipeline[engine]["pf_rot_base"]
+            sel_tickers = results_pipeline[engine]["sel_tickers_base"]
+        else:
+            pf = results_pipeline[engine]["pf_rot"]
+            sel_tickers = results_pipeline[engine]["sel_tickers"]
     elif pf is None:
         raise ValueError(
             "generate_rotational_portfolio_performance: fornire pf esplicito "
