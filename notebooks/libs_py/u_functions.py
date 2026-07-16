@@ -57,6 +57,7 @@ _TSLAB_L_PANEL_EXPORTS_DIR       = f"{_TSLAB_OUTPUTS_DIR}/l_panel_exports"
 def get_analysis_output_dir(
     category: str,
     ptf_name: str = None,
+    profilo: str = None,
     timestamp: str = None,
 ) -> "Path":
     """
@@ -66,12 +67,14 @@ def get_analysis_output_dir(
     ----------
     category  : "r_analysis" | "k_analysis" | "l_analysis"
     ptf_name  : sottocartella portafoglio (solo R-portfolio la usa)
+    profilo   : profilo di rischio, es. "satellite" | "core" (solo R-portfolio)
+                Path: <category>/<ptf_name>/<profilo>/<timestamp>/
     timestamp : stringa timestamp; se None genera datetime.now() con
                 formato "%Y%m%d_%H%M%S"
 
     Returns
     -------
-    pathlib.Path — <TSLAB_OUTPUTS_DIR>/<category>[/<ptf_name>]/<timestamp>
+    pathlib.Path — <TSLAB_OUTPUTS_DIR>/<category>[/<ptf_name>][/<profilo>]/<timestamp>
     """
     from pathlib import Path
     from datetime import datetime
@@ -83,40 +86,33 @@ def get_analysis_output_dir(
     base = Path(_TSLAB_OUTPUTS_DIR) / category
     if ptf_name:
         base = base / ptf_name
+    if profilo:
+        base = base / profilo
     return base / timestamp
 
 
-
-def get_analysis_output_dir(
-    category: str,
-    ptf_name: str = None,
-    timestamp: str = None,
-) -> "Path":
+def update_latest_symlink(run_dir) -> bool:
     """
-    Calcola il path di output canonico per un'analisi CLI o notebook.
+    Aggiorna il symlink `latest` nella directory padre di run_dir,
+    puntando a run_dir (relativo), solo se almeno un CSV esiste in run_dir.
 
-    Parameters
-    ----------
-    category  : "r_analysis" | "k_analysis" | "l_analysis"
-    ptf_name  : sottocartella portafoglio (solo R-portfolio la usa)
-    timestamp : stringa timestamp; se None genera datetime.now() con
-                formato "%Y%m%d_%H%M%S"
-
-    Returns
-    -------
-    pathlib.Path — <TSLAB_OUTPUTS_DIR>/<category>[/<ptf_name>]/<timestamp>
+    Ritorna True se il symlink è stato aggiornato, False altrimenti.
     """
     from pathlib import Path
-    from datetime import datetime
-    _valid = ("r_analysis", "k_analysis", "l_analysis")
-    if category not in _valid:
-        raise ValueError(f"get_analysis_output_dir: category deve essere uno di {_valid}, ricevuto '{category}'")
-    if timestamp is None:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    base = Path(_TSLAB_OUTPUTS_DIR) / category
-    if ptf_name:
-        base = base / ptf_name
-    return base / timestamp
+    run_dir = Path(run_dir)
+    if not list(run_dir.glob("*.csv")):
+        return False
+    parent = run_dir.parent
+    symlink = parent / "latest"
+    target = run_dir.name
+    try:
+        if symlink.is_symlink() or symlink.exists():
+            symlink.unlink()
+        symlink.symlink_to(target)
+        return True
+    except OSError as e:
+        print(f"[WARN] update_latest_symlink: impossibile aggiornare symlink: {e}")
+        return False
 
 
 vbt_plot_width = 1100

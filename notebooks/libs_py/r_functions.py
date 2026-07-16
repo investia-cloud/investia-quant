@@ -16,6 +16,7 @@ from u_functions import (
     my_display, Emoji, BOLD, RESET, DIM, compare_selection_columns,
     build_company_df_with_cache, download_data, extract_tickers_from_wikipedia,
     generate_rotational_portfolio_performance, now, send_email_report, send_portfolio_performance,
+    _TSLAB_OUTPUTS_DIR,
 )
 import yfinance as yf
 from datetime import datetime
@@ -1416,6 +1417,303 @@ def read_wfo_metadata(file_path: str) -> dict:
                 key, _, val = line.partition("=")
                 meta[key.strip()] = val.strip()
     return meta
+
+
+def save_wfo_portfolio_objects(
+    results_pipeline: dict,
+    output_dir,
+    ptf_name: str,
+    year: int,
+    profilo: str,
+    pipeline_constants: dict,
+) -> dict:
+    """
+    Salva i Portfolio object vectorbt e i DataFrame di selezione per ogni engine,
+    più un JSON con le costanti di pipeline, nella run directory.
+
+    Usa lo stesso meccanismo di k_strategies:
+      - vbt.Portfolio  →  .save()  (pickle nativo vectorbt)
+      - pd.DataFrame   →  pd.to_pickle()
+
+    Nomi file per engine E in output_dir/:
+      {ptf}_{year}_{E}_pf_rot.pkl
+      {ptf}_{year}_{E}_pf_rot_base.pkl
+      {ptf}_{year}_{E}_pf_benchmark.pkl
+      {ptf}_{year}_{E}_pf_benchmark_base.pkl
+      {ptf}_{year}_{E}_sel_tickers.pkl
+      {ptf}_{year}_{E}_sel_tickers_base.pkl
+    File condiviso (una sola volta):
+      {ptf}_{year}_run_metadata.json
+
+    Parameters
+    ----------
+    results_pipeline : dict[engine, dict]
+        Output del loop run_wfo_pipeline (chiavi: pf_rot, pf_rot_base,
+        pf_benchmark, pf_benchmark_base, sel_tickers, sel_tickers_base).
+    output_dir : path-like
+        Directory della run corrente (già esistente).
+    ptf_name : str
+        Nome portafoglio (usato nel prefisso file).
+    year : int
+        Anno WFO (usato nel prefisso file).
+    profilo : str
+        Profilo di rischio ("satellite" | "core"); salvato nei metadati.
+    pipeline_constants : dict
+        Costanti di pipeline da salvare nel JSON per il resume:
+        ratio, metric, force_next_year_params, autoreduce,
+        risk_on_off, pipeline_start_date.
+
+    Returns
+    -------
+    dict con i path salvati (chiave engine → dict path).
+    """
+    import pickle
+    import json
+    from pathlib import Path
+    from datetime import datetime
+
+    out = Path(output_dir)
+    _ptf_key = ptf_name.replace(' ', '_').lower()
+    prefix = f"{_ptf_key}_{year}"
+    saved = {}
+
+    for engine, rp in results_pipeline.items():
+        if rp is None:
+            continue
+        eng_key = engine.lower()
+        engine_paths = {}
+
+        _PF_OBJECTS = {
+            "pf_rot":           rp.get("pf_rot"),
+            "pf_rot_base":      rp.get("pf_rot_base"),
+            "pf_benchmark":     rp.get("pf_benchmark"),
+            "pf_benchmark_base": rp.get("pf_benchmark_base"),
+        }
+        _DF_OBJECTS = {
+            "sel_tickers":      rp.get("sel_tickers"),
+            "sel_tickers_base": rp.get("sel_tickers_base"),
+        }
+
+        for key, pf in _PF_OBJECTS.items():
+            if pf is None:
+                engine_paths[key] = None
+                continue
+            fpath = str(out / f"{prefix}_{eng_key}_{key}.pkl")
+            try:
+                pf.save(fpath)
+                engine_paths[key] = fpath
+            except Exception as e:
+                print(f"[WARN] save_wfo_portfolio_objects: impossibile salvare {key} ({engine}): {e}")
+                engine_paths[key] = None
+
+        for key, df in _DF_OBJECTS.items():
+            if df is None:
+                engine_paths[key] = None
+                continue
+            fpath = str(out / f"{prefix}_{eng_key}_{key}.pkl")
+            try:
+                pd.to_pickle(df, fpath)
+                engine_paths[key] = fpath
+            except Exception as e:
+                print(f"[WARN] save_wfo_portfolio_objects: impossibile salvare {key} ({engine}): {e}")
+                engine_paths[key] = None
+
+        saved[engine] = engine_paths
+
+        sizes = [
+            os.path.getsize(p) / 1024 / 1024
+            for p in engine_paths.values() if p and os.path.exists(p)
+        ]
+        total_mb = sum(sizes)
+        print(f"[save_wfo_portfolio_objects] {engine}: {total_mb:.1f} MB totali in {len(sizes)} file")
+        if total_mb > 50:
+            print(
+                f"[WARN] {engine}: dimensione pickle supera 50 MB ({total_mb:.1f} MB). "
+                "Valuta se ridurre l'universo o usare un formato più compatto."
+            )
+
+    # JSON metadati condivisi
+    meta_path = str(out / f"{prefix}_run_metadata.json")
+    meta = {
+        "ptf_name":              ptf_name,
+        "profilo":               profilo,
+        "year":                  year,
+        "engines":               list(results_pipeline.keys()),
+        "ratio":                 pipeline_constants.get("ratio"),
+        "metric":                pipeline_constants.get("metric"),
+        "force_next_year_params": pipeline_constants.get("force_next_year_params"),
+        "autoreduce":            pipeline_constants.get("autoreduce"),
+        "risk_on_off":           pipeline_constants.get("risk_on_off"),
+        "pipeline_start_date":   str(pipeline_constants.get("pipeline_start_date")),
+        "created_at":            datetime.now().isoformat(timespec="seconds"),
+        "pickle_files":          saved,
+    }
+    try:
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2, default=str)
+        print(f"[save_wfo_portfolio_objects] Metadati salvati: {meta_path}")
+    except Exception as e:
+        print(f"[WARN] save_wfo_portfolio_objects: impossibile salvare metadati JSON: {e}")
+
+    return saved
+
+
+def load_wfo_results_for_resume(
+    ptf_name: str,
+    profilo: str,
+    run_dir=None,
+) -> dict:
+    """
+    Carica i risultati di una run WFO precedente per riprendere l'analisi
+    da §4a (compare_wfo_pipelines) senza rieseguire §1-§3.
+
+    **Scope del resume — IMPORTANTE**
+    Questa funzione copre ESCLUSIVAMENTE §4a (confronto WFO visuale e
+    tabella metriche). Per proseguire a §4b (run_ofc_mc_pipeline) sono
+    ancora necessari, forniti separatamente dall'utente:
+      - stocks_data          (prezzi adjusted per l'universo)
+      - benchmark_data       (prezzi adjusted del benchmark)
+      - benchmark_data_raw   (prezzi raw del benchmark)
+      - regime               (serie storica risk-on/off Momentum, non salvata)
+    Questi dati NON vengono caricati da questa funzione.
+
+    Parameters
+    ----------
+    ptf_name : str
+        Nome portafoglio (corrisponde a ptf_name usato durante il salvataggio).
+    profilo : str
+        Profilo di rischio ("satellite" | "core").
+    run_dir : path-like | None
+        Path esplicito della run directory. Se None, risolve automaticamente
+        <IQ_OUTPUTS_DIR>/r_analysis/<ptf_name>/<profilo>/latest/.
+
+    Returns
+    -------
+    dict con le chiavi:
+        "results_pipeline"      dict[engine, dict] con pf_rot, pf_rot_base,
+                                pf_benchmark, pf_benchmark_base, sel_tickers,
+                                sel_tickers_base, summary_df per ciascun engine.
+        "pipeline_start_date"   pd.Timestamp
+        "ratio"                 str (es. "3:1")
+        "metric"                str (es. "Sharpe Ratio")
+        "force_next_year_params" bool
+        "autoreduce"            bool
+        "risk_on_off"           bool
+        "run_dir"               Path della run caricata
+        "profilo"               str
+        "ptf_name"              str
+        "year"                  int
+    """
+    import json
+    import pickle
+    from pathlib import Path
+
+    _ptf_key = ptf_name.replace(' ', '_').lower()
+    outputs_dir = _TSLAB_OUTPUTS_DIR
+
+    if run_dir is None:
+        latest = Path(outputs_dir) / "r_analysis" / _ptf_key / profilo / "latest"
+        if not latest.exists():
+            raise FileNotFoundError(
+                f"Symlink 'latest' non trovato: {latest}\n"
+                f"Esegui almeno una volta la pipeline con profilo='{profilo}' "
+                f"per il portafoglio '{_ptf_key}'."
+            )
+        run_dir = latest.resolve()
+    else:
+        run_dir = Path(run_dir).resolve()
+
+    if not run_dir.is_dir():
+        raise FileNotFoundError(f"Run directory non trovata: {run_dir}")
+
+    prefix_candidates = [
+        p.name.split("_run_metadata.json")[0]
+        for p in run_dir.glob("*_run_metadata.json")
+    ]
+    if not prefix_candidates:
+        raise FileNotFoundError(
+            f"Nessun file *_run_metadata.json trovato in {run_dir}.\n"
+            "La run è stata generata con una versione precedente di save_wfo_portfolio_objects?"
+        )
+    prefix = prefix_candidates[0]
+
+    meta_path = run_dir / f"{prefix}_run_metadata.json"
+    with open(meta_path, "r", encoding="utf-8") as f:
+        meta = json.load(f)
+
+    engines = meta.get("engines", [])
+    year = meta.get("year")
+    results_pipeline = {}
+
+    for engine in engines:
+        eng_key = engine.lower()
+        rp = {}
+
+        _PF_KEYS = ("pf_rot", "pf_rot_base", "pf_benchmark", "pf_benchmark_base")
+        _DF_KEYS = ("sel_tickers", "sel_tickers_base")
+
+        for key in _PF_KEYS:
+            fpath = run_dir / f"{prefix}_{eng_key}_{key}.pkl"
+            if fpath.exists():
+                try:
+                    import vectorbt as vbt
+                    rp[key] = vbt.Portfolio.load(str(fpath))
+                except Exception as e:
+                    print(f"[WARN] load_wfo_results_for_resume: errore caricamento {key} ({engine}): {e}")
+                    rp[key] = None
+            else:
+                print(f"[WARN] load_wfo_results_for_resume: file non trovato: {fpath}")
+                rp[key] = None
+
+        for key in _DF_KEYS:
+            fpath = run_dir / f"{prefix}_{eng_key}_{key}.pkl"
+            if fpath.exists():
+                try:
+                    rp[key] = pd.read_pickle(str(fpath))
+                except Exception as e:
+                    print(f"[WARN] load_wfo_results_for_resume: errore caricamento {key} ({engine}): {e}")
+                    rp[key] = None
+            else:
+                print(f"[WARN] load_wfo_results_for_resume: file non trovato: {fpath}")
+                rp[key] = None
+
+        # summary_df dal CSV audit (audit trail leggibile)
+        csv_candidates = list(run_dir.glob(f"{prefix}_{eng_key}.csv"))
+        if csv_candidates:
+            try:
+                rp["summary_df"] = load_wfo_summary(str(csv_candidates[0]))
+            except Exception as e:
+                print(f"[WARN] load_wfo_results_for_resume: errore caricamento summary_df ({engine}): {e}")
+                rp["summary_df"] = None
+        else:
+            print(f"[WARN] load_wfo_results_for_resume: CSV audit non trovato per engine {engine} in {run_dir}")
+            rp["summary_df"] = None
+
+        results_pipeline[engine] = rp
+
+    pipeline_start_date_str = meta.get("pipeline_start_date")
+    pipeline_start_date = pd.Timestamp(pipeline_start_date_str) if pipeline_start_date_str else None
+
+    print(f"[load_wfo_results_for_resume] Caricato da: {run_dir}")
+    print(f"  PTF: {meta.get('ptf_name')}  |  Profilo: {meta.get('profilo')}  |  Anno: {year}")
+    print(f"  Engines: {engines}")
+    for eng, rp in results_pipeline.items():
+        n_ok = sum(1 for v in rp.values() if v is not None)
+        print(f"  {eng}: {n_ok}/{len(rp)} oggetti caricati")
+
+    return {
+        "results_pipeline":       results_pipeline,
+        "pipeline_start_date":    pipeline_start_date,
+        "ratio":                  meta.get("ratio"),
+        "metric":                 meta.get("metric"),
+        "force_next_year_params": meta.get("force_next_year_params"),
+        "autoreduce":             meta.get("autoreduce"),
+        "risk_on_off":            meta.get("risk_on_off"),
+        "run_dir":                run_dir,
+        "profilo":                meta.get("profilo"),
+        "ptf_name":               meta.get("ptf_name"),
+        "year":                   year,
+    }
 
 
 def apply_risk_off_overlay(
@@ -16402,7 +16700,8 @@ def run_r_portfolio_n_engine_analysis(
     results_pipeline = {}
     for engine in engines:
         grid = build_wfo_grid(engine=engine, profile=profile, asset_type=asset_type)
-        wfo_audit_path_base = str(output_dir / f"{portfolio_title}_{year}_{engine.lower()}")
+        _ptf_key = portfolio_title.replace(' ', '_').lower()
+        wfo_audit_path_base = str(output_dir / f"{_ptf_key}_{year}")
         results_pipeline[engine] = run_wfo_pipeline(
             stocks_data_raw     = stocks_data_raw,
             stocks_data         = stocks_data,
@@ -16430,6 +16729,25 @@ def run_r_portfolio_n_engine_analysis(
             wfo_audit_path_base = wfo_audit_path_base,
             benchmark_prices    = benchmark_data_raw,
         )
+
+    # 4b. Salvataggio Portfolio object + metadati per resume §7
+    from u_functions import update_latest_symlink
+    save_wfo_portfolio_objects(
+        results_pipeline  = results_pipeline,
+        output_dir        = output_dir,
+        ptf_name          = portfolio_title,
+        year              = year,
+        profilo           = profile,
+        pipeline_constants = dict(
+            ratio                  = ratio,
+            metric                 = metric,
+            force_next_year_params = False,
+            autoreduce             = True,
+            risk_on_off            = True,
+            pipeline_start_date    = pipeline_start_date,
+        ),
+    )
+    update_latest_symlink(output_dir)
 
     # 5. OFC + MC
     run_ofc_mc_pipeline(
@@ -18736,7 +19054,7 @@ def run_wfo_pipeline(
     results['summary_df'] = summary_df_final
 
     if wfo_audit_path_base is not None:
-        _audit_path = f"{wfo_audit_path_base}.std_raw_{engine.lower()}.csv"
+        _audit_path = f"{wfo_audit_path_base}_{engine.lower()}.csv"
         save_rotational_wfo_summary(
             summary_df=summary_df_final,
             start_date=start_date,

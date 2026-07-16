@@ -612,7 +612,7 @@ def r_analyze(ptf, universe, output_dir, profile, year, start_date, relazione_te
     # Risolvi output_dir
     if output_dir is None:
         _get_dir = ns.get("get_analysis_output_dir")
-        output_dir = str(_get_dir("r_analysis", ptf_name=ptf_name))
+        output_dir = str(_get_dir("r_analysis", ptf_name=ptf_name, profilo=profile))
 
     engines_to_run = [engine] if engine else ["Momentum", "Multifactor"]
 
