@@ -2,6 +2,7 @@
 *_SAVE.ipynb
 *_old.ipynb
 *.claude.ipynb
+!.claude/settings.json
 notebooks/libs/r_functions_1.ipynb
 
 # ── File HTML (output plots) ──────────────────────────────────────────────────
