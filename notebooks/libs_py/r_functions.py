@@ -17,6 +17,7 @@ from u_functions import (
     build_company_df_with_cache, download_data, extract_tickers_from_wikipedia,
     generate_rotational_portfolio_performance, now, send_email_report, send_portfolio_performance,
     _TSLAB_OUTPUTS_DIR,
+    fetch_data_adjusted_and_raw, fetch_series_adjusted_and_raw,
 )
 import yfinance as yf
 from datetime import datetime
@@ -16650,10 +16651,9 @@ def run_r_portfolio_n_engine_analysis(
         pd.to_datetime(start_date) - timedelta(days=lookback_buffer)
     ).strftime("%Y-%m-%d")
 
-    stocks_data, _ = fetch_data_and_companies(
+    stocks_data, stocks_data_raw, _ = fetch_data_adjusted_and_raw(
         tickers, download_start, end_date, normalize=False
     )
-    stocks_data_raw = download_data(tickers, download_start, end_date, auto_adjust=False)
     portfolio_cfg["stocks_data"] = stocks_data
     portfolio_cfg["init_cash"]   = init_cash
 
@@ -16668,9 +16668,9 @@ def run_r_portfolio_n_engine_analysis(
             auto_adjust=False,
         ).replace(0, np.nan).ffill()
     elif benchmark_title:
-        benchmark_data     = download_data(benchmark_title, stocks_data.index.min(), end_date)
-        benchmark_data_raw = download_data(benchmark_title, stocks_data.index.min(), end_date,
-                                           auto_adjust=False)
+        benchmark_data, benchmark_data_raw = fetch_series_adjusted_and_raw(
+            benchmark_title, stocks_data.index.min(), end_date
+        )
     else:
         benchmark_data = benchmark_data_raw = None
 
@@ -16916,10 +16916,9 @@ def run_r_portfolio_analysis(
         pd.to_datetime(start_date) - timedelta(days=lookback_buffer)
     ).strftime("%Y-%m-%d")
 
-    stocks_data, company_data = fetch_data_and_companies(
+    stocks_data, stocks_data_raw, company_data = fetch_data_adjusted_and_raw(
         tickers, download_start, end_date, normalize=False
     )
-    stocks_data_raw = download_data(tickers, download_start, end_date, auto_adjust=False)
     portfolio_cfg["stocks_data"] = stocks_data
     portfolio_cfg["init_cash"]   = init_cash
 
@@ -16930,8 +16929,9 @@ def run_r_portfolio_analysis(
                                  stocks_data.index.min(), stocks_data.index.max(),
                                  auto_adjust=False).replace(0, np.nan).ffill()
     elif benchmark_title:
-        benchmark_data     = download_data(benchmark_title, stocks_data.index.min(), end_date)
-        benchmark_data_raw = download_data(benchmark_title, stocks_data.index.min(), end_date, auto_adjust=False)
+        benchmark_data, benchmark_data_raw = fetch_series_adjusted_and_raw(
+            benchmark_title, stocks_data.index.min(), end_date
+        )
     else:
         benchmark_data = benchmark_data_raw = None
 
