@@ -342,9 +342,13 @@ def load_ohlcv(symbol: str, start: str = None, end: str = None,
                 df[col] = nav
             vol_col = ('Volume', tk)
             df[vol_col] = 0
-            # Rimuove l'artifact 'Adj Close' che yfinance aggiunge solo ai ticker falliti
             if ('Adj Close', tk) in df.columns:
-                df = df.drop(columns=[('Adj Close', tk)])
+                if not auto_adjust:
+                    # auto_adjust=False: 'Adj Close' è colonna legittima; per NAV = Close
+                    df[('Adj Close', tk)] = nav
+                else:
+                    # auto_adjust=True: 'Adj Close' è artifact di yfinance per ticker falliti
+                    df = df.drop(columns=[('Adj Close', tk)])
             print(f"[load_ohlcv] {tk}: dati non disponibili su yfinance, recuperati da cache locale "
                   f"({nav.notna().sum()} righe valide, {nav.first_valid_index().date()} → {nav.last_valid_index().date()}).")
     elif df.empty and len(symbols) == 1:
@@ -352,7 +356,10 @@ def load_ohlcv(symbol: str, start: str = None, end: str = None,
         tk = symbols[0]
         nav = _load_nav_from_cache(tk, _TSLAB_CACHE_DIR, start, end)
         if nav is not None:
-            df = pd.DataFrame({'Close': nav, 'Open': nav, 'High': nav, 'Low': nav, 'Volume': 0})
+            cols = {'Close': nav, 'Open': nav, 'High': nav, 'Low': nav, 'Volume': 0}
+            if not auto_adjust:
+                cols['Adj Close'] = nav
+            df = pd.DataFrame(cols)
             df.index.name = 'Date'
             print(f"[load_ohlcv] {tk}: dati non disponibili su yfinance, recuperati da cache locale "
                   f"({nav.notna().sum()} righe valide, {nav.first_valid_index().date()} → {nav.last_valid_index().date()}).")
@@ -538,6 +545,97 @@ def fetch_data_and_companies(tickers, start_date=None, end_date=None, show_progr
     if normalize:
         return stocks_data, company_data, common_start_date, common_end_date
     return stocks_data, company_data
+
+
+def fetch_data_adjusted_and_raw(
+    tickers,
+    start_date=None,
+    end_date=None,
+    show_progress: bool = False,
+    normalize: bool = False,
+    min_overlap_cols: int = 2,
+    verbose: bool = True,
+) -> tuple:
+    """Single yf.download (auto_adjust=False) → stocks_data (Adj Close) + stocks_data_raw (Close).
+
+    Sostituisce il pattern doppio:
+        stocks_data, _ = fetch_data_and_companies(tickers, ..., normalize=False)
+        stocks_data_raw = download_data(tickers, ..., auto_adjust=False)
+    con un singolo round-trip di rete.
+
+    Returns
+    -------
+    (stocks_data, stocks_data_raw, company_data)
+        stocks_data     : DataFrame Adj Close per ticker (equivalente a auto_adjust=True)
+        stocks_data_raw : DataFrame Close raw per ticker (equivalente a auto_adjust=False)
+        company_data    : output di build_company_df_with_cache
+    """
+    ohlcv = load_ohlcv(tickers, start=start_date, end=end_date,
+                       show_progress=show_progress, auto_adjust=False)
+
+    if isinstance(ohlcv.columns, pd.MultiIndex):
+        stocks_data     = ohlcv['Adj Close'].copy()
+        stocks_data_raw = ohlcv['Close'].copy()
+    else:
+        # singolo ticker o lista[1] → flat columns
+        stocks_data     = ohlcv[['Adj Close']].copy() if 'Adj Close' in ohlcv.columns else ohlcv[['Close']].copy()
+        stocks_data_raw = ohlcv[['Close']].copy()
+
+    if normalize and isinstance(stocks_data, pd.DataFrame):
+        df = stocks_data.sort_index()
+        first_valid = df.apply(lambda s: s.first_valid_index())
+        last_valid  = df.apply(lambda s: s.last_valid_index())
+        fully_nan = first_valid[first_valid.isna()].index.tolist()
+        if fully_nan:
+            if verbose: print(f"[Normalizzazione] Rimossi: {fully_nan}")
+            df = df.drop(columns=fully_nan)
+            if df.empty:
+                return df, stocks_data_raw, build_company_df_with_cache(tickers)
+            first_valid = df.apply(lambda s: s.first_valid_index())
+            last_valid  = df.apply(lambda s: s.last_valid_index())
+        keep_cols = df.columns.tolist(); changed = True
+        while changed and len(keep_cols) >= min_overlap_cols:
+            changed = False
+            fv = first_valid[keep_cols]; lv = last_valid[keep_cols]
+            if max(fv.dropna()) <= min(lv.dropna()): break
+            worst_fv = fv.idxmax(); worst_lv = lv.idxmin()
+            to_drop = worst_fv if fv[worst_fv] >= lv[worst_lv] else worst_lv
+            keep_cols.remove(to_drop); changed = True
+            if verbose: print(f"[Normalizzazione] Rimuovo '{to_drop}'. Rimaste: {len(keep_cols)}")
+        if len(keep_cols) >= min_overlap_cols:
+            fv = first_valid[keep_cols]; lv = last_valid[keep_cols]
+            common_start = max(fv.dropna()); common_end = min(lv.dropna())
+            df = df[keep_cols].loc[common_start:common_end]
+            if int(df.isna().sum().sum()) > 0: df = df.bfill().ffill()
+        else:
+            df = df.bfill().ffill()
+        stocks_data = df
+        # allinea raw allo stesso range/colonne di adjusted
+        stocks_data_raw = stocks_data_raw[
+            stocks_data_raw.columns.intersection(stocks_data.columns)
+        ].loc[stocks_data.index.min():stocks_data.index.max()]
+
+    company_data = build_company_df_with_cache(tickers)
+    return stocks_data, stocks_data_raw, company_data
+
+
+def fetch_series_adjusted_and_raw(ticker, start_date=None, end_date=None,
+                                   show_progress: bool = False):
+    """Single yf.download (auto_adjust=False) → (adjusted_series, raw_series) per un singolo ticker.
+
+    Sostituisce il pattern doppio per il benchmark:
+        benchmark_data     = download_data(ticker, start, end)
+        benchmark_data_raw = download_data(ticker, start, end, auto_adjust=False)
+    """
+    ohlcv = load_ohlcv(ticker, start=start_date, end=end_date,
+                       show_progress=show_progress, auto_adjust=False)
+    if isinstance(ohlcv.columns, pd.MultiIndex):
+        adjusted = ohlcv['Adj Close'].squeeze()
+        raw      = ohlcv['Close'].squeeze()
+    else:
+        adjusted = ohlcv['Adj Close'] if 'Adj Close' in ohlcv.columns else ohlcv['Close']
+        raw      = ohlcv['Close']
+    return adjusted, raw
 
 
 # ---------------------------------------------------------------------------
