@@ -321,16 +321,28 @@ def load_ohlcv(symbol: str, start: str = None, end: str = None,
         df.index = pd.to_datetime(df.index)
     # --- Cache fallback: fondi NAV non disponibili su yfinance ---
     symbols = list(symbol) if isinstance(symbol, (list, tuple)) else [symbol]
+    # Determina se un ticker va trattato come "failed" e tentato via cache locale.
+    # Né isna().all() (troppo stretta: manca il caso fondo con 1 valore live isolato)
+    # né isna().mean() > soglia (troppo larga: falsi positivi su IPO/quotazione recente,
+    # dove i NaN sono concentrati PRIMA del primo valore valido, non dopo).
+    # Soluzione: guarda isna().mean() SOLO dalla first_valid_index() in poi.
+    # Se quasi tutto è NaN anche dopo il primo valore → fondo/ISIN spazzatura → failed.
+    # Se quasi tutto è valido dopo il primo valore → storico corto legittimo → non failed.
+    _AFTER_FIRST_NAN_THRESHOLD = 0.1  # >10% NaN dopo first_valid → failed
+
+    def _is_close_failed(series: "pd.Series") -> bool:
+        fvi = series.first_valid_index()
+        if fvi is None:
+            return True  # nessun dato valido
+        after_first = series.loc[fvi:]
+        return after_first.isna().mean() >= _AFTER_FIRST_NAN_THRESHOLD
+
     if isinstance(df.columns, pd.MultiIndex):
         # Batch 2+ ticker → MultiIndex (Price, Ticker)
         existing_tickers = set(df.columns.get_level_values(1).unique())
-        # caso (a): presente ma Close tutto NaN; caso (b): assente dal MultiIndex
         failed = [tk for tk in symbols
-          if tk not in existing_tickers
-          or (('Close', tk) in df.columns and df[('Close', tk)].isna().mean() > 0.5)]
-        # failed = [tk for tk in symbols
-        #           if tk not in existing_tickers
-        #           or (('Close', tk) in df.columns and df[('Close', tk)].isna().all())]
+                  if tk not in existing_tickers
+                  or (('Close', tk) in df.columns and _is_close_failed(df[('Close', tk)]))]
         for tk in failed:
             nav = _load_nav_from_cache(tk, _TSLAB_CACHE_DIR, start, end)
             if nav is None:
