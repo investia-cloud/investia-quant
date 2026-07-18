@@ -282,16 +282,83 @@ def find_duplicate_function_defs_multi(patterns, prefix=None, top_level_only=Tru
 # ---------------------------------------------------------------------------
 # Download / Financial Data
 # ---------------------------------------------------------------------------
+def _load_nav_from_cache(ticker: str, cache_dir: str,
+                          start=None, end=None) -> "pd.Series | None":
+    """Cerca in cache_dir qualunque *.csv il cui nome contenga ticker (case-insensitive)."""
+    import glob as _glob, re as _re
+    all_csv = _glob.glob(os.path.join(cache_dir, "*.csv"))
+    tk_lower = ticker.lower()
+    matches = [p for p in all_csv if tk_lower in os.path.basename(p).lower()]
+    if not matches:
+        return None
+    def _sort_key(p):
+        # Preferisce data ISO nel nome; fallback a mtime
+        m = _re.search(r'(\d{4}-\d{2}-\d{2})', os.path.basename(p))
+        return m.group(1) if m else f"mtime:{os.path.getmtime(p):.6f}"
+    best = max(matches, key=_sort_key)
+    try:
+        nav_df = pd.read_csv(best, sep=';', decimal=',')
+        nav_df['Data'] = pd.to_datetime(nav_df['Data'], format='%d/%m/%Y')
+        nav_series = nav_df.set_index('Data')['NAV'].astype(float).sort_index()
+        if start:
+            nav_series = nav_series[nav_series.index >= pd.Timestamp(start)]
+        if end:
+            nav_series = nav_series[nav_series.index < pd.Timestamp(end)]
+        return nav_series if not nav_series.empty else None
+    except Exception:
+        return None
+
 def load_ohlcv(symbol: str, start: str = None, end: str = None,
                show_progress: bool = False, auto_adjust: bool = True,
                multi_level_index: bool = False, interval: str = "1d") -> pd.DataFrame:
-    """Scarica dati OHLCV da yfinance con indice DatetimeIndex."""
+    """Scarica dati OHLCV da yfinance con indice DatetimeIndex.
+    Fallback su CSV locale per simboli non su yfinance (es. fondi con NAV):
+    cerca {IQ_CACHE_DIR}/{symbol}-NAV_History-*.csv e usa il NAV come OHLC.
+    """
     df = yf.download(symbol, start=start, end=end, multi_level_index=multi_level_index,
                      auto_adjust=auto_adjust, progress=show_progress, interval=interval)
     if not isinstance(df.index, pd.DatetimeIndex):
         df.index = pd.to_datetime(df.index)
+    # --- Cache fallback: fondi NAV non disponibili su yfinance ---
+    symbols = list(symbol) if isinstance(symbol, (list, tuple)) else [symbol]
+    if isinstance(df.columns, pd.MultiIndex):
+        # Batch 2+ ticker → MultiIndex (Price, Ticker)
+        existing_tickers = set(df.columns.get_level_values(1).unique())
+        # caso (a): presente ma Close tutto NaN; caso (b): assente dal MultiIndex
+        failed = [tk for tk in symbols
+          if tk not in existing_tickers
+          or (('Close', tk) in df.columns and df[('Close', tk)].isna().mean() > 0.5)]
+        # failed = [tk for tk in symbols
+        #           if tk not in existing_tickers
+        #           or (('Close', tk) in df.columns and df[('Close', tk)].isna().all())]
+        for tk in failed:
+            nav = _load_nav_from_cache(tk, _TSLAB_CACHE_DIR, start, end)
+            if nav is None:
+                print(f"[load_ohlcv] {tk}: nessun dato su yfinance né in cache locale — colonna rimarrà vuota/NaN.")
+                continue
+            nav = nav.reindex(df.index, method='ffill')  # allinea; ffill per gap nel CSV NAV
+            for price in ('Close', 'Open', 'High', 'Low'):
+                col = (price, tk)
+                df[col] = nav
+            vol_col = ('Volume', tk)
+            df[vol_col] = 0
+            # Rimuove l'artifact 'Adj Close' che yfinance aggiunge solo ai ticker falliti
+            if ('Adj Close', tk) in df.columns:
+                df = df.drop(columns=[('Adj Close', tk)])
+            print(f"[load_ohlcv] {tk}: dati non disponibili su yfinance, recuperati da cache locale "
+                  f"({nav.notna().sum()} righe valide, {nav.first_valid_index().date()} → {nav.last_valid_index().date()}).")
+    elif df.empty and len(symbols) == 1:
+        # Stringa singola o lista con 1 elemento fallito → df vuoto, flat columns
+        tk = symbols[0]
+        nav = _load_nav_from_cache(tk, _TSLAB_CACHE_DIR, start, end)
+        if nav is not None:
+            df = pd.DataFrame({'Close': nav, 'Open': nav, 'High': nav, 'Low': nav, 'Volume': 0})
+            df.index.name = 'Date'
+            print(f"[load_ohlcv] {tk}: dati non disponibili su yfinance, recuperati da cache locale "
+                  f"({nav.notna().sum()} righe valide, {nav.first_valid_index().date()} → {nav.last_valid_index().date()}).")
+        else:
+            print(f"[load_ohlcv] {tk}: nessun dato su yfinance né in cache locale — DataFrame vuoto.")
     return df
-
 
 get_clean_financial_data = load_ohlcv
 
