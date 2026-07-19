@@ -14,7 +14,7 @@ import time
 from joblib import Parallel, delayed
 from u_functions import (
     my_display, Emoji, BOLD, RESET, DIM, compare_selection_columns,
-    build_company_df_with_cache, download_data, extract_tickers_from_wikipedia,
+    build_company_df_with_cache, download_data, load_ohlcv, extract_tickers_from_wikipedia,
     generate_rotational_portfolio_performance, now, send_email_report, send_portfolio_performance,
     _TSLAB_OUTPUTS_DIR,
     fetch_data_adjusted_and_raw, fetch_series_adjusted_and_raw,
@@ -3192,7 +3192,7 @@ def build_benchmark(benchmark_portfolio: dict, start_date="2018-01-01", end_date
     weights = pd.Series(benchmark_portfolio)
 
     # Scarica i dati da yfinance
-    data = yf.download(tickers, start=start_date, end=end_date,auto_adjust=auto_adjust)["Close"]
+    data = load_ohlcv(tickers, start=start_date, end=end_date, auto_adjust=auto_adjust)["Close"]
     data = data.dropna(how="all")  # rimuove righe completamente NaN
 
     # Normalizza ogni colonna a 1 all'inizio
@@ -13590,8 +13590,11 @@ def generate_relazione_investitore_report(
     from datetime import date as _date
 
     portfolio_title = portfolio["Title"]
-    benchmark_title = portfolio["benchmark_title"]
-
+    # benchmark_title = portfolio["benchmark_title"]
+    benchmark_title = portfolio.get("benchmark_title") or portfolio.get("benchmark")
+    if benchmark_title is None:
+        raise KeyError("portfolio deve contenere 'benchmark_title' o 'benchmark'")
+    
     _today_iso = _date.today().isoformat()
     _ptf_name  = portfolio_title.replace(' ', '_').lower()
     reports_dir = _Path_doc(reports_dir)
