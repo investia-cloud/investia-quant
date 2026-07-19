@@ -13,11 +13,34 @@ sandbox_aapl_msft_tsla = {
 }
 
 sandbox_xx = {
-    'IE00B5BMR087': 0.75,
-    'IE00BYXYYM63': 0.25
+    "Title": "Test fondi",
+    "tickers": {
+        'LU0034353002': 1.00, # DWS Floating Rate Notes LC https://funds.dws.com/it-it/comparti-fondi-obbligazionari/lu0034353002-dws-floating-rate-notes-lc/
+        # 'IE00BYXYYM63': 0.01  # IE00BYXYYM63  iShares US Aggregate Bond UCITS ETF (Acc) 
+    },
+    "benchmark": "VAGF.MI"
+}
+sandbox_dws_lc = {
+    "Title": "DWS Floating Rate Notes LC",
+    "tickers": {
+        'LU0034353002': 1.00, # DWS Floating Rate Notes LC https://funds.dws.com/it-it/comparti-fondi-obbligazionari/lu0034353002-dws-floating-rate-notes-lc/
+    },
+    "benchmark": "VAGF.MI"
 }
 
-# ═══════════════════════════════════════
+sandbox_proposed_100k  = {
+    "Title": "Portafoglio Multi-Fondo",
+    "tickers": {
+        "IE00BH04FZ00": 0.10,  # Vanguard EUR Corporate 1-3 Year Bond UCITS ETF
+        "LU0034353002": 0.20,  # DWS Floating Rate Notes LC
+        "LU1190417599": 0.20,  # Amundi Smart Overnight Return UCITS ETF
+        "IE00BK5BQV03": 0.20,  # Vanguard FTSE Developed World UCITS ETF
+        "LU2963696674": 0.30,  # DWS Invest StepIn Akkumula LC
+    },
+    "benchmark": "VAGF.MI"  # da confermare — benchmark non presente nell'immagine
+}
+
+
 # EQUITY — portafogli azionari concentrati/tematici
 # ═══════════════════════════════════════
 equity_robohuman = {

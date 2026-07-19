@@ -13,8 +13,7 @@ import yfinance as yf
 from datetime import datetime
 from typing import Dict, Tuple, List, Optional
 from tqdm.auto import tqdm
-
-# Dipendenze: u_functions deve essere importato nel contesto chiamante
+from u_functions import load_ohlcv
 
 # --- costanti & mapping frequenze ---
 ANN = 252
@@ -41,9 +40,9 @@ def load_prices_fixed_universe(
     if end is None:
         end = datetime.today().strftime("%Y-%m-%d")
 
-    df = yf.download(
+    df = load_ohlcv(
         tickers, start=start, end=end,
-        progress=False, multi_level_index=False
+        multi_level_index=False
     )["Close"]
 
     if isinstance(df, pd.Series):

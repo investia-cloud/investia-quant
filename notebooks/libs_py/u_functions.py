@@ -307,7 +307,7 @@ def _load_nav_from_cache(ticker: str, cache_dir: str,
         return nav_series if not nav_series.empty else None
     except Exception:
         return None
-
+        
 def load_ohlcv(symbol: str, start: str = None, end: str = None,
                show_progress: bool = False, auto_adjust: bool = True,
                multi_level_index: bool = False, interval: str = "1d") -> pd.DataFrame:
@@ -321,24 +321,21 @@ def load_ohlcv(symbol: str, start: str = None, end: str = None,
         df.index = pd.to_datetime(df.index)
     # --- Cache fallback: fondi NAV non disponibili su yfinance ---
     symbols = list(symbol) if isinstance(symbol, (list, tuple)) else [symbol]
-    # Determina se un ticker va trattato come "failed" e tentato via cache locale.
-    # Né isna().all() (troppo stretta: manca il caso fondo con 1 valore live isolato)
-    # né isna().mean() > soglia (troppo larga: falsi positivi su IPO/quotazione recente,
-    # dove i NaN sono concentrati PRIMA del primo valore valido, non dopo).
-    # Soluzione: guarda isna().mean() SOLO dalla first_valid_index() in poi.
-    # Se quasi tutto è NaN anche dopo il primo valore → fondo/ISIN spazzatura → failed.
-    # Se quasi tutto è valido dopo il primo valore → storico corto legittimo → non failed.
-    _AFTER_FIRST_NAN_THRESHOLD = 0.1  # >10% NaN dopo first_valid → failed
+    _AFTER_FIRST_NAN_THRESHOLD = 0.1
+    _MIN_VALID_OBS   = 10
+    _MIN_VALID_RATIO = 0.05
 
     def _is_close_failed(series: "pd.Series") -> bool:
         fvi = series.first_valid_index()
         if fvi is None:
-            return True  # nessun dato valido
+            return True
         after_first = series.loc[fvi:]
+        n_valid = after_first.notna().sum()
+        if n_valid < _MIN_VALID_OBS or n_valid / max(len(series), 1) < _MIN_VALID_RATIO:
+            return True
         return after_first.isna().mean() >= _AFTER_FIRST_NAN_THRESHOLD
 
     if isinstance(df.columns, pd.MultiIndex):
-        # Batch 2+ ticker → MultiIndex (Price, Ticker)
         existing_tickers = set(df.columns.get_level_values(1).unique())
         failed = [tk for tk in symbols
                   if tk not in existing_tickers
@@ -346,9 +343,14 @@ def load_ohlcv(symbol: str, start: str = None, end: str = None,
         for tk in failed:
             nav = _load_nav_from_cache(tk, _TSLAB_CACHE_DIR, start, end)
             if nav is None:
-                print(f"[load_ohlcv] {tk}: nessun dato su yfinance né in cache locale — colonna rimarrà vuota/NaN.")
+                _n_valid = df[('Close', tk)].notna().sum() if ('Close', tk) in df.columns else 0
+                if _n_valid > 0:
+                    print(f"[load_ohlcv] {tk}: cache non disponibile — mantengo i dati originali di yfinance "
+                          f"({_n_valid} righe valide su {len(df)}).")
+                else:
+                    print(f"[load_ohlcv] {tk}: nessun dato su yfinance né in cache locale — colonna rimarrà vuota/NaN.")
                 continue
-            nav = nav.reindex(df.index, method='ffill')  # allinea; ffill per gap nel CSV NAV
+            nav = nav.reindex(df.index, method='ffill')
             for price in ('Close', 'Open', 'High', 'Low'):
                 col = (price, tk)
                 df[col] = nav
@@ -356,36 +358,132 @@ def load_ohlcv(symbol: str, start: str = None, end: str = None,
             df[vol_col] = 0
             if ('Adj Close', tk) in df.columns:
                 if not auto_adjust:
-                    # auto_adjust=False: 'Adj Close' è colonna legittima; per NAV = Close
                     df[('Adj Close', tk)] = nav
                 else:
-                    # auto_adjust=True: 'Adj Close' è artifact di yfinance per ticker falliti
                     df = df.drop(columns=[('Adj Close', tk)])
             print(f"[load_ohlcv] {tk}: dati non disponibili su yfinance, recuperati da cache locale "
                   f"({nav.notna().sum()} righe valide, {nav.first_valid_index().date()} → {nav.last_valid_index().date()}).")
-    elif df.empty and len(symbols) == 1:
-        # Stringa singola o lista con 1 elemento fallito → df vuoto, flat columns
+    elif len(symbols) == 1:
         tk = symbols[0]
-        nav = _load_nav_from_cache(tk, _TSLAB_CACHE_DIR, start, end)
-        if nav is not None:
-            cols = {'Close': nav, 'Open': nav, 'High': nav, 'Low': nav, 'Volume': 0}
-            if not auto_adjust:
-                cols['Adj Close'] = nav
-            df = pd.DataFrame(cols)
-            df.index.name = 'Date'
-            print(f"[load_ohlcv] {tk}: dati non disponibili su yfinance, recuperati da cache locale "
-                  f"({nav.notna().sum()} righe valide, {nav.first_valid_index().date()} → {nav.last_valid_index().date()}).")
-        else:
-            print(f"[load_ohlcv] {tk}: nessun dato su yfinance né in cache locale — DataFrame vuoto.")
+        close_failed = df.empty or ('Close' not in df.columns) or _is_close_failed(df['Close'])
+        if close_failed:
+            nav = _load_nav_from_cache(tk, _TSLAB_CACHE_DIR, start, end)
+            if nav is not None:
+                cols = {'Close': nav, 'Open': nav, 'High': nav, 'Low': nav, 'Volume': 0}
+                if not auto_adjust:
+                    cols['Adj Close'] = nav
+                df = pd.DataFrame(cols)
+                df.index.name = 'Date'
+                print(f"[load_ohlcv] {tk}: dati non disponibili su yfinance, recuperati da cache locale "
+                      f"({nav.notna().sum()} righe valide, {nav.first_valid_index().date()} → {nav.last_valid_index().date()}).")
+            else:
+                _n_valid = df['Close'].notna().sum() if 'Close' in df.columns and not df.empty else 0
+                if _n_valid > 0:
+                    print(f"[load_ohlcv] {tk}: cache non disponibile — mantengo i dati originali di yfinance "
+                          f"({_n_valid} righe valide su {len(df)}).")
+                else:
+                    print(f"[load_ohlcv] {tk}: nessun dato su yfinance né in cache locale — DataFrame vuoto.")
     return df
+
+    
+# def load_ohlcv(symbol: str, start: str = None, end: str = None,
+#                show_progress: bool = False, auto_adjust: bool = True,
+#                multi_level_index: bool = False, interval: str = "1d") -> pd.DataFrame:
+#     """Scarica dati OHLCV da yfinance con indice DatetimeIndex.
+#     Fallback su CSV locale per simboli non su yfinance (es. fondi con NAV):
+#     cerca {IQ_CACHE_DIR}/{symbol}-NAV_History-*.csv e usa il NAV come OHLC.
+#     """
+#     df = yf.download(symbol, start=start, end=end, multi_level_index=multi_level_index,
+#                      auto_adjust=auto_adjust, progress=show_progress, interval=interval)
+#     if not isinstance(df.index, pd.DatetimeIndex):
+#         df.index = pd.to_datetime(df.index)
+#     # --- Cache fallback: fondi NAV non disponibili su yfinance ---
+#     symbols = list(symbol) if isinstance(symbol, (list, tuple)) else [symbol]
+#     # Determina se un ticker va trattato come "failed" e tentato via cache locale.
+#     # Tre casi distinti richiedono logica composita (nessuna soglia singola basta):
+#     #   1. isna().all() → troppo stretta: un fondo può avere 1 valore live isolato
+#     #      (yfinance restituisce il NAV corrente come unico punto) → non lo cattura.
+#     #   2. isna().mean() > soglia sull'intera serie → troppo larga: IPO/quotazione
+#     #      recente ha NaN concentrati PRIMA del primo valore, poi storico continuo;
+#     #      la soglia globale genera falsi positivi su questi titoli legittimi.
+#     #   3. isna().mean() sulla sola porzione da first_valid_index() in poi → risolve
+#     #      il caso 2, ma non il caso 1: se l'unico valore valido è nell'ultima riga,
+#     #      la porzione "da lì in poi" è 1 punto con isna().mean()=0 → "non failed"
+#     #      quando invece è esattamente il caso del fondo con valore isolato spurio.
+#     # Soluzione: (a) controlla isna().mean() DOPO first_valid come prima, PIÙ
+#     # (b) controlla che la porzione valida abbia dimensione minima (assoluta e relativa).
+#     # Solo se entrambi i criteri indicano "valido" → non failed.
+#     _AFTER_FIRST_NAN_THRESHOLD = 0.1   # >10% NaN dopo first_valid → failed
+#     _MIN_VALID_OBS   = 10              # <10 osservazioni valide dopo first_valid → failed
+#     _MIN_VALID_RATIO = 0.05            # <5% della serie totale → failed
+
+#     def _is_close_failed(series: "pd.Series") -> bool:
+#         fvi = series.first_valid_index()
+#         if fvi is None:
+#             return True
+#         after_first = series.loc[fvi:]
+#         n_valid = after_first.notna().sum()
+#         # troppo pochi punti validi in assoluto o in rapporto alla serie totale
+#         if n_valid < _MIN_VALID_OBS or n_valid / max(len(series), 1) < _MIN_VALID_RATIO:
+#             return True
+#         return after_first.isna().mean() >= _AFTER_FIRST_NAN_THRESHOLD
+
+#     if isinstance(df.columns, pd.MultiIndex):
+#         # Batch 2+ ticker → MultiIndex (Price, Ticker)
+#         existing_tickers = set(df.columns.get_level_values(1).unique())
+#         failed = [tk for tk in symbols
+#                   if tk not in existing_tickers
+#                   or (('Close', tk) in df.columns and _is_close_failed(df[('Close', tk)]))]
+#         for tk in failed:
+#             nav = _load_nav_from_cache(tk, _TSLAB_CACHE_DIR, start, end)
+#             if nav is None:
+#                 print(f"[load_ohlcv] {tk}: nessun dato su yfinance né in cache locale — colonna rimarrà vuota/NaN.")
+#                 continue
+#             nav = nav.reindex(df.index, method='ffill')  # allinea; ffill per gap nel CSV NAV
+#             for price in ('Close', 'Open', 'High', 'Low'):
+#                 col = (price, tk)
+#                 df[col] = nav
+#             vol_col = ('Volume', tk)
+#             df[vol_col] = 0
+#             if ('Adj Close', tk) in df.columns:
+#                 if not auto_adjust:
+#                     # auto_adjust=False: 'Adj Close' è colonna legittima; per NAV = Close
+#                     df[('Adj Close', tk)] = nav
+#                 else:
+#                     # auto_adjust=True: 'Adj Close' è artifact di yfinance per ticker falliti
+#                     df = df.drop(columns=[('Adj Close', tk)])
+#             print(f"[load_ohlcv] {tk}: dati non disponibili su yfinance, recuperati da cache locale "
+#                   f"({nav.notna().sum()} righe valide, {nav.first_valid_index().date()} → {nav.last_valid_index().date()}).")
+#     elif df.empty and len(symbols) == 1:
+#         # Stringa singola o lista con 1 elemento fallito → df vuoto, flat columns
+#         tk = symbols[0]
+#         nav = _load_nav_from_cache(tk, _TSLAB_CACHE_DIR, start, end)
+#         if nav is not None:
+#             cols = {'Close': nav, 'Open': nav, 'High': nav, 'Low': nav, 'Volume': 0}
+#             if not auto_adjust:
+#                 cols['Adj Close'] = nav
+#             df = pd.DataFrame(cols)
+#             df.index.name = 'Date'
+#             print(f"[load_ohlcv] {tk}: dati non disponibili su yfinance, recuperati da cache locale "
+#                   f"({nav.notna().sum()} righe valide, {nav.first_valid_index().date()} → {nav.last_valid_index().date()}).")
+#         else:
+#             print(f"[load_ohlcv] {tk}: nessun dato su yfinance né in cache locale — DataFrame vuoto.")
+#     return df
 
 get_clean_financial_data = load_ohlcv
 
 
+# def download_data(tickers, start_date=None, end_date=None, auto_adjust=True, show_progress=False):
+#     return load_ohlcv(tickers, start=start_date, end=end_date, auto_adjust=auto_adjust,
+#                       show_progress=show_progress).Close
+    
 def download_data(tickers, start_date=None, end_date=None, auto_adjust=True, show_progress=False):
-    return load_ohlcv(tickers, start=start_date, end=end_date, auto_adjust=auto_adjust,
-                      show_progress=show_progress).Close
-
+    close = load_ohlcv(tickers, start=start_date, end=end_date, auto_adjust=auto_adjust,
+                       show_progress=show_progress).Close
+    if isinstance(close, pd.Series):
+        tk = tickers if isinstance(tickers, str) else (tickers[0] if len(tickers) == 1 else tickers)
+        close = close.to_frame(name=tk)
+    return close
 
 def load_isin_overrides(path: str = None) -> dict:
     if path is None:
@@ -654,11 +752,25 @@ def fetch_series_adjusted_and_raw(ticker, start_date=None, end_date=None,
 # Performance / Statistics
 # ---------------------------------------------------------------------------
 def _normalize_series_idx(s: pd.Series) -> pd.Series:
+    # Con portfolio/benchmark a singolo asset, l'input può arrivare come
+    # DataFrame a una colonna invece che Series — normalizza qui, alla radice,
+    # così tutte le funzioni a valle (_pf_returns_series, resolve_benchmark_returns,
+    # _prices_to_returns_align, capm_alpha_beta, rolling_capm_alpha_beta, ecc.)
+    # ricevono sempre una vera Series senza bisogno di controlli sparsi.
+    if isinstance(s, pd.DataFrame):
+        s = s.iloc[:, 0]
     s = s.copy()
     if getattr(s.index, "tz", None) is not None:
         s.index = s.index.tz_localize(None)
     s.index = pd.to_datetime(s.index).normalize()
     return s[~s.index.duplicated(keep="last")].sort_index()
+    
+# def _normalize_series_idx(s: pd.Series) -> pd.Series:
+#     s = s.copy()
+#     if getattr(s.index, "tz", None) is not None:
+#         s.index = s.index.tz_localize(None)
+#     s.index = pd.to_datetime(s.index).normalize()
+#     return s[~s.index.duplicated(keep="last")].sort_index()
 
 
 def _pf_returns_series(pf) -> pd.Series:
@@ -712,9 +824,14 @@ def resolve_benchmark_returns(pf, benchmark_mode: str = "internal",
     meta["benchmark_source"] = "internal(pf.benchmark_returns)"
     return bm, meta
 
-
 def capm_alpha_beta(ret: pd.Series, bm: pd.Series, risk_free_rate: float = 0.02,
                     annualization: int = 252, min_obs: int = 30) -> dict:
+    # Normalizza a Series: con portfolio a singolo asset, ret può arrivare
+    # come DataFrame a una colonna invece che Series, rompendo pd.concat/corr a valle
+    if isinstance(ret, pd.DataFrame):
+        ret = ret.iloc[:, 0]
+    if isinstance(bm, pd.DataFrame):
+        bm = bm.iloc[:, 0]
     rf_daily = (1 + risk_free_rate) ** (1 / annualization) - 1
     df = pd.concat({"ret": ret, "bm": bm}, axis=1).dropna()
     if df.shape[0] < min_obs:
@@ -730,6 +847,24 @@ def capm_alpha_beta(ret: pd.Series, bm: pd.Series, risk_free_rate: float = 0.02,
             "p_alpha": float(model.pvalues["const"]),
             "te_ann": float(model.resid.std() * np.sqrt(annualization)),
             "corr": float(df["ret"].corr(df["bm"])), "n_obs": int(df.shape[0])}
+    
+# def capm_alpha_beta(ret: pd.Series, bm: pd.Series, risk_free_rate: float = 0.02,
+#                     annualization: int = 252, min_obs: int = 30) -> dict:
+#     rf_daily = (1 + risk_free_rate) ** (1 / annualization) - 1
+#     df = pd.concat({"ret": ret, "bm": bm}, axis=1).dropna()
+#     if df.shape[0] < min_obs:
+#         return {"alpha_daily": np.nan, "alpha_ann_pct": np.nan, "beta": np.nan,
+#                 "t_alpha": np.nan, "p_alpha": np.nan, "te_ann": np.nan,
+#                 "corr": np.nan, "n_obs": int(df.shape[0])}
+#     df["excess_ret"] = df["ret"] - rf_daily
+#     df["excess_bm"]  = df["bm"]  - rf_daily
+#     model = sm.OLS(df["excess_ret"], sm.add_constant(df["excess_bm"])).fit()
+#     alpha = float(model.params["const"]); beta = float(model.params["excess_bm"])
+#     return {"alpha_daily": alpha, "alpha_ann_pct": alpha * annualization * 100.0,
+#             "beta": beta, "t_alpha": float(model.tvalues["const"]),
+#             "p_alpha": float(model.pvalues["const"]),
+#             "te_ann": float(model.resid.std() * np.sqrt(annualization)),
+#             "corr": float(df["ret"].corr(df["bm"])), "n_obs": int(df.shape[0])}
 
 
 def rolling_capm_alpha_beta(ret: pd.Series, bm: pd.Series, window: int = 252,
@@ -744,7 +879,7 @@ def rolling_capm_alpha_beta(ret: pd.Series, bm: pd.Series, window: int = 252,
         sub = df.loc[idx[end - window:end]]
         if sub.shape[0] < min_periods: continue
         y = sub["ret"] - rf_daily; x = sub["bm"] - rf_daily
-        m = sm.OLS(y, sm.add_constant(x)).fit()
+        m = sm.OLS(y, sm.add_constant(x, has_constant='add')).fit()
         rows.append([idx[end-1], float(m.params["const"]) * annualization * 100.0,
                      float(m.params.iloc[1]), float(m.tvalues["const"]), float(m.pvalues["const"])])
     return (pd.DataFrame(rows, columns=["date", "alpha_ann_pct", "beta", "t_alpha", "p_alpha"])

@@ -10,7 +10,7 @@ import yfinance as yf
 from datetime import datetime
 from typing import Optional, Dict, List, Union, Any
 import plotly.graph_objects as go
-from u_functions import (build_and_plot_portfolio_contributions, download_data, generate_lazy_portfolio_performance, plot_cumulative_and_rolling_returns, plot_monthly_returns, plot_multiple_portfolios)
+from u_functions import (build_and_plot_portfolio_contributions, download_data, load_ohlcv, generate_lazy_portfolio_performance, plot_cumulative_and_rolling_returns, plot_monthly_returns, plot_multiple_portfolios)
 
 # Fallback sicuro per display(): usa quello di IPython in Jupyter,
 # altrimenti ripiega su print() quando il modulo è importato da script Python puro.
@@ -42,7 +42,7 @@ def optimize_portfolio(tickers, start_date, end_date, target_metric, goal='max',
         raise ValueError("'tickers' deve essere una lista di almeno due simboli.")
 
     print(f"\nScaricamento dati per {len(tickers)} asset...")
-    price_data = yf.download(tickers, start=start_date, end=end_date)['Close'].dropna()
+    price_data = load_ohlcv(tickers, start=start_date, end=end_date)['Close'].dropna()
     num_assets = len(tickers)
 
     print(f"Esecuzione Monte Carlo con {num_trials} simulazioni...\n")
@@ -107,7 +107,7 @@ def optimize_portfolio(tickers, start_date, end_date, target_metric, goal='max',
     }
     
 def run_bh_backtest(
-    weights_dict: dict,
+    portfolio: dict,
     start_date: str,
     end_date: str,
     init_cash: float = 10_000,
@@ -116,76 +116,92 @@ def run_bh_backtest(
 ) -> vbt.Portfolio:
     """
     Backtest Buy & Hold robusto con VectorBT, solo su dati completamente validi.
-
     - I dati sono pre-allineati per evitare NaN.
     - Il ribilanciamento avviene solo in date con dati completi.
     - Perfettamente confrontabile con Pandas.
-    """
+    portfolio: dict nel nuovo formato {"Title": str, "tickers": {ticker: peso}, "benchmark": str}
+               oppure nel vecchio formato flat {ticker: peso} (retrocompatibile).
 
+    Ritorna None (con stampa diagnostica) se lo storico disponibile è
+    insufficiente per un backtest affidabile — nessuna eccezione sollevata.
+    """
+    # Estrazione pesi: supporta sia il nuovo formato annidato sia il vecchio formato flat
+    if "tickers" in portfolio:
+        weights_dict = dict(portfolio["tickers"])  # copia per non mutare l'originale
+    else:
+        weights_dict = dict(portfolio)  # vecchio formato flat, copia per non mutare l'originale
     # Set Uppercase
     for k in list(weights_dict.keys()):
         weights_dict[k.upper()] = weights_dict.pop(k)
-
     # 1. Validazione pesi
     tickers = list(weights_dict.keys())
-
     weights = pd.Series(weights_dict, index=tickers, dtype=float)
-    
     if not np.isclose(weights.sum(), 1.0):
         raise ValueError("La somma dei pesi deve essere 1.")
 
-    # 2. Scarica i dati da yfinance
-    # data = yf.download(tickers, start=start_date, end=end_date, progress=False)
-    # # display(data)
-    # # price = data["Close"][tickers]
-    # price = data["Close"]
-    # price.columns.name = None
-    
-    price=download_data(tickers, start_date=start_date, end_date=end_date)
-    
-    # 3. Allinea: elimina ogni giorno con dati mancanti
-    price = price.dropna(how='any')
+    # 2. Scarica i dati (UN SOLO download, riusato per tutti i controlli sotto)
+    price = download_data(tickers, start_date=start_date, end_date=end_date)
+    if isinstance(price, pd.Series):
+        price = price.to_frame(name=tickers[0])
 
-    # display(price.head(),price.tail())
-    
-    if price.empty:
-        raise ValueError("Nessuna data con dati completi per tutti gli asset.")
+    # Guard 1: ticker completamente assenti (tutto NaN)
+    fully_missing = [t for t in tickers if t in price.columns and price[t].isna().all()]
+    if fully_missing:
+        print(
+            f"[run_bh_backtest] Ticker senza alcun dato disponibile (né yfinance né cache locale): "
+            f"{fully_missing}. Procurare CSV NAV in cache/ o rimuovere dal portfolio prima di procedere."
+        )
+        return None
+
+    # Copertura calcolata una sola volta, PRIMA del dropna, sullo stesso price già scaricato
+    coverage_before_align = price.notna().sum().sort_values()
+
+    # 3. Allinea: elimina ogni giorno con dati mancanti
+    price_aligned = price.dropna(how='any')
+
+    # Guard 2: nessuna data comune
+    if price_aligned.empty:
+        print("[run_bh_backtest] Nessuna data con dati completi per tutti gli asset. Skip.")
+        return None
+
+    # Guard 3: storico comune troppo corto per metriche affidabili (almeno ~5 anni)
+    MIN_COMMON_DAYS = 252 * 5
+    if len(price_aligned) < MIN_COMMON_DAYS:
+        worst_tickers = coverage_before_align[
+            coverage_before_align < coverage_before_align.max() * 0.5
+        ].to_dict()
+        print(
+            f"[run_bh_backtest] Storico insufficiente — skip.\n"
+            f"  Date comuni con dati completi: {len(price_aligned)} "
+            f"(minimo richiesto: {MIN_COMMON_DAYS}, ~5 anni)\n"
+            f"  Periodo risultante: {price_aligned.index.min()} → {price_aligned.index.max()}\n"
+            f"  Ticker con copertura scarsa rispetto agli altri: {worst_tickers}\n"
+            f"  Copertura completa: {coverage_before_align.to_dict()}\n"
+            f"  → Procurare storico più ampio (CSV NAV in cache/) per i ticker indicati, "
+            f"o restringere l'universo del portfolio."
+        )
+        return None
+
+    price = price_aligned
 
     # 4. Costruzione size: DataFrame con target percent
     size = pd.DataFrame(np.nan, index=price.index, columns=price.columns)
-
     # 5. Date di ribilanciamento
     if rebalance_freq is None:
         reb_dates = pd.DatetimeIndex([price.index[0]])
     else:
         rf = str(rebalance_freq).upper()
-    
         if rf in ["Y", "A", "YE"]:
-            # ultimo trading day di ogni anno (robusto)
             reb_dates = price.groupby(price.index.year).apply(lambda x: x.index[-1])
             reb_dates = pd.DatetimeIndex(reb_dates.values)
         else:
             periods = price.index.to_period(rebalance_freq)
             reb_dates = price.index[~periods.duplicated()]
-    
-        # assicura inclusione start
         if price.index[0] not in reb_dates:
             reb_dates = reb_dates.insert(0, price.index[0])
-    
-    # IMPORTANTISSIMO: garantisci che tutte le reb_dates siano nel calendario prezzi
-    reb_dates = reb_dates.intersection(price.index)  
-
-    # if rebalance_freq is None:
-    #     reb_dates = [price.index[0]]
-    # else:
-    #     periods = price.index.to_period(rebalance_freq)
-    #     reb_dates = price.index[~periods.duplicated()]
-    #     if price.index[0] not in reb_dates:
-    #         reb_dates = reb_dates.insert(0, price.index[0])
-
+    reb_dates = reb_dates.intersection(price.index)
     for d in reb_dates:
         size.loc[d] = weights
-
     # 6. Costruzione del portafoglio VectorBT
     pf = vbt.Portfolio.from_orders(
         close=price,
@@ -196,8 +212,100 @@ def run_bh_backtest(
         cash_sharing=True,
         freq='D'
     )
-
     return pf
+    
+# def run_bh_backtest(
+#     weights_dict: dict,
+#     start_date: str,
+#     end_date: str,
+#     init_cash: float = 10_000,
+#     fees: float = 0.001,
+#     rebalance_freq: str = None
+# ) -> vbt.Portfolio:
+#     """
+#     Backtest Buy & Hold robusto con VectorBT, solo su dati completamente validi.
+
+#     - I dati sono pre-allineati per evitare NaN.
+#     - Il ribilanciamento avviene solo in date con dati completi.
+#     - Perfettamente confrontabile con Pandas.
+#     """
+
+#     # Set Uppercase
+#     for k in list(weights_dict.keys()):
+#         weights_dict[k.upper()] = weights_dict.pop(k)
+
+#     # 1. Validazione pesi
+#     tickers = list(weights_dict.keys())
+
+#     weights = pd.Series(weights_dict, index=tickers, dtype=float)
+    
+#     if not np.isclose(weights.sum(), 1.0):
+#         raise ValueError("La somma dei pesi deve essere 1.")
+
+#     # 2. Scarica i dati da yfinance
+#     # data = yf.download(tickers, start=start_date, end=end_date, progress=False)
+#     # # display(data)
+#     # # price = data["Close"][tickers]
+#     # price = data["Close"]
+#     # price.columns.name = None
+    
+#     price=download_data(tickers, start_date=start_date, end_date=end_date)
+    
+#     # 3. Allinea: elimina ogni giorno con dati mancanti
+#     price = price.dropna(how='any')
+
+#     # display(price.head(),price.tail())
+    
+#     if price.empty:
+#         raise ValueError("Nessuna data con dati completi per tutti gli asset.")
+
+#     # 4. Costruzione size: DataFrame con target percent
+#     size = pd.DataFrame(np.nan, index=price.index, columns=price.columns)
+
+#     # 5. Date di ribilanciamento
+#     if rebalance_freq is None:
+#         reb_dates = pd.DatetimeIndex([price.index[0]])
+#     else:
+#         rf = str(rebalance_freq).upper()
+    
+#         if rf in ["Y", "A", "YE"]:
+#             # ultimo trading day di ogni anno (robusto)
+#             reb_dates = price.groupby(price.index.year).apply(lambda x: x.index[-1])
+#             reb_dates = pd.DatetimeIndex(reb_dates.values)
+#         else:
+#             periods = price.index.to_period(rebalance_freq)
+#             reb_dates = price.index[~periods.duplicated()]
+    
+#         # assicura inclusione start
+#         if price.index[0] not in reb_dates:
+#             reb_dates = reb_dates.insert(0, price.index[0])
+    
+#     # IMPORTANTISSIMO: garantisci che tutte le reb_dates siano nel calendario prezzi
+#     reb_dates = reb_dates.intersection(price.index)  
+
+#     # if rebalance_freq is None:
+#     #     reb_dates = [price.index[0]]
+#     # else:
+#     #     periods = price.index.to_period(rebalance_freq)
+#     #     reb_dates = price.index[~periods.duplicated()]
+#     #     if price.index[0] not in reb_dates:
+#     #         reb_dates = reb_dates.insert(0, price.index[0])
+
+#     for d in reb_dates:
+#         size.loc[d] = weights
+
+#     # 6. Costruzione del portafoglio VectorBT
+#     pf = vbt.Portfolio.from_orders(
+#         close=price,
+#         size=size,
+#         size_type='targetpercent',
+#         init_cash=init_cash,
+#         fees=fees,
+#         cash_sharing=True,
+#         freq='D'
+#     )
+
+#     return pf
 
 def compute_portfolio_returns_pandas(
     weights_dict: dict,
@@ -225,7 +333,7 @@ def compute_portfolio_returns_pandas(
         raise ValueError("I pesi devono sommare a 1.")
 
     # 1. Scarica i prezzi adjusted
-    data = yf.download(tickers, start=start_date, end=end_date, progress=False)
+    data = load_ohlcv(tickers, start=start_date, end=end_date)
     price = data["Close"]  # già adjusted in versioni recenti di yfinance
 
     # 2. Allinea: solo le date comuni a tutti gli asset
@@ -252,13 +360,22 @@ def efficient_frontier_pypfopt(
     show_plot: bool = True,
     interactive: bool = True,
     print_weights: bool = True,
-    my_weights=None,
+    weights=None,
     fig_width: int = 1200,
     fig_height: int = 600,
     compute_real_annual_return: bool = True,
     start_date=None,
     end_date=None,
 ) -> dict:
+    
+    if len(tickers) < 2:
+        print(
+            "[efficient_frontier_pypfopt] Analisi non applicabile con un solo ticker "
+            "— con un singolo asset non esiste una frontiera efficiente (nessuna "
+            "combinazione di pesi possibile). Skip. Per singolo titolo/fondo usa "
+            "generate_lazy_portfolio_performance."
+        )
+        return None, None
 
     # Calcola date di inizio e fine
     if end_date is None:
@@ -270,7 +387,9 @@ def efficient_frontier_pypfopt(
     else:
         start_date = pd.to_datetime(start_date).to_pydatetime()
 
-    price = yf.download(tickers, start=start_date, end=end_date)["Close"].dropna(how='any')
+    price = load_ohlcv(tickers, start=start_date, end=end_date)["Close"].dropna(how='any')
+    if isinstance(price, pd.Series):
+        price = price.to_frame(name=tickers[0])
     mu = expected_returns.mean_historical_return(price)
     S = risk_models.sample_cov(price)
 
@@ -312,16 +431,16 @@ def efficient_frontier_pypfopt(
         "max_return": {"weights": w_mr, "Volatility": vol_mr*100, "Return": ret_mr*100, "Sharpe": sharpe_mr}
     }
 
-    if my_weights is not None:
-        if isinstance(my_weights, dict):
-            w_user = np.array([round(my_weights.get(t, 0.0), 4) for t in tickers], dtype=float)
+    if weights is not None:
+        if isinstance(weights, dict):
+            w_user = np.array([round(weights.get(t, 0.0), 4) for t in tickers], dtype=float)
         else:
-            w_user = np.round(np.array(my_weights, dtype=float), 4)
+            w_user = np.round(np.array(weights, dtype=float), 4)
 
         if w_user.shape[0] != len(tickers):
-            raise ValueError("Lunghezza di my_weights non corrisponde al numero di tickers.")
+            raise ValueError("Lunghezza di weights non corrisponde al numero di tickers.")
         if not np.isclose(w_user.sum(), 1.0, rtol=1e-4):
-            raise ValueError("I pesi in my_weights devono sommare a 1 (tolleranza 1e-4).")
+            raise ValueError("I pesi in weights devono sommare a 1 (tolleranza 1e-4).")
 
         weights_dict = dict(zip(tickers, w_user))
 
@@ -458,7 +577,7 @@ def efficient_frontier_pypfopt_RECOVERY(
     end_date = datetime.today()
     start_date = datetime(end_date.year - years, 1, 1)
 
-    price = yf.download(tickers, start=start_date, end=end_date)["Close"].dropna(how='any')
+    price = load_ohlcv(tickers, start=start_date, end=end_date)["Close"].dropna(how='any')
     mu = expected_returns.mean_historical_return(price)
     S = risk_models.sample_cov(price)
 
@@ -929,7 +1048,7 @@ def build_and_plot_portfolio_contributions_pandas(
         raise ValueError("La somma dei pesi deve essere 1.")
 
     # 1. Scarica dati
-    data = yf.download(tickers, start=start_date, end=end_date, progress=False)
+    data = load_ohlcv(tickers, start=start_date, end=end_date)
     price = data["Close"][tickers].dropna(how='any')
 
     if price.empty:
@@ -1032,6 +1151,15 @@ def lazy_stability_weights(
         'cv_mean':      float
         'cv_threshold': float (default 0.5)
     """
+    if len(tickers) < 2:
+        print(
+            "[lazy_stability_weights] Analisi non applicabile con un solo ticker "
+            "— con un singolo asset non esiste una frontiera efficiente (nessuna "
+            "combinazione di pesi possibile). Skip. Per singolo titolo/fondo usa "
+            "generate_lazy_portfolio_performance."
+        )
+        return None
+
     _metric_cols = {'Return', 'Volatility', 'Sharpe',
                     'Real Return', 'Real Volatility', 'Real Sharpe'}
 
@@ -1120,8 +1248,6 @@ def lazy_stability_weights(
         'cv_mean':      cv_mean,
         'cv_threshold': cv_threshold,
     }
-
-
 def lazy_mc_block_b_rebalancing(
     portfolio: dict,
     start_date,
@@ -1136,41 +1262,31 @@ def lazy_mc_block_b_rebalancing(
 ) -> dict:
     """
     MC Block B — Skill test sul ribilanciamento.
-    Testa se la scelta della frequenza di ribilanciamento aggiunge
-    valore vs date di ribilanciamento randomizzate (jitter ±jitter_days).
-
-    Se best_freq is None (BH puro): confronta vs ribilanciamento annuale
-    randomizzato (verifica che BH non sia inferiore a qualsiasi rebalancing).
-
-    Returns dict:
-        'actual_sharpe':  float — Sharpe del PTF con best_freq
-        'actual_cagr':    float — CAGR del PTF con best_freq
-        'sim_sharpes':    np.ndarray — distribuzione Sharpe simulazioni
-        'sim_cagrs':      np.ndarray — distribuzione CAGR simulazioni
-        'p_value_sharpe': float — prob(sim_sharpe >= actual_sharpe)
-        'p_value_cagr':   float — prob(sim_cagr >= actual_cagr)
-        'skill':          bool — True se p_value_sharpe < 0.05
-        'n_simulations':  int
+    ...
+    portfolio: dict nel nuovo formato {"Title": str, "tickers": {ticker: peso}, "benchmark": str}
+               oppure nel vecchio formato flat {ticker: peso} (retrocompatibile).
     """
-    # NOTA: download_data non definita in mc_functions.py — fallback su yf.download
-    portfolio = {k.upper(): v for k, v in portfolio.items()}
-    tickers = list(portfolio.keys())
-    weights = pd.Series(portfolio, dtype=float)
+    # Estrazione pesi: supporta sia il nuovo formato annidato sia il vecchio formato flat
+    weights_dict = dict(portfolio["tickers"]) if "tickers" in portfolio else dict(portfolio)
+    weights_dict = {k.upper(): v for k, v in weights_dict.items()}
+    tickers = list(weights_dict.keys())
+    weights = pd.Series(weights_dict, dtype=float)
 
     # 1. Metriche PTF reale
+    # NOTA: passa il portfolio ORIGINALE (non weights_dict) — run_bh_backtest
+    # fa la propria estrazione "tickers"/flat internamente, stessa logica qui.
     pf_actual = run_bh_backtest(portfolio, start_date, end_date,
                                 init_cash, fees, best_freq)
     actual_sharpe = float(pf_actual.sharpe_ratio())
     actual_cagr   = _cagr_from_equity(pf_actual)
 
     # 2. Scarica prezzi una sola volta
-    price = yf.download(tickers, start=start_date, end=end_date,
-                        progress=False, multi_level_index=False)
+    price = load_ohlcv(tickers, start=start_date, end=end_date,
+                       multi_level_index=False)
     if 'Close' in price.columns.get_level_values(0) if isinstance(price.columns, pd.MultiIndex) else []:
         price = price['Close']
     elif 'Close' in price.columns:
         price = price[['Close'] if len(tickers) == 1 else tickers]
-    # Normalizza: se single-ticker yf restituisce Series, converti a DataFrame
     if isinstance(price, pd.Series):
         price = price.to_frame(name=tickers[0])
     price.columns = [c.upper() for c in price.columns]
@@ -1178,7 +1294,6 @@ def lazy_mc_block_b_rebalancing(
 
     if price.empty:
         raise ValueError("[lazy_mc_block_b_rebalancing] Nessun dato scaricato.")
-
     # 3. Date di ribilanciamento reali
     freq_for_sim = best_freq if best_freq is not None else 'Y'
     if best_freq is None:
@@ -1258,6 +1373,144 @@ def lazy_mc_block_b_rebalancing(
         'skill':          skill,
         'n_simulations':  len(sim_sharpes_arr),
     }
+
+
+# def lazy_mc_block_b_rebalancing(
+#     portfolio: dict,
+#     start_date,
+#     end_date,
+#     best_freq,
+#     n_simulations: int = 1000,
+#     jitter_days: int = 30,
+#     init_cash: float = 100_000,
+#     fees: float = 0.001,
+#     random_seed: int = 42,
+#     verbose: bool = False,
+# ) -> dict:
+#     """
+#     MC Block B — Skill test sul ribilanciamento.
+#     Testa se la scelta della frequenza di ribilanciamento aggiunge
+#     valore vs date di ribilanciamento randomizzate (jitter ±jitter_days).
+
+#     Se best_freq is None (BH puro): confronta vs ribilanciamento annuale
+#     randomizzato (verifica che BH non sia inferiore a qualsiasi rebalancing).
+
+#     Returns dict:
+#         'actual_sharpe':  float — Sharpe del PTF con best_freq
+#         'actual_cagr':    float — CAGR del PTF con best_freq
+#         'sim_sharpes':    np.ndarray — distribuzione Sharpe simulazioni
+#         'sim_cagrs':      np.ndarray — distribuzione CAGR simulazioni
+#         'p_value_sharpe': float — prob(sim_sharpe >= actual_sharpe)
+#         'p_value_cagr':   float — prob(sim_cagr >= actual_cagr)
+#         'skill':          bool — True se p_value_sharpe < 0.05
+#         'n_simulations':  int
+#     """
+#     # NOTA: download_data non definita in mc_functions.py — fallback su yf.download
+#     portfolio = {k.upper(): v for k, v in portfolio.items()}
+#     tickers = list(portfolio.keys())
+#     weights = pd.Series(portfolio, dtype=float)
+
+#     # 1. Metriche PTF reale
+#     pf_actual = run_bh_backtest(portfolio, start_date, end_date,
+#                                 init_cash, fees, best_freq)
+#     actual_sharpe = float(pf_actual.sharpe_ratio())
+#     actual_cagr   = _cagr_from_equity(pf_actual)
+
+#     # 2. Scarica prezzi una sola volta
+#     price = load_ohlcv(tickers, start=start_date, end=end_date,
+#                        multi_level_index=False)
+#     if 'Close' in price.columns.get_level_values(0) if isinstance(price.columns, pd.MultiIndex) else []:
+#         price = price['Close']
+#     elif 'Close' in price.columns:
+#         price = price[['Close'] if len(tickers) == 1 else tickers]
+#     # Normalizza: se single-ticker yf restituisce Series, converti a DataFrame
+#     if isinstance(price, pd.Series):
+#         price = price.to_frame(name=tickers[0])
+#     price.columns = [c.upper() for c in price.columns]
+#     price = price.dropna(how='any')
+
+#     if price.empty:
+#         raise ValueError("[lazy_mc_block_b_rebalancing] Nessun dato scaricato.")
+
+#     # 3. Date di ribilanciamento reali
+#     freq_for_sim = best_freq if best_freq is not None else 'Y'
+#     if best_freq is None:
+#         reb_dates_real = pd.DatetimeIndex([price.index[0]])
+#     else:
+#         rf = str(best_freq).upper()
+#         if rf in ['Y', 'A', 'YE']:
+#             reb_dates_real = price.groupby(price.index.year).apply(lambda x: x.index[-1])
+#             reb_dates_real = pd.DatetimeIndex(reb_dates_real.values)
+#         else:
+#             periods = price.index.to_period(best_freq)
+#             reb_dates_real = price.index[~periods.duplicated()]
+#         if price.index[0] not in reb_dates_real:
+#             reb_dates_real = reb_dates_real.insert(0, price.index[0])
+#         reb_dates_real = reb_dates_real.intersection(price.index)
+
+#     # 4. Loop simulazioni
+#     rng = np.random.default_rng(random_seed)
+#     sim_sharpes: list = []
+#     sim_cagrs:   list = []
+
+#     for _ in range(n_simulations):
+#         jitter = rng.integers(-jitter_days, jitter_days + 1,
+#                               size=len(reb_dates_real))
+#         reb_dates_sim = pd.DatetimeIndex([
+#             d + pd.Timedelta(days=int(j))
+#             for d, j in zip(reb_dates_real, jitter)
+#         ])
+#         reb_dates_sim = reb_dates_sim.intersection(price.index)
+#         if len(reb_dates_sim) == 0:
+#             continue
+
+#         size = pd.DataFrame(np.nan, index=price.index, columns=price.columns)
+#         for d in reb_dates_sim:
+#             size.loc[d] = weights
+
+#         try:
+#             pf_sim = vbt.Portfolio.from_orders(
+#                 close=price,
+#                 size=size,
+#                 size_type='targetpercent',
+#                 init_cash=init_cash,
+#                 fees=fees,
+#                 cash_sharing=True,
+#                 freq='D',
+#             )
+#             sim_sharpes.append(float(pf_sim.sharpe_ratio()))
+#             sim_cagrs.append(_cagr_from_equity(pf_sim))
+#         except Exception:
+#             continue
+
+#     # 5. P-values
+#     sim_sharpes_arr = np.array(sim_sharpes)
+#     sim_cagrs_arr   = np.array(sim_cagrs)
+#     p_value_sharpe  = float((sim_sharpes_arr >= actual_sharpe).mean()) if len(sim_sharpes_arr) else np.nan
+#     p_value_cagr    = float((sim_cagrs_arr   >= actual_cagr).mean())   if len(sim_cagrs_arr)   else np.nan
+#     skill           = bool(p_value_sharpe < 0.05) if not np.isnan(p_value_sharpe) else False
+
+#     # 6. Verbose
+#     if verbose:
+#         print("MC Block B — Rebalancing Skill Test")
+#         print(f"  PTF reale  : Sharpe={actual_sharpe:.3f}  CAGR={actual_cagr:.2%}")
+#         if len(sim_sharpes_arr):
+#             print(f"  Sim median : Sharpe={np.median(sim_sharpes_arr):.3f}"
+#                   f"  CAGR={np.median(sim_cagrs_arr):.2%}")
+#         print(f"  p-value Sharpe={p_value_sharpe:.3f}"
+#               f"  p-value CAGR={p_value_cagr:.3f}")
+#         print(f"  Skill: {'✅ SI (p<0.05)' if skill else '⚠️ NO (p>=0.05)'}")
+
+#     return {
+#         'actual_sharpe':  actual_sharpe,
+#         'actual_cagr':    actual_cagr,
+#         'sim_sharpes':    sim_sharpes_arr,
+#         'sim_cagrs':      sim_cagrs_arr,
+#         'p_value_sharpe': p_value_sharpe,
+#         'p_value_cagr':   p_value_cagr,
+#         'skill':          skill,
+#         'n_simulations':  len(sim_sharpes_arr),
+#     }
 
 
 def run_lazy_analysis(
