@@ -8,9 +8,9 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 from datetime import datetime
-from typing import Optional, Dict, List, Union, Any
+from typing import Optional, Dict, List, Union, Any, Tuple
 import plotly.graph_objects as go
-from u_functions import (build_and_plot_portfolio_contributions, download_data, load_ohlcv, generate_lazy_portfolio_performance, plot_cumulative_and_rolling_returns, plot_monthly_returns, plot_multiple_portfolios)
+from u_functions import (build_and_plot_portfolio_contributions, download_data, load_ohlcv, generate_lazy_portfolio_performance, plot_cumulative_and_rolling_returns, plot_monthly_returns, plot_multiple_portfolios, my_display)
 
 # Fallback sicuro per display(): usa quello di IPython in Jupyter,
 # altrimenti ripiega su print() quando il modulo è importato da script Python puro.
@@ -112,7 +112,8 @@ def run_bh_backtest(
     end_date: str,
     init_cash: float = 10_000,
     fees: float = 0.001,
-    rebalance_freq: str = None
+    rebalance_freq: str = None,
+    min_years: int = 5,
 ) -> vbt.Portfolio:
     """
     Backtest Buy & Hold robusto con VectorBT, solo su dati completamente validi.
@@ -121,6 +122,9 @@ def run_bh_backtest(
     - Perfettamente confrontabile con Pandas.
     portfolio: dict nel nuovo formato {"Title": str, "tickers": {ticker: peso}, "benchmark": str}
                oppure nel vecchio formato flat {ticker: peso} (retrocompatibile).
+    min_years: storico minimo comune richiesto (in anni) tra tutti i ticker
+               dopo l'allineamento. Default 5 — abbassare (es. min_years=1)
+               solo per confronti esplorativi rapidi, non per analisi finali.
 
     Ritorna None (con stampa diagnostica) se lo storico disponibile è
     insufficiente per un backtest affidabile — nessuna eccezione sollevata.
@@ -138,12 +142,10 @@ def run_bh_backtest(
     weights = pd.Series(weights_dict, index=tickers, dtype=float)
     if not np.isclose(weights.sum(), 1.0):
         raise ValueError("La somma dei pesi deve essere 1.")
-
     # 2. Scarica i dati (UN SOLO download, riusato per tutti i controlli sotto)
     price = download_data(tickers, start_date=start_date, end_date=end_date)
     if isinstance(price, pd.Series):
         price = price.to_frame(name=tickers[0])
-
     # Guard 1: ticker completamente assenti (tutto NaN)
     fully_missing = [t for t in tickers if t in price.columns and price[t].isna().all()]
     if fully_missing:
@@ -152,20 +154,16 @@ def run_bh_backtest(
             f"{fully_missing}. Procurare CSV NAV in cache/ o rimuovere dal portfolio prima di procedere."
         )
         return None
-
     # Copertura calcolata una sola volta, PRIMA del dropna, sullo stesso price già scaricato
     coverage_before_align = price.notna().sum().sort_values()
-
     # 3. Allinea: elimina ogni giorno con dati mancanti
     price_aligned = price.dropna(how='any')
-
     # Guard 2: nessuna data comune
     if price_aligned.empty:
         print("[run_bh_backtest] Nessuna data con dati completi per tutti gli asset. Skip.")
         return None
-
-    # Guard 3: storico comune troppo corto per metriche affidabili (almeno ~5 anni)
-    MIN_COMMON_DAYS = 252 * 5
+    # Guard 3: storico comune troppo corto per metriche affidabili
+    MIN_COMMON_DAYS = 252 * min_years
     if len(price_aligned) < MIN_COMMON_DAYS:
         worst_tickers = coverage_before_align[
             coverage_before_align < coverage_before_align.max() * 0.5
@@ -173,7 +171,7 @@ def run_bh_backtest(
         print(
             f"[run_bh_backtest] Storico insufficiente — skip.\n"
             f"  Date comuni con dati completi: {len(price_aligned)} "
-            f"(minimo richiesto: {MIN_COMMON_DAYS}, ~5 anni)\n"
+            f"(minimo richiesto: {MIN_COMMON_DAYS}, ~{min_years} anni)\n"
             f"  Periodo risultante: {price_aligned.index.min()} → {price_aligned.index.max()}\n"
             f"  Ticker con copertura scarsa rispetto agli altri: {worst_tickers}\n"
             f"  Copertura completa: {coverage_before_align.to_dict()}\n"
@@ -181,9 +179,7 @@ def run_bh_backtest(
             f"o restringere l'universo del portfolio."
         )
         return None
-
     price = price_aligned
-
     # 4. Costruzione size: DataFrame con target percent
     size = pd.DataFrame(np.nan, index=price.index, columns=price.columns)
     # 5. Date di ribilanciamento
@@ -213,6 +209,113 @@ def run_bh_backtest(
         freq='D'
     )
     return pf
+def compare_rebalance_frequencies(
+    portfolio: dict,
+    start_date: str,
+    end_date: str,
+    init_cash: float = 10_000,
+    fees: float = 0.001,
+    freqs: list = None,
+    min_years: int = 1,
+    selection_metric: str = 'Sharpe',
+    verbose: bool = True,
+) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
+    """
+    Confronta le performance di un portfolio Buy&Hold su diverse frequenze
+    di ribilanciamento, selezionando automaticamente quella con la metrica
+    migliore (default: Sharpe massimo).
+
+    Esegue run_bh_backtest per ogni frequenza in `freqs`. Se una frequenza
+    fallisce per storico insufficiente, l'esito è identico per tutte le
+    altre (l'allineamento dei dati non dipende dalla frequenza), quindi il
+    loop si interrompe subito invece di ripetere lo stesso fallimento N
+    volte.
+
+    Parameters
+    ----------
+    portfolio : dict
+        Formato annidato {"Title": str, "tickers": {ticker: peso}, "benchmark": str}
+        o formato flat {ticker: peso} (retrocompatibile) — vedi run_bh_backtest.
+    start_date, end_date : str
+        Range temporale del backtest.
+    init_cash : float
+        Capitale iniziale.
+    fees : float
+        Commissioni per operazione (frazione, es. 0.001 = 0.1%).
+    freqs : list, opzionale
+        Frequenze di ribilanciamento da confrontare. Default:
+        ['W', 'M', 'Q', 'Y', None] (None = Buy&Hold puro, nessun ribilanciamento).
+    min_years : int
+        Storico minimo comune richiesto (in anni), passato a run_bh_backtest.
+        Default 1 — più permissivo del default di run_bh_backtest (5), pensato
+        per confronti esplorativi rapidi tra frequenze; alzare per analisi
+        più rigorose.
+    selection_metric : str
+        Colonna di freq_df usata per selezionare la frequenza ottimale
+        (via idxmax). Default 'Sharpe'. Per metriche dove il minimo è
+        preferibile (es. 'MaxDD%'), gestire l'inversione fuori da questa
+        funzione o richiamarla con post-processing dedicato.
+    verbose : bool
+        Se True, stampa la tabella di confronto e la frequenza selezionata.
+
+    Returns
+    -------
+    (freq_df, best_freq) : tuple
+        freq_df : pd.DataFrame con colonne [Freq, Sharpe, CAGR%, TotalReturn%, MaxDD%],
+                  una riga per frequenza testata con successo. None se nessuna
+                  frequenza ha prodotto un risultato valido (storico insufficiente).
+        best_freq : str o None — la frequenza con la metrica selezionata migliore.
+                    None sia se selezionata è "BH" (nessun ribilanciamento) sia
+                    se non è stato possibile determinarla (storico insufficiente).
+                    Distinguere i due casi controllando se freq_df è None.
+
+    Note
+    ----
+    Non solleva eccezioni: se lo storico è insufficiente per ogni frequenza,
+    stampa un avviso (se verbose=True) e ritorna (None, None).
+    """
+    if freqs is None:
+        freqs = ['W', 'M', 'Q', 'Y', None]
+
+    rows = []
+    for freq in freqs:
+        pf = run_bh_backtest(portfolio, start_date, end_date,
+                             init_cash, fees, freq, min_years=min_years)
+        if pf is None:
+            break
+
+        eq = pf.value()
+        if isinstance(eq, pd.DataFrame):
+            eq = eq.iloc[:, 0]
+        eq = eq.dropna()
+
+        yrs = len(eq) / 252
+        cagr = (eq.iloc[-1] / eq.iloc[0]) ** (1 / yrs) - 1 if yrs > 0 else np.nan
+
+        rows.append({
+            'Freq'        : freq if freq is not None else 'BH',
+            'Sharpe'      : float(pf.sharpe_ratio()),
+            'CAGR%'       : round(cagr * 100, 2),
+            'TotalReturn%': round(float(pf.total_return()) * 100, 2),
+            'MaxDD%'      : round(abs(float(pf.max_drawdown())) * 100, 2),
+        })
+
+    if not rows:
+        if verbose:
+            print("⚠️  Impossibile procedere — storico insufficiente per questo portfolio (vedi dettagli sopra).")
+        return None, None
+
+    freq_df = pd.DataFrame(rows)
+    if verbose:
+        my_display(freq_df, title="Confronto frequenze di ribilanciamento")
+
+    best_label = freq_df.loc[freq_df[selection_metric].idxmax(), 'Freq']
+    best_freq  = None if best_label == 'BH' else best_label
+
+    if verbose:
+        print(f"\n✅ Frequenza ottimale ({selection_metric}): {best_label}")
+
+    return freq_df, best_freq
     
 # def run_bh_backtest(
 #     weights_dict: dict,

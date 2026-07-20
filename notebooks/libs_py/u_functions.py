@@ -47,6 +47,8 @@ _TSLAB_INPUNTS_DIR = os.environ.get("IQ_INPUTS_DIR",  "../../inputs/")
 _TSLAB_OUTPUTS_DIR = os.environ.get("IQ_OUTPUTS_DIR", "../../outputs")
 _TSLAB_CACHE_DIR   = os.environ.get("IQ_CACHE_DIR",   "../../cache")
 
+_FUND_NAV_DIR                     = os.environ.get("IQ_FUND_NAV_DIR",   "../../inputs/fund_nav")
+
 _TSLAB_RUNTIME_T_WFO_RESULTS_DIR = f"{_TSLAB_INPUNTS_DIR}/WFO_T_RUN_RESULTS"
 _TSLAB_RUNTIME_R_WFO_RESULTS_DIR = f"{_TSLAB_INPUNTS_DIR}/WFO_R_RUN_RESULTS"
 _TSLAB_DEV_T_WFO_RESULTS_DIR     = f"{_TSLAB_OUTPUTS_DIR}/WFO_T_DEV_RESULTS"
@@ -313,7 +315,7 @@ def load_ohlcv(symbol: str, start: str = None, end: str = None,
                multi_level_index: bool = False, interval: str = "1d") -> pd.DataFrame:
     """Scarica dati OHLCV da yfinance con indice DatetimeIndex.
     Fallback su CSV locale per simboli non su yfinance (es. fondi con NAV):
-    cerca {IQ_CACHE_DIR}/{symbol}-NAV_History-*.csv e usa il NAV come OHLC.
+    cerca {IQ_FUND_NAV_DIR}/{symbol}-NAV_History-*.csv e usa il NAV come OHLC.
     """
     df = yf.download(symbol, start=start, end=end, multi_level_index=multi_level_index,
                      auto_adjust=auto_adjust, progress=show_progress, interval=interval)
@@ -341,7 +343,7 @@ def load_ohlcv(symbol: str, start: str = None, end: str = None,
                   if tk not in existing_tickers
                   or (('Close', tk) in df.columns and _is_close_failed(df[('Close', tk)]))]
         for tk in failed:
-            nav = _load_nav_from_cache(tk, _TSLAB_CACHE_DIR, start, end)
+            nav = _load_nav_from_cache(tk, _FUND_NAV_DIR, start, end)
             if nav is None:
                 _n_valid = df[('Close', tk)].notna().sum() if ('Close', tk) in df.columns else 0
                 if _n_valid > 0:
@@ -367,7 +369,7 @@ def load_ohlcv(symbol: str, start: str = None, end: str = None,
         tk = symbols[0]
         close_failed = df.empty or ('Close' not in df.columns) or _is_close_failed(df['Close'])
         if close_failed:
-            nav = _load_nav_from_cache(tk, _TSLAB_CACHE_DIR, start, end)
+            nav = _load_nav_from_cache(tk, _FUND_NAV_DIR, start, end)
             if nav is not None:
                 cols = {'Close': nav, 'Open': nav, 'High': nav, 'Low': nav, 'Volume': 0}
                 if not auto_adjust:
@@ -435,7 +437,7 @@ def load_ohlcv(symbol: str, start: str = None, end: str = None,
 #                   if tk not in existing_tickers
 #                   or (('Close', tk) in df.columns and _is_close_failed(df[('Close', tk)]))]
 #         for tk in failed:
-#             nav = _load_nav_from_cache(tk, _TSLAB_CACHE_DIR, start, end)
+#             nav = _load_nav_from_cache(tk, _FUND_NAV_DIR, start, end)
 #             if nav is None:
 #                 print(f"[load_ohlcv] {tk}: nessun dato su yfinance né in cache locale — colonna rimarrà vuota/NaN.")
 #                 continue
@@ -457,7 +459,7 @@ def load_ohlcv(symbol: str, start: str = None, end: str = None,
 #     elif df.empty and len(symbols) == 1:
 #         # Stringa singola o lista con 1 elemento fallito → df vuoto, flat columns
 #         tk = symbols[0]
-#         nav = _load_nav_from_cache(tk, _TSLAB_CACHE_DIR, start, end)
+#         nav = _load_nav_from_cache(tk, _FUND_NAV_DIR, start, end)
 #         if nav is not None:
 #             cols = {'Close': nav, 'Open': nav, 'High': nav, 'Low': nav, 'Volume': 0}
 #             if not auto_adjust:

@@ -5047,3 +5047,81 @@ def strategy_santa_claus_rally(data: pd.DataFrame, params: dict, year: int | Non
     shifted_exits   = exits_filtered.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
 
     return shifted_entries, shifted_exits
+
+
+# ─────────────────────────────────────
+# Fonte: Same Indicator, 7 Strategies: What Happened When Kryptera Strategy Lab v2.0 Pick Its Own SMA Logic
+# URL:   https://medium.com/@Kryptera/same-indicator-7-strategies-what-happened-when-kryptera-strategy-lab-v2-0-pick-its-own-sma-logic-f6b8e193922b
+# Data:  2026-07-18 02:00
+# ─────────────────────────────────────
+
+############################
+# Strategy sma_state
+############################
+
+import pandas as pd
+import numpy as np
+
+
+def ind_sma_state_sma(df: pd.DataFrame, period: int = 20) -> pd.Series:
+    return df['Close'].rolling(period, min_periods=1).mean()
+
+
+def ind_sma_state_slope(sma: pd.Series) -> pd.Series:
+    return sma - sma.shift(1)
+
+
+def ind_sma_state_uptrend(sma: pd.Series, smooth: int = 3) -> pd.Series:
+    slope = sma - sma.shift(1)
+    smoothed = slope.rolling(smooth, min_periods=1).mean()
+    return smoothed
+
+
+def ind_sma_state_band(df: pd.DataFrame, sma: pd.Series, band_pct: float = 0.02):
+    upper = sma * (1.0 + band_pct)
+    lower = sma * (1.0 - band_pct)
+    return upper, lower
+
+
+strategy_sma_state_param_ranges = {
+    'sma_period_range'  : range(10, 31, 5),
+    'smooth_range'      : range(2, 8, 2),
+    'band_pct_range'    : range(1, 5, 1),
+}
+
+
+def strategy_sma_state(data: pd.DataFrame, params: dict, year: int | None = None):
+    sma_period  = params.get('sma_period_range')
+    smooth      = params.get('smooth_range')
+    band_pct    = params.get('band_pct_range') / 100.0
+
+    df = data.copy()
+
+    sma = ind_sma_state_sma(df, period=sma_period)
+    smoothed_slope = ind_sma_state_uptrend(sma, smooth=smooth)
+    upper, lower = ind_sma_state_band(df, sma, band_pct=band_pct)
+
+    df['SMA']            = sma
+    df['Smoothed_Slope'] = smoothed_slope
+    df['Band_Upper']     = upper
+    df['Band_Lower']     = lower
+
+    if year is not None:
+        df = df[df.index.year == int(year)]
+
+    # Strategy #6: Uptrend/Downtrend state
+    uptrend   = df['Smoothed_Slope'] > 0
+    downtrend = df['Smoothed_Slope'] < 0
+
+    # Strategy #7: Price vs SMA band
+    price_above_band = df['Close'] > df['Band_Upper']
+    price_below_band = df['Close'] < df['Band_Lower']
+
+    # Combine: enter long when uptrend state AND price breaks above band
+    # Exit long when downtrend state OR price falls below SMA
+    entries = uptrend & price_above_band
+    exits   = downtrend | (df['Close'] < df['SMA'])
+
+    shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    shifted_exits   = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    return shifted_entries, shifted_exits
