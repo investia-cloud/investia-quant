@@ -13268,21 +13268,25 @@ Regole non negoziabili:
 """
 
     user_prompt = (
-        f'Genera in Markdown la relazione investitore per\n'
-        f'"{portfolio_title}", benchmark {benchmark_title}.\n\n'
-        f"Dati — unica fonte di verita', non usare nient'altro:\n{payload_json}\n\n"
-        f'Struttura richiesta (SOLO testo di analisi — nessuna tabella Markdown):\n'
-        f'## Sintesi\n2-3 frasi: cosa ha fatto il portafoglio, in parole semplici.\n'
-        f'## Drawdown e Tempo di Recupero\n'
-        f'3-5 frasi su MaxDD, underwater duration attuale, tempi di recupero tipici.\n'
-        f'## Andamento del Vantaggio nel Tempo\n'
-        f'3-5 frasi su alpha storico vs recente, interpretato secondo ptf_type.\n'
-        f'## Relazione col Mercato di Riferimento\n'
-        f'2-4 frasi su beta/correlazione: quanto il PTF segue o si smarca dal benchmark.\n'
-        f"## Nota per l'Investitore\n"
-        f'2-3 frasi: per quale tipo di orizzonte/tolleranza al rischio questi numeri sono '
-        f'ragionevoli — SENZA consiglio esplicito, chiudendo con rimando al gestore.\n'
-    )
+            f'Genera in Markdown la relazione investitore per\n'
+            f'"{portfolio_title}", benchmark {benchmark_title}.\n\n'
+            f"Dati — unica fonte di verita', non usare nient'altro:\n{payload_json}\n\n"
+            f'Inizia DIRETTAMENTE con "## Sintesi" come prima riga del documento — '
+            f'NON aggiungere alcun titolo, intestazione, o riga introduttiva prima '
+            f'della prima sezione (titolo, benchmark e periodo sono gia\' gestiti '
+            f'separatamente nel documento finale, non ripeterli).\n\n'
+            f'Struttura richiesta (SOLO testo di analisi — nessuna tabella Markdown):\n'
+            f'## Sintesi\n2-3 frasi: cosa ha fatto il portafoglio, in parole semplici.\n'
+            f'## Drawdown e Tempo di Recupero\n'
+            f'3-5 frasi su MaxDD, underwater duration attuale, tempi di recupero tipici.\n'
+            f'## Andamento del Vantaggio nel Tempo\n'
+            f'3-5 frasi su alpha storico vs recente, interpretato secondo ptf_type.\n'
+            f'## Relazione col Mercato di Riferimento\n'
+            f'2-4 frasi su beta/correlazione: quanto il PTF segue o si smarca dal benchmark.\n'
+            f"## Nota per l'Investitore\n"
+            f'2-3 frasi: per quale tipo di orizzonte/tolleranza al rischio questi numeri sono '
+            f'ragionevoli — SENZA consiglio esplicito, chiudendo con rimando al gestore.\n'
+        )
 
     _max_attempts = 3  # tentativo iniziale + 2 retry
     _last_error = None
@@ -13356,7 +13360,79 @@ def _select_investor_figs(out: dict) -> dict:
             if needle.lower() in title_text.lower():
                 result[slug] = fig
     return result
+    
+def _build_portfolio_anagrafica_table(portfolio: dict, styles: dict):
+    """
+    Costruisce la tabella Anagrafica del portafoglio (ISIN/Ticker, Nome,
+    Peso) per la Relazione Investitore, usando reportlab.platypus.Table.
 
+    Recupera il nome descrittivo di ciascun asset da company_cache.csv
+    (via build_company_df_with_cache) quando disponibile; per gli asset
+    non coperti (es. fondi con NAV non risolvibili da yfinance) mostra
+    "Nome non disponibile" senza bloccare la generazione del report.
+
+    Parameters
+    ----------
+    portfolio : dict
+        Formato annidato {"Title", "tickers": {ticker: peso}, ...} o
+        formato flat {ticker: peso} (retrocompatibile, stesso supporto
+        di run_bh_backtest). Pesi uguali (equipesati, come in
+        r_portfolios) o diversi (come in l_portfolios) — la tabella
+        funziona identicamente in entrambi i casi.
+
+    Returns
+    -------
+    list — elementi Platypus (Paragraph titolo + Table + Spacer),
+    pronti per essere aggiunti a `story`.
+    """
+    from reportlab.platypus import Table, TableStyle, Paragraph, Spacer
+    from reportlab.lib import colors as rl_colors
+    from reportlab.lib.units import mm
+
+    weights_dict = dict(portfolio["tickers"]) if "tickers" in portfolio else dict(portfolio)
+    tickers = list(weights_dict.keys())
+
+    try:
+        company_df = build_company_df_with_cache(tickers)
+    except Exception as e:
+        print(f"[_build_portfolio_anagrafica_table] WARNING: impossibile "
+              f"recuperare anagrafica asset: {e}")
+        company_df = pd.DataFrame(columns=["Company"])
+
+    rows = [["ISIN / Ticker", "Denominazione", "Peso"]]
+    for tk in tickers:
+        name = "Nome non disponibile"
+        if tk in company_df.index:
+            _name = company_df.loc[tk, "Company"]
+            if pd.notna(_name) and str(_name).strip():
+                name = str(_name)
+        weight = weights_dict[tk]
+        rows.append([tk, name, f"{weight * 100:.1f}%"])
+
+    C_NAVY = rl_colors.HexColor(_RL_NAVY)
+    C_NAVY_LT = rl_colors.HexColor(_RL_NAVY_LT)
+    C_GRAY_BD = rl_colors.HexColor(_RL_GRAY_BD)
+
+    table = Table(rows, colWidths=[35 * mm, styles['content_w'] - 35 * mm - 20 * mm, 20 * mm])
+    table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), C_NAVY),
+        ('TEXTCOLOR', (0, 0), (-1, 0), rl_colors.white),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 9),
+        ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+        ('ALIGN', (2, 0), (2, -1), 'RIGHT'),
+        ('GRID', (0, 0), (-1, -1), 0.5, C_GRAY_BD),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [rl_colors.white, rl_colors.HexColor('#F5F7FA')]),
+        ('TOPPADDING', (0, 0), (-1, -1), 4),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        ('LEFTPADDING', (0, 0), (-1, -1), 6),
+    ]))
+
+    return [
+        Paragraph("Composizione del Portafoglio", styles['section']),
+        table,
+        Spacer(1, 4 * mm),
+    ]
 
 def generate_relazione_investitore_pdf(
     *,
@@ -13365,6 +13441,7 @@ def generate_relazione_investitore_pdf(
     analysis_md: str,
     out: dict,
     output_path,
+    portfolio: dict | None = None,
     gen_date: str | None = None,
     include_figs: bool = True,
     figs_dir=None,
@@ -13513,10 +13590,15 @@ def generate_relazione_investitore_pdf(
     story = []
     story.append(Spacer(1, 6 * mm))
     story.append(Paragraph(f"Relazione per l'Investitore · {portfolio_title}", st_title))
+    
+    _periodo = out["stats_df"]["Valore"].get("Periodo", "")
     story.append(Paragraph(
+        f"Benchmark {benchmark_title} · Periodo {_periodo} · Generato il {gen_date}"
+        if _periodo else
         f"Benchmark {benchmark_title} · Generato il {gen_date}",
         st_subtitle,
     ))
+
     story.append(HRFlowable(width='100%', thickness=0.75, color=C_NAVY_LT))
     story.append(Spacer(1, 4 * mm))
 
@@ -13536,9 +13618,18 @@ def generate_relazione_investitore_pdf(
         'body':      st_body,
         'content_w': CONTENT_W,
     }
-    story.extend(_md_to_flowables(analysis_md, styles=_ri_stys))
 
-    # ── Grafici chiave (in coda al testo) ──────────────────────────────────
+    if portfolio is not None:
+        story.extend(_build_portfolio_anagrafica_table(portfolio, _ri_stys))
+
+    # Strip defensivo: se il modello ha generato un'intestazione prima della
+    # prima sezione richiesta (## Sintesi), rimuovila — titolo/periodo sono
+    # già gestiti separatamente nel documento (vedi story sopra).
+    _first_section_idx = analysis_md.find("## Sintesi")
+    if _first_section_idx > 0:
+        analysis_md = analysis_md[_first_section_idx:]
+
+    story.extend(_md_to_flowables(analysis_md, styles=_ri_stys))    # ── Grafici chiave (in coda al testo) ──────────────────────────────────
     if _fig_paths:
         story.append(Spacer(1, 3 * mm))
         story.append(Paragraph("Grafici di supporto", st_section))
@@ -13570,7 +13661,6 @@ def generate_relazione_investitore_report(
     generate_relazione_investitore_pdf (rendering), salvando il PDF in
     reports_dir. Stampa i path generati, stesso pattern di
     generate_final_report.
-
     Parameters
     ----------
     portfolio : dict
@@ -13580,7 +13670,6 @@ def generate_relazione_investitore_report(
         NON passare questi valori separatamente per evitare disallineamenti
         tra portfolio e i suoi metadati (bug gia' verificatosi: thesis di
         un PTF applicata per errore a un PTF diverso).
-
     Returns
     -------
     dict | None
@@ -13588,39 +13677,35 @@ def generate_relazione_investitore_report(
         Altrimenti {"pdf_path": Path, "analysis_md": str}.
     """
     from datetime import date as _date
-
     portfolio_title = portfolio["Title"]
     # benchmark_title = portfolio["benchmark_title"]
     benchmark_title = portfolio.get("benchmark_title") or portfolio.get("benchmark")
     if benchmark_title is None:
         raise KeyError("portfolio deve contenere 'benchmark_title' o 'benchmark'")
-    
+
     _today_iso = _date.today().isoformat()
     _ptf_name  = portfolio_title.replace(' ', '_').lower()
     reports_dir = _Path_doc(reports_dir)
-
     _suffix = f"_{year}" if year else ""
     _suffix += f"_{profile}" if profile else ""
     _pdf_path = reports_dir / f"{_ptf_name}{_suffix}_Relazione_Investitore.pdf"
     _pdf_path.parent.mkdir(parents=True, exist_ok=True)
-
     _analysis_md = generate_relazione_investitore_llm(
         out=out,
         ptf_def=portfolio,
         portfolio_title=portfolio_title,
         benchmark_title=benchmark_title,
     )
-
     generate_relazione_investitore_pdf(
         portfolio_title=portfolio_title,
         benchmark_title=benchmark_title,
         analysis_md=_analysis_md,
         out=out,
         output_path=_pdf_path,
+        portfolio=portfolio,
         gen_date=_today_iso,
     )
     print(f"Relazione investitore PDF: {_pdf_path}")
-
 
 def _test_guardrail_numtokens() -> None:
     """
