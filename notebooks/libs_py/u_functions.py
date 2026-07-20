@@ -43,11 +43,15 @@ import statsmodels.api as sm
 # ---------------------------------------------------------------------------
 # Project paths
 # ---------------------------------------------------------------------------
-_TSLAB_INPUNTS_DIR = os.environ.get("IQ_INPUTS_DIR",  "../../inputs/")
-_TSLAB_OUTPUTS_DIR = os.environ.get("IQ_OUTPUTS_DIR", "../../outputs")
-_TSLAB_CACHE_DIR   = os.environ.get("IQ_CACHE_DIR",   "../../cache")
+# Anchored to __file__ so defaults resolve correctly regardless of CWD
+# (notebooks/dev/ sets CWD two levels deep; scripts run from project root don't).
+_PROJ_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 
-_FUND_NAV_DIR                     = os.environ.get("IQ_FUND_NAV_DIR",   "../../inputs/fund_nav")
+_TSLAB_INPUNTS_DIR = os.environ.get("IQ_INPUTS_DIR",    os.path.join(_PROJ_ROOT, "inputs"))
+_TSLAB_OUTPUTS_DIR = os.environ.get("IQ_OUTPUTS_DIR",   os.path.join(_PROJ_ROOT, "outputs"))
+_TSLAB_CACHE_DIR   = os.environ.get("IQ_CACHE_DIR",     os.path.join(_PROJ_ROOT, "cache"))
+
+_FUND_NAV_DIR      = os.environ.get("IQ_FUND_NAV_DIR",  os.path.join(_PROJ_ROOT, "inputs", "fund_nav"))
 
 _TSLAB_RUNTIME_T_WFO_RESULTS_DIR = f"{_TSLAB_INPUNTS_DIR}/WFO_T_RUN_RESULTS"
 _TSLAB_RUNTIME_R_WFO_RESULTS_DIR = f"{_TSLAB_INPUNTS_DIR}/WFO_R_RUN_RESULTS"
@@ -309,7 +313,51 @@ def _load_nav_from_cache(ticker: str, cache_dir: str,
         return nav_series if not nav_series.empty else None
     except Exception:
         return None
-        
+
+_PRICE_SPIKE_THRESHOLD = 0.40  # variazione giornaliera > 40% attiva ispezione outlier
+
+def _fix_close_outliers(series: "pd.Series", ticker: str) -> "pd.Series":
+    """Corregge outlier isolati (singolo giorno) nella serie Close per interpolazione.
+
+    Logica: opera sulle sole osservazioni non-NaN (i gap NaN non contano come "giorno adiacente").
+    Se il giorno i ha una variazione > SPIKE_THRESHOLD rispetto al precedente valido i-1,
+    E il giorno i+1 (valido) ritorna vicino a i-1 (variazione i-1→i+1 < SPIKE_THRESHOLD),
+    allora il giorno i è un outlier isolato → sostituito con media(i-1, i+1).
+    Altrimenti (nessun recupero) → warning senza modifica.
+    Dopo ogni correzione, il valore corrected viene usato come prev per il check successivo
+    (propagazione, evita falsi WARNING a cascata).
+    """
+    valid = series.dropna()
+    if len(valid) < 3:
+        return series
+    s = series.copy()
+    vals = list(valid.values)   # lista mutabile: le correzioni aggiornano prev in-place
+    idxs = list(valid.index)
+    n = len(vals)
+    for i in range(1, n - 1):
+        prev, curr, nxt = vals[i - 1], vals[i], vals[i + 1]
+        if prev == 0:
+            continue
+        change_in = (curr - prev) / prev
+        if abs(change_in) <= _PRICE_SPIKE_THRESHOLD:
+            continue
+        if abs((nxt - prev) / prev) < _PRICE_SPIKE_THRESHOLD:
+            corrected = (prev + nxt) / 2
+            vals[i] = corrected          # propaga per i check successivi
+            s.loc[idxs[i]] = corrected
+            print(
+                f"[price_sanity] {ticker} @ {idxs[i].date()}: outlier isolato corretto "
+                f"{curr:.4f} → {corrected:.4f} "
+                f"(Δ_in={change_in:+.1%}, prev={prev:.4f}, next={nxt:.4f})"
+            )
+        else:
+            print(
+                f"[price_sanity] WARNING {ticker} @ {idxs[i].date()}: variazione anomala "
+                f"{change_in:+.1%} NON recuperata (next={nxt:.4f} vs prev={prev:.4f}) "
+                f"— possibile evento reale (split/ridenominazione?). Non modificato."
+            )
+    return s
+
 def load_ohlcv(symbol: str, start: str = None, end: str = None,
                show_progress: bool = False, auto_adjust: bool = True,
                multi_level_index: bool = False, interval: str = "1d") -> pd.DataFrame:
@@ -385,6 +433,16 @@ def load_ohlcv(symbol: str, start: str = None, end: str = None,
                           f"({_n_valid} righe valide su {len(df)}).")
                 else:
                     print(f"[load_ohlcv] {tk}: nessun dato su yfinance né in cache locale — DataFrame vuoto.")
+    # --- Price sanity filter: corregge outlier isolati su Close ---
+    if isinstance(df.columns, pd.MultiIndex):
+        if 'Close' in df.columns.get_level_values(0):
+            for tk in symbols:
+                col = ('Close', tk)
+                if col in df.columns:
+                    df[col] = _fix_close_outliers(df[col], tk)
+    elif 'Close' in df.columns and not df.empty:
+        tk = symbols[0] if symbols else 'unknown'
+        df['Close'] = _fix_close_outliers(df['Close'], tk)
     return df
 
     
