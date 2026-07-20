@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import Optional, Dict, List, Union, Any, Tuple
 import plotly.graph_objects as go
 from u_functions import (build_and_plot_portfolio_contributions, download_data, load_ohlcv, generate_lazy_portfolio_performance, plot_cumulative_and_rolling_returns, plot_monthly_returns, plot_multiple_portfolios, my_display)
+from r_functions import mc_run_iid_bootstrap, mc_run_block_bootstrap
 
 # Fallback sicuro per display(): usa quello di IPython in Jupyter,
 # altrimenti ripiega su print() quando il modulo è importato da script Python puro.
@@ -140,7 +141,7 @@ def _prepare_bh_data(portfolio: dict, start_date: str, end_date: str,
     if fully_missing:
         print(
             f"[run_bh_backtest] Ticker senza alcun dato disponibile (né yfinance né cache locale): "
-            f"{fully_missing}. Procurare CSV NAV in cache/ o rimuovere dal portfolio prima di procedere."
+            f"{fully_missing}. Procurare CSV NAV in inputs/fund_nav/ o rimuovere dal portfolio prima di procedere."
         )
         return None, None
 
@@ -163,7 +164,7 @@ def _prepare_bh_data(portfolio: dict, start_date: str, end_date: str,
             f"  Periodo risultante: {price_aligned.index.min()} → {price_aligned.index.max()}\n"
             f"  Ticker con copertura scarsa rispetto agli altri: {worst_tickers}\n"
             f"  Copertura completa: {coverage_before_align.to_dict()}\n"
-            f"  → Procurare storico più ampio (CSV NAV in cache/) per i ticker indicati, "
+            f"  → Procurare storico più ampio (CSV NAV in inputs/fund_nav/) per i ticker indicati, "
             f"o restringere l'universo del portfolio."
         )
         return None, None
@@ -237,6 +238,42 @@ def run_bh_backtest(
     return pf
 
 
+def _pf_order_stats(pf) -> tuple:
+    """
+    Estrae numero di operazioni e commissioni totali pagate da un
+    vbt.Portfolio, con fallback robusto se l'API cambia struttura
+    (best-effort: non blocca il resto del confronto se fallisce).
+    """
+    try:
+        n_orders = int(np.sum(pf.orders.count()))
+    except Exception:
+        n_orders = np.nan
+    try:
+        fees_raw = pf.orders.fees.sum()
+        fees_paid = float(np.sum(fees_raw)) if hasattr(fees_raw, '__iter__') else float(fees_raw)
+    except Exception:
+        fees_paid = np.nan
+    return n_orders, fees_paid
+
+
+def _pf_order_stats(pf) -> tuple:
+    """
+    Estrae numero di operazioni e commissioni totali pagate da un
+    vbt.Portfolio, con fallback robusto se l'API cambia struttura
+    (best-effort: non blocca il resto del confronto se fallisce).
+    """
+    try:
+        n_orders = int(np.sum(pf.orders.count()))
+    except Exception:
+        n_orders = np.nan
+    try:
+        fees_raw = pf.orders.fees.sum()
+        fees_paid = float(np.sum(fees_raw)) if hasattr(fees_raw, '__iter__') else float(fees_raw)
+    except Exception:
+        fees_paid = np.nan
+    return n_orders, fees_paid
+
+
 def compare_rebalance_frequencies(
     portfolio: dict,
     start_date: str,
@@ -246,18 +283,47 @@ def compare_rebalance_frequencies(
     freqs: list = None,
     min_years: int = 1,
     selection_metric: str = 'Sharpe',
+    tie_break_tolerance: float = 0.01,
     verbose: bool = True,
 ) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
     """
     Confronta le performance di un portfolio Buy&Hold su diverse frequenze
     di ribilanciamento, selezionando automaticamente quella con la metrica
-    migliore (default: Sharpe massimo).
+    migliore (default: Sharpe massimo) — con tie-break verso minor turnover.
 
-    I dati vengono scaricati UNA SOLA VOLTA (non una volta per frequenza) e
-    riusati per ogni backtest — evita download ripetuti identici sugli
-    stessi ticker/range.
+    I dati vengono scaricati UNA SOLA VOLTA e riusati per ogni backtest.
 
-    [... docstring Parameters/Returns/Note invariati ...]
+    La tabella include, oltre alle metriche di rendimento/rischio, il
+    numero di operazioni (totale e annualizzato), le commissioni pagate,
+    e il Calmar ratio (CAGR/MaxDD).
+
+    Criterio di selezione (tie-break):
+    Tra tutte le frequenze il cui `selection_metric` è entro
+    `tie_break_tolerance` (relativo) dal valore massimo osservato,
+    viene scelta quella con il minor numero di operazioni annualizzate
+    (Ops_Anno) — non necessariamente quella con la metrica assoluta più
+    alta. Motivazione: differenze di Sharpe/CAGR nell'ordine del
+    millesimo tra frequenze vicine sono spesso rumore statistico più
+    che un vantaggio reale; a parità sostanziale, meno operazioni
+    significa meno costi di transazione non modellati (spread,
+    slippage) e minore complessità operativa.
+
+    Parameters
+    ----------
+    [... invariati ...]
+    tie_break_tolerance : float
+        Tolleranza relativa (frazione, es. 0.01 = 1%) sotto la quale
+        due frequenze sono considerate "sostanzialmente equivalenti"
+        su selection_metric. Tra le equivalenti, vince quella con
+        Ops_Anno minore. tolerance=0 disabilita il tie-break (torna
+        al puro idxmax()).
+
+    Returns
+    -------
+    (freq_df, best_freq) : tuple
+        freq_df colonne: [Freq, Sharpe, Calmar, CAGR%, TotalReturn%,
+        MaxDD%, N_Ops, Ops_Anno, Fees_Paid, Fees_pct]
+        best_freq selezionata col criterio tie-break sopra descritto.
     """
     if freqs is None:
         freqs = ['W', 'M', 'Q', 'Y', None]
@@ -283,13 +349,24 @@ def compare_rebalance_frequencies(
 
         yrs = len(eq) / 252
         cagr = (eq.iloc[-1] / eq.iloc[0]) ** (1 / yrs) - 1 if yrs > 0 else np.nan
+        max_dd = abs(float(pf.max_drawdown()))
+        calmar = (cagr / max_dd) if max_dd > 0 else np.nan
+
+        n_ops, fees_paid = _pf_order_stats(pf)
+        ops_per_year = round(n_ops / yrs, 1) if (not np.isnan(n_ops) and yrs > 0) else np.nan
+        fees_pct = round(fees_paid / init_cash * 100, 3) if not np.isnan(fees_paid) else np.nan
 
         rows.append({
             'Freq'        : freq if freq is not None else 'BH',
             'Sharpe'      : float(pf.sharpe_ratio()),
+            'Calmar'      : round(calmar, 2) if not np.isnan(calmar) else np.nan,
             'CAGR%'       : round(cagr * 100, 2),
             'TotalReturn%': round(float(pf.total_return()) * 100, 2),
-            'MaxDD%'      : round(abs(float(pf.max_drawdown())) * 100, 2),
+            'MaxDD%'      : round(max_dd * 100, 2),
+            'N_Ops'       : n_ops,
+            'Ops_Anno'    : ops_per_year,
+            'Fees_Paid'   : round(fees_paid, 2) if not np.isnan(fees_paid) else np.nan,
+            'Fees_pct'    : fees_pct,
         })
 
     if not rows:
@@ -301,14 +378,33 @@ def compare_rebalance_frequencies(
     if verbose:
         my_display(freq_df, title="Confronto frequenze di ribilanciamento")
 
-    best_label = freq_df.loc[freq_df[selection_metric].idxmax(), 'Freq']
+    # --- Selezione con tie-break verso minor turnover ---
+    metric_vals = freq_df[selection_metric]
+    best_val = metric_vals.max()
+    if tie_break_tolerance > 0 and best_val != 0:
+        within_tolerance = freq_df[
+            metric_vals >= best_val * (1 - tie_break_tolerance)
+        ]
+    else:
+        within_tolerance = freq_df.loc[[metric_vals.idxmax()]]
+
+    if 'Ops_Anno' in within_tolerance.columns and within_tolerance['Ops_Anno'].notna().any():
+        best_row = within_tolerance.loc[within_tolerance['Ops_Anno'].idxmin()]
+    else:
+        best_row = freq_df.loc[metric_vals.idxmax()]
+
+    best_label = best_row['Freq']
     best_freq  = None if best_label == 'BH' else best_label
 
     if verbose:
-        print(f"\n✅ Frequenza ottimale ({selection_metric}): {best_label}")
+        n_candidates = len(within_tolerance)
+        if n_candidates > 1:
+            print(f"\n✅ Frequenza ottimale ({selection_metric}, tie-break su Ops_Anno tra "
+                  f"{n_candidates} candidate entro {tie_break_tolerance:.1%}): {best_label}")
+        else:
+            print(f"\n✅ Frequenza ottimale ({selection_metric}): {best_label}")
 
     return freq_df, best_freq
-
     
 # def run_bh_backtest(
 #     weights_dict: dict,
@@ -1238,7 +1334,6 @@ def lazy_stability_weights(
     Stability test sui pesi ottimali (Max Sharpe) su sotto-periodi.
     Divide il periodo storico (years) in n_splits finestre disgiunte
     e ricalcola i pesi ottimali per ogni finestra.
-
     Returns dict:
         'df_weights':   DataFrame (n_splits righe x n_tickers colonne)
                         pesi Max Sharpe per ogni finestra
@@ -1246,6 +1341,10 @@ def lazy_stability_weights(
         'stable':       bool — True se cv medio < cv_threshold
         'cv_mean':      float
         'cv_threshold': float (default 0.5)
+
+    Ritorna None (con stampa diagnostica) se meno di 2 ticker sono
+    forniti, o se uno o più ticker hanno storico insufficiente a
+    coprire le finestre richieste.
     """
     if len(tickers) < 2:
         print(
@@ -1256,14 +1355,40 @@ def lazy_stability_weights(
         )
         return None
 
+    end_year_global = datetime.today().year
+    start_year_global = end_year_global - years
+    window_years = max(1, years // n_splits)
+
+    # Guard: verifica storico minimo comune PRIMA di iterare le finestre.
+    # Un ticker con storico più corto del periodo testato (years) produce
+    # NaN/errori a cascata in ogni finestra che lo include (invece di un
+    # errore chiaro una sola volta) — meglio fermarsi subito con diagnostica.
+    price_check = load_ohlcv(tickers, start=f"{start_year_global}-01-01",
+                              end=datetime.today().strftime("%Y-%m-%d"))
+    if isinstance(price_check, pd.Series):
+        price_check = price_check.to_frame(name=tickers[0])
+    close_check = price_check['Close']
+    if isinstance(close_check, pd.Series):
+        close_check = close_check.to_frame(name=tickers[0])
+
+    coverage = close_check.notna().sum()
+    min_required_days = int(252 * window_years * 0.8)  # almeno 80% di una finestra
+    insufficient = coverage[coverage < min_required_days].to_dict()
+    if insufficient:
+        print(
+            f"[lazy_stability_weights] Test di stabilità non applicabile su {years} anni "
+            f"({n_splits} finestre da ~{window_years} anni ciascuna): ticker con storico "
+            f"insufficiente per coprire le finestre richieste (minimo {min_required_days} "
+            f"giorni/finestra): {insufficient}. Copertura completa: {coverage.to_dict()}. "
+            f"Ridurre 'years' al periodo comune disponibile, o escludere questi ticker dal test."
+        )
+        return None
+
     _metric_cols = {'Return', 'Volatility', 'Sharpe',
                     'Real Return', 'Real Volatility', 'Real Sharpe'}
-
-    window_years = max(1, years // n_splits)
     if window_years < 1:
         print(f"[lazy_stability_weights] window_years forzato a 1 (era {years // n_splits})")
         window_years = 1
-
     _empty = {
         'df_weights': pd.DataFrame(),
         'df_stats': None,
@@ -1271,11 +1396,7 @@ def lazy_stability_weights(
         'cv_mean': np.nan,
         'cv_threshold': 0.5,
     }
-
     # Finestre storiche DISGIUNTE: divido [oggi-years, oggi] in n_splits blocchi
-    end_year_global = datetime.today().year
-    start_year_global = end_year_global - years
-
     rows = []
     labels = []
     for i in range(n_splits):
@@ -1304,13 +1425,10 @@ def lazy_stability_weights(
             labels.append(label)
         except Exception as e:
             print(f"[lazy_stability_weights] {label}: errore — {e}")
-
     if not rows:
         print("[lazy_stability_weights] Tutte le finestre hanno fallito — restituisco empty.")
         return _empty
-
     df_weights = pd.DataFrame(rows, index=labels)
-
     stats = []
     for asset in tickers:
         if asset not in df_weights.columns:
@@ -1321,11 +1439,9 @@ def lazy_stability_weights(
         cv   = std / mean if mean > 0.01 else np.nan
         stats.append({'asset': asset, 'mean': mean, 'std': std, 'cv': cv})
     df_stats = pd.DataFrame(stats).set_index('asset')
-
     cv_mean = float(df_stats['cv'].dropna().mean())
     cv_threshold = 0.5
     stable = bool(cv_mean < cv_threshold)
-
     if verbose:
         print(f"Stability test pesi — window={window_years}y, splits={n_splits}")
         try:
@@ -1336,7 +1452,6 @@ def lazy_stability_weights(
             print(df_weights.to_string())
             print(df_stats.to_string())
         print(f"CV medio: {cv_mean:.3f} — {'STABILE ✅' if stable else 'INSTABILE ⚠️'}")
-
     return {
         'df_weights':   df_weights,
         'df_stats':     df_stats,
@@ -1344,6 +1459,7 @@ def lazy_stability_weights(
         'cv_mean':      cv_mean,
         'cv_threshold': cv_threshold,
     }
+    
 def lazy_mc_block_b_rebalancing(
     portfolio: dict,
     start_date,
@@ -1355,24 +1471,32 @@ def lazy_mc_block_b_rebalancing(
     fees: float = 0.001,
     random_seed: int = 42,
     verbose: bool = False,
+    min_years: int = 5,
 ) -> dict:
     """
     MC Block B — Skill test sul ribilanciamento.
     ...
     portfolio: dict nel nuovo formato {"Title": str, "tickers": {ticker: peso}, "benchmark": str}
                oppure nel vecchio formato flat {ticker: peso} (retrocompatibile).
+    min_years: storico minimo comune richiesto (in anni), passato a
+               run_bh_backtest. Default 5 — coerente col default di
+               run_bh_backtest; abbassare (es. 1) per allineare Block B
+               al resto della pipeline quando lo storico è limitato.
     """
     # Estrazione pesi: supporta sia il nuovo formato annidato sia il vecchio formato flat
     weights_dict = dict(portfolio["tickers"]) if "tickers" in portfolio else dict(portfolio)
     weights_dict = {k.upper(): v for k, v in weights_dict.items()}
     tickers = list(weights_dict.keys())
     weights = pd.Series(weights_dict, dtype=float)
-
     # 1. Metriche PTF reale
     # NOTA: passa il portfolio ORIGINALE (non weights_dict) — run_bh_backtest
     # fa la propria estrazione "tickers"/flat internamente, stessa logica qui.
     pf_actual = run_bh_backtest(portfolio, start_date, end_date,
-                                init_cash, fees, best_freq)
+                                init_cash, fees, best_freq, min_years=min_years)
+    if pf_actual is None:
+        print(f"[lazy_mc_block_b_rebalancing] Storico insufficiente — skip (vedi diagnostica sopra).")
+        return None    
+    
     actual_sharpe = float(pf_actual.sharpe_ratio())
     actual_cagr   = _cagr_from_equity(pf_actual)
 
@@ -1469,7 +1593,170 @@ def lazy_mc_block_b_rebalancing(
         'skill':          skill,
         'n_simulations':  len(sim_sharpes_arr),
     }
+    
+def run_mc_diagnostics(
+    pf,
+    portfolio: dict,
+    start_date: str,
+    end_date: str,
+    best_freq,
+    n_simulations_a: int = 1000,
+    block_size: int = 20,
+    n_simulations_b: int = 500,
+    jitter_days: int = 30,
+    init_cash: float = 100_000,
+    fees: float = 0.001,
+    seed: int = 42,
+    metrics: list = None,
+    min_years: int = 5,
+    verbose: bool = True,
+) -> dict:
+    """
+    Esegue la batteria diagnostica Monte Carlo completa su un portfolio
+    già costruito:
+      - Block A1: IID Bootstrap (baseline, sottostima il rischio reale
+        perché ignora autocorrelazione/cluster di volatilità)
+      - Block A2: Block Bootstrap (metodo principale per confidence
+        interval, preserva struttura temporale)
+      - Block B: Skill test sul ribilanciamento (best_freq confrontato
+        con date di ribilanciamento randomizzate — verifica se la
+        frequenza scelta aggiunge valore reale o è indistinguibile dal
+        caso)
 
+    Produce un report combinato unico: tabella A1 vs A2 (confidence
+    interval per metrica) più tabella e verdetto di Block B.
+
+    Parameters
+    ----------
+    pf : vbt.Portfolio
+        Portfolio già costruito (es. da run_bh_backtest con best_freq),
+        usato per Block A1/A2.
+    portfolio : dict
+        Configurazione portfolio (formato annidato o flat) — usato SOLO
+        da Block B, che ricostruisce il portfolio internamente con date
+        di ribilanciamento perturbate. Deve rappresentare lo stesso
+        portfolio/periodo di `pf` per un confronto coerente — questa
+        funzione non lo verifica automaticamente.
+    start_date, end_date : str
+        Periodo per Block B.
+    best_freq : str o None
+        Frequenza di ribilanciamento scelta (es. da
+        compare_rebalance_frequencies), testata da Block B.
+    n_simulations_a : int
+        Simulazioni per A1 e A2.
+    block_size : int
+        Dimensione blocco per A2 (giorni di trading, default 20 ≈ 1 mese).
+    n_simulations_b : int
+        Simulazioni per Block B.
+    jitter_days : int
+        Ampiezza perturbazione (± giorni) sulle date di ribilanciamento
+        in Block B.
+    init_cash, fees : float
+        Parametri di ricostruzione portfolio per Block B — devono
+        coincidere con quelli usati per costruire `pf`, altrimenti il
+        confronto Actual vs simulato non è comparabile.
+    seed : int
+        Seed base — A1, A2 e Block B usano generatori indipendenti
+        derivati dallo stesso seed, per riproducibilità senza
+        correlazione accidentale tra i tre test.
+    metrics : list, opzionale
+        Metriche nella tabella A1/A2. Default ['CAGR', 'Sharpe', 'MaxDD'].
+    min_years: storico minimo comune richiesto (in anni), passato a
+               run_bh_backtest. Default 5 — coerente col default di
+               run_bh_backtest; abbassare (es. 1) per allineare Block B
+               al resto della pipeline quando lo storico è limitato.   
+    verbose : bool
+        Se True, stampa tabelle e verdetto.
+
+    Returns
+    -------
+    dict con chiavi:
+        'a1', 'a2' : risultati completi mc_run_iid_bootstrap/mc_run_block_bootstrap
+        'b'        : risultato completo lazy_mc_block_b_rebalancing,
+                     None se il portfolio (dentro Block B) ha storico
+                     insufficiente
+        'summary_df'   : pd.DataFrame confidence interval A1 vs A2
+        'skill_verdict': str — sintesi testuale del risultato Block B
+    """
+    if metrics is None:
+        metrics = ['CAGR', 'Sharpe', 'MaxDD']
+
+    rng_a1 = np.random.default_rng(seed)
+    rng_a2 = np.random.default_rng(seed)
+
+    if verbose:
+        print("=== Monte Carlo Block A — Confidence Intervals ===")
+    a1 = mc_run_iid_bootstrap(pf, n_simulations=n_simulations_a, rng=rng_a1)
+    a2 = mc_run_block_bootstrap(pf, block_size=block_size,
+                                 n_simulations=n_simulations_a, rng=rng_a2)
+
+    rows = []
+    for metric in metrics:
+        rows.append({
+            'Metric': metric,
+            'Actual': a2['actual_metrics'][metric],
+            'A1_P5' : a1['percentiles']['p5'][metric],
+            'A1_P50': a1['percentiles']['p50'][metric],
+            'A1_P95': a1['percentiles']['p95'][metric],
+            'A2_P5' : a2['percentiles']['p5'][metric],
+            'A2_P50': a2['percentiles']['p50'][metric],
+            'A2_P95': a2['percentiles']['p95'][metric],
+        })
+    summary_df = pd.DataFrame(rows).set_index('Metric').round(3)
+
+    if verbose:
+        my_display(summary_df, title=f"Block A — Confidence Intervals "
+                                      f"(n_sim={n_simulations_a}, block_size={block_size})")
+        print("\n=== Monte Carlo Block B — Skill del ribilanciamento ===")
+
+    b = lazy_mc_block_b_rebalancing(
+        portfolio=portfolio,
+        start_date=start_date,
+        end_date=end_date,
+        best_freq=best_freq,
+        n_simulations=n_simulations_b,
+        jitter_days=jitter_days,
+        init_cash=init_cash,
+        fees=fees,
+        random_seed=seed,
+        min_years=min_years,
+        verbose=False,
+    )
+
+    if b is None:
+        skill_verdict = "Block B non eseguito (storico insufficiente — vedi diagnostica sopra)."
+        if verbose:
+            print(f"⚠️  {skill_verdict}")
+    else:
+        b_rows = [{
+            'Metric' : 'Sharpe',
+            'Actual' : round(b['actual_sharpe'], 3),
+            'Sim_P50': round(float(np.median(b['sim_sharpes'])), 3) if len(b['sim_sharpes']) else np.nan,
+            'p_value': round(b['p_value_sharpe'], 3),
+        }, {
+            'Metric' : 'CAGR',
+            'Actual' : round(b['actual_cagr'], 3),
+            'Sim_P50': round(float(np.median(b['sim_cagrs'])), 3) if len(b['sim_cagrs']) else np.nan,
+            'p_value': round(b['p_value_cagr'], 3),
+        }]
+        b_df = pd.DataFrame(b_rows).set_index('Metric')
+        if verbose:
+            my_display(b_df, title=f"Block B — Skill ribilanciamento "
+                                    f"(freq={best_freq or 'BH'}, n_sim={n_simulations_b}, jitter=±{jitter_days}g)")
+        skill_verdict = (
+            f"{'✅ SKILL rilevata' if b['skill'] else '⚠️ NESSUNA skill'} "
+            f"(p-value Sharpe={b['p_value_sharpe']:.3f}, soglia=0.05)"
+        )
+        if verbose:
+            print(f"\n{skill_verdict}")
+
+    return {
+        'a1': a1,
+        'a2': a2,
+        'b': b,
+        'summary_df': summary_df,
+        'skill_verdict': skill_verdict,
+    }
 
 # def lazy_mc_block_b_rebalancing(
 #     portfolio: dict,
