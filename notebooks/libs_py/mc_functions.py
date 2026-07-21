@@ -1024,7 +1024,7 @@ def run_portfolio_analysis(
 
         fig_frontier, special_weights = efficient_frontier_pypfopt(
             tickers=my_tickers,
-            my_weights=portfolio,
+            weights=portfolio,
             n_points=80,
             weight_bounds=(0, 1),
             show_plot=show_report,
@@ -1186,7 +1186,7 @@ def run_portfolio_analysis_RECOVERY(
 
         fig, special_weights = efficient_frontier_pypfopt(
             tickers=my_tickers,
-            my_weights=my_weights,
+            weights=my_weights,
             years=years,
             n_points=50,
             weight_bounds=(0, 1)
@@ -2014,7 +2014,7 @@ def run_lazy_analysis(
         show_plot=plot,
         interactive=plot,
         print_weights=verbose,
-        my_weights=my_weights,
+        weights=my_weights,
         weight_bounds=weight_bounds,
     )
 
@@ -2074,6 +2074,7 @@ def _compute_lazy_full(
     n_simulations_mc_a=1000,
     n_simulations_mc_b=500,
     verbose=False,
+    need_out: bool = False,
 ) -> dict:
     """
     Pipeline Lazy completa per un SINGOLO PTF: analisi headless + backtest
@@ -2083,19 +2084,22 @@ def _compute_lazy_full(
     nella classificazione batch (riga CSV) sia nella relazione tecnica PDF
     (oggetti completi). Ritorna un dict con TUTTI gli oggetti intermedi:
 
-        'risultati'   : output di run_lazy_analysis (best_freq, freq_df,
-                        portfolio_pf, optimal_weights, frontier_result, plots_dir)
-        'pf_proposed' : vbt.Portfolio del PTF reale (pesi fissi, best_freq)
-        'stability'   : output di lazy_rolling_stability
-        'mc_a1'       : MC iid bootstrap
-        'mc_a2'       : MC block bootstrap (usato anche da project_lazy_capital)
-        'mc_b'        : MC Block B (skill ribilanciamento)
-        'dsr'         : Deflated Sharpe Ratio
-        'sr', 'T'     : Sharpe e n. osservazioni
-        'cagr','maxdd': metriche aggregate
-        'checks'      : dict dei 3 criteri
-        'verdetto'    : 'PROMOSSO' | 'RIGETTATO'
-        'row'         : riga di classificazione (per il CSV batch)
+        'risultati'    : output di run_lazy_analysis (best_freq, freq_df,
+                         portfolio_pf, optimal_weights, frontier_result, plots_dir)
+        'pf_proposed'  : vbt.Portfolio del PTF reale (pesi fissi, best_freq)
+        'stability'    : output di lazy_rolling_stability
+        'mc_a1'        : MC iid bootstrap
+        'mc_a2'        : MC block bootstrap (usato anche da project_lazy_capital)
+        'mc_b'         : MC Block B (skill ribilanciamento)
+        'dsr'          : Deflated Sharpe Ratio
+        'sr', 'T'      : Sharpe e n. osservazioni
+        'cagr','maxdd' : metriche aggregate
+        'checks'       : dict dei 3 criteri
+        'verdetto'     : 'PROMOSSO' | 'RIGETTATO'
+        'row'          : riga di classificazione (per il CSV batch)
+        'portfolio_cfg': dict originale dal registry (ticker:weight)
+        'out'          : output di generate_lazy_portfolio_performance (solo se
+                         need_out=True) — necessario per generate_relazione_investitore_report
     """
     from pathlib import Path
     # mc_run_iid_bootstrap / mc_run_block_bootstrap / ofc_compute_dsr sono
@@ -2191,6 +2195,21 @@ def _compute_lazy_full(
         'Verdetto': verdetto,
     }
 
+    # 9. performance report (solo se richiesto per PDF investitore — evita overhead
+    #    su path CSV-only che non usa questi dati)
+    out_perf = None
+    if need_out:
+        from u_functions import generate_lazy_portfolio_performance
+        benchmark_data_for_out = pf_benchmark.value() if pf_benchmark is not None else None
+        out_perf = generate_lazy_portfolio_performance(
+            pf=pf_proposed,
+            portfolio_title=ptf_name,
+            benchmark=benchmark,
+            benchmark_data=benchmark_data_for_out,
+            show_report=False,
+            show_plots=False,
+        )
+
     return {
         'risultati': risultati,
         'pf_proposed': pf_proposed,
@@ -2208,6 +2227,8 @@ def _compute_lazy_full(
         'checks': checks,
         'verdetto': verdetto,
         'row': row,
+        'portfolio_cfg': portfolio_cfg,
+        'out': out_perf,
     }
 
 
@@ -2294,6 +2315,7 @@ def run_lazy_batch_analysis(
                 n_simulations_mc_a=n_simulations_mc_a,
                 n_simulations_mc_b=n_simulations_mc_b,
                 verbose=verbose,
+                need_out=need_details,
             )
             row = rich['row']
             mc_a2 = rich['mc_a2']
