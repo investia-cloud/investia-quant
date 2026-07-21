@@ -971,7 +971,8 @@ def run_portfolio_analysis(
     rebalance_freq: str = None,
     efficient_frontier: bool = True,
     vbt_plot_width: int = 800,
-    run_as_app: bool = False
+    run_as_app: bool = False,
+    min_years: int = 5,
 ):
     """
     Backtest e report multipli grafici.
@@ -998,19 +999,24 @@ def run_portfolio_analysis(
     # 1) Backtest B&H
     pf = run_bh_backtest(
         portfolio, start_date_dt, end_date_dt,
-        init_cash=init_cash, fees=fees, rebalance_freq=rebalance_freq
+        init_cash=init_cash, fees=fees, rebalance_freq=rebalance_freq,
+        min_years=min_years,
     )
+    if pf is None:
+        print(f"[run_portfolio_analysis] {title!r}: storico insufficiente "
+              f"(min_years={min_years}) — report non generato.")
+        return (None, {}, pd.DataFrame()) if run_as_app else None
 
     # header = "Titolo" if one_ticker else "Portfolio"
     # if not run_as_app:
     #     print(f"🔎 Analisi {header} «{title}»")
-        
+
     benchmark_data = download_data(benchmark,start_date,end_date)
 
     show_report=False if run_as_app else True
 
     figs = generate_lazy_portfolio_performance(pf=pf,
-                                               portfolio_title=title, 
+                                               portfolio_title=title,
                                                 benchmark=benchmark,
                                                 benchmark_data=benchmark_data,
                                                 show_report=show_report)
@@ -1050,7 +1056,8 @@ def run_portfolio_analysis_RECOVERY(
     rebalance_freq: str = None,
     efficient_frontier: bool = True,
     vbt_plot_width: int = 800,
-    run_as_app: bool = False
+    run_as_app: bool = False,
+    min_years: int = 5,
 ):
     """
     Backtest e report multipli grafici.
@@ -1077,8 +1084,13 @@ def run_portfolio_analysis_RECOVERY(
     # 1) Backtest B&H
     pf = run_bh_backtest(
         weights_dict, start_date_dt, end_date_dt,
-        init_cash=init_cash, fees=fees, rebalance_freq=rebalance_freq
+        init_cash=init_cash, fees=fees, rebalance_freq=rebalance_freq,
+        min_years=min_years,
     )
+    if pf is None:
+        print(f"[run_portfolio_analysis_RECOVERY] {title!r}: storico insufficiente "
+              f"(min_years={min_years}) — report non generato.")
+        return (None, {}) if run_as_app else None
 
     header = "Titolo" if one_ticker else "Portfolio"
     if not run_as_app:
@@ -1912,6 +1924,7 @@ def run_lazy_analysis(
     freq_selection_metric: str = 'sharpe',
     weight_bounds: tuple = (0, 1),
     verbose: bool = False,
+    min_years: int = 5,
 ) -> dict:
     """
     Pipeline completa Lazy portfolio in modalità headless.
@@ -1953,7 +1966,9 @@ def run_lazy_analysis(
         rows = []
         for freq in freqs:
             pf_f = run_bh_backtest(portfolio_cfg, _start_date, end_date,
-                                   init_cash, fees, freq)
+                                   init_cash, fees, freq, min_years=min_years)
+            if pf_f is None:
+                break
             rows.append({
                 'Freq':        freq if freq is not None else 'BH',
                 'Sharpe':      _safe_metric(pf_f, 'sharpe'),
@@ -1961,6 +1976,11 @@ def run_lazy_analysis(
                 'TotalReturn': _safe_metric(pf_f, 'total_return'),
                 'MaxDD':       abs(_safe_metric(pf_f, 'max_drawdown')),
             })
+        if not rows:
+            raise ValueError(
+                f"[run_lazy_analysis] {title!r}: storico insufficiente per tutte le "
+                f"frequenze (min_years={min_years}) — impossibile selezionare best_freq."
+            )
         freq_df = pd.DataFrame(rows)
 
         metric_map = {
@@ -2005,7 +2025,8 @@ def run_lazy_analysis(
 
     # ── 2. BACKTEST CON FREQUENZA OTTIMALE ───────────────────────────────────
     portfolio_pf = run_bh_backtest(portfolio_cfg, _start_date, end_date,
-                                   init_cash, fees, best_freq)
+                                   init_cash, fees, best_freq,
+                                   min_years=min_years)
 
     # ── 3. FRONTIERA EFFICIENTE ───────────────────────────────────────────────
     frontier_fig, df_special = efficient_frontier_pypfopt(
@@ -2049,6 +2070,7 @@ def run_lazy_analysis(
         rebalance_freq=best_freq,
         efficient_frontier=False,
         run_as_app=not plot,
+        min_years=min_years,
     )
 
     return {
@@ -2075,6 +2097,7 @@ def _compute_lazy_full(
     n_simulations_mc_b=500,
     verbose=False,
     need_out: bool = False,
+    min_years: int = 5,
 ) -> dict:
     """
     Pipeline Lazy completa per un SINGOLO PTF: analisi headless + backtest
@@ -2134,16 +2157,27 @@ def _compute_lazy_full(
         auto_freq=True,
         freq_selection_metric='sharpe',
         verbose=verbose,
+        min_years=min_years,
     )
     pf_proposed = run_bh_backtest(_pf_weights, start_date, end_date,
-                                  init_cash, fees, risultati['best_freq'])
+                                  init_cash, fees, risultati['best_freq'],
+                                  min_years=min_years)
+    if pf_proposed is None:
+        raise ValueError(
+            f"[_compute_lazy_full] {ptf_name}: storico insufficiente per "
+            f"run_bh_backtest (min_years={min_years}) — skip."
+        )
 
     # 2b. benchmark B&H (singolo ticker) per il confronto §3 della relazione
     try:
         pf_benchmark = run_bh_backtest({benchmark: 1.0}, start_date, end_date,
-                                       init_cash, fees, None)
+                                       init_cash, fees, None,
+                                       min_years=min_years)
     except Exception:
         pf_benchmark = None
+    if pf_benchmark is None and verbose:
+        print(f"[_compute_lazy_full] {ptf_name}: pf_benchmark non disponibile "
+              f"(benchmark={benchmark}, min_years={min_years}) — grafici vs benchmark disabilitati.")
 
     # 3. stabilità rolling del PTF reale
     stability = lazy_rolling_stability(
@@ -2164,6 +2198,7 @@ def _compute_lazy_full(
         portfolio=_pf_weights, start_date=start_date, end_date=end_date,
         best_freq=risultati['best_freq'], n_simulations=n_simulations_mc_b,
         jitter_days=30, init_cash=init_cash, fees=fees, verbose=False,
+        min_years=min_years,
     )
 
     # 6. DSR
@@ -2254,6 +2289,7 @@ def run_lazy_batch_analysis(
     override: bool = False,
     verbose=False,
     details_out: dict = None,
+    min_years: int = 5,
 ) -> "pd.DataFrame":
     """
     Esegue la pipeline Lazy completa (run_lazy_analysis + stability +
@@ -2322,6 +2358,7 @@ def run_lazy_batch_analysis(
                 n_simulations_mc_b=n_simulations_mc_b,
                 verbose=verbose,
                 need_out=need_details,
+                min_years=min_years,
             )
             row = rich['row']
             mc_a2 = rich['mc_a2']
@@ -2445,6 +2482,9 @@ def plot_lazy_equity_curves(
                                  init_cash, fees, best_freq)
         except Exception as e:
             print(f'  [SKIP] {nome}: errore backtest — {e}')
+            continue
+        if pf is None:
+            print(f'  [SKIP] {nome}: storico insufficiente per run_bh_backtest — skip.')
             continue
         eq = pf.value()
         if isinstance(eq, pd.DataFrame):

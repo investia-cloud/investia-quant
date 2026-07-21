@@ -817,12 +817,14 @@ def k_analyze(strategies, tickers, ptf, output_dir, start_date, end_date,
     help="Simulazioni Monte Carlo Block B")
 @click.option("--override", is_flag=True, default=False,
     help="Ricalcola anche i PTF già in cache (default: skip se cache presente)")
+@click.option("--min-years", default=5, show_default=True,
+    help="Storico minimo comune richiesto (anni) per run_bh_backtest e MC Block B")
 @click.option("--pdf", "gen_pdf", is_flag=True, default=False,
     help="Genera la Relazione Investitore PDF per i PTF promossi (default: solo pipeline)")
 @click.option("--verbose", "-v", is_flag=True, default=False, help="Output verboso")
 def l_analyze(ptf, output_dir, start_date, end_date, benchmark,
               init_cash, fees, years, n_simulations_mc_a,
-              n_simulations_mc_b, override, gen_pdf, verbose):
+              n_simulations_mc_b, override, min_years, gen_pdf, verbose):
     """Pipeline Lazy portfolio: frontiera + backtest + stability + MC A/B + DSR.
 
     Batch (--ptf all) o singolo. Con --pdf genera la Relazione Investitore per
@@ -908,6 +910,7 @@ def l_analyze(ptf, output_dir, start_date, end_date, benchmark,
             override=override,
             verbose=verbose,
             details_out=details,
+            min_years=min_years,
         )
 
     print(f"\n[iq l-analyze] Completato. {len(df)} PTF analizzati.")
