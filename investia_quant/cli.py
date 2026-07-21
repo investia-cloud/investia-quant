@@ -95,8 +95,12 @@ def _resolve_portfolio(ptf_name: str, ns: dict):
         if "trading_systems" in obj:
             return obj, "K"
         if "tickers" in obj:
-            return obj, "R"
-        # dict semplice {ticker: peso} -> Lazy portfolio
+            # R: tickers è una lista di ticker (motore rotazionale, no pesi fissi)
+            # L nuovo formato: tickers è un dict {ticker: peso} con somma ~1.0
+            if isinstance(obj["tickers"], list):
+                return obj, "R"
+            return obj, "L"
+        # dict semplice {ticker: peso} -> Lazy portfolio vecchio formato
         return obj, "L"
 
     available_r = list(r_registry.keys())
@@ -786,9 +790,12 @@ def k_analyze(strategies, tickers, ptf, output_dir, start_date, end_date,
 
 @app.command("l-analyze", epilog=(
     "\b\nEsempi:\n"
-    "  iq l-analyze --ptf golden_butterfly\n"
-    "  iq l-analyze --ptf golden_butterfly --pdf\n"
+    "  iq l-analyze --ptf lazy_etf_port\n"
+    "  iq l-analyze --ptf lazy_etf_port --pdf\n"
     "  iq l-analyze --ptf all --override\n"
+    "\nCon --pdf: genera la Relazione Investitore solo per PTF PROMOSSI;\n"
+    "  i RIGETTATI stampano un messaggio e non producono PDF.\n"
+    "  Output: outputs/l_analysis/<timestamp>/<ptf>/<ptf>_Relazione_Investitore.pdf\n"
 ))
 @click.option("--ptf", default=None,
     help="Nome Lazy portfolio, oppure 'all' per tutti i PTF nel registry")
@@ -810,16 +817,19 @@ def k_analyze(strategies, tickers, ptf, output_dir, start_date, end_date,
     help="Simulazioni Monte Carlo Block B")
 @click.option("--override", is_flag=True, default=False,
     help="Ricalcola anche i PTF già in cache (default: skip se cache presente)")
+@click.option("--min-years", default=5, show_default=True,
+    help="Storico minimo comune richiesto (anni) per run_bh_backtest e MC Block B")
 @click.option("--pdf", "gen_pdf", is_flag=True, default=False,
-    help="Genera la relazione tecnica PDF per ciascun PTF (default: solo pipeline)")
+    help="Genera la Relazione Investitore PDF per i PTF promossi (default: solo pipeline)")
 @click.option("--verbose", "-v", is_flag=True, default=False, help="Output verboso")
 def l_analyze(ptf, output_dir, start_date, end_date, benchmark,
               init_cash, fees, years, n_simulations_mc_a,
-              n_simulations_mc_b, override, gen_pdf, verbose):
+              n_simulations_mc_b, override, min_years, gen_pdf, verbose):
     """Pipeline Lazy portfolio: frontiera + backtest + stability + MC A/B + DSR.
 
-    Batch (--ptf all) o singolo. Con --pdf genera la relazione tecnica per
-    ogni PTF in outputs/l_analysis/<timestamp>/<ptf>_relazione_tecnica.pdf.
+    Batch (--ptf all) o singolo. Con --pdf genera la Relazione Investitore per
+    ogni PTF PROMOSSO in outputs/l_analysis/<timestamp>/<ptf>/<ptf_name>_Relazione_Investitore.pdf.
+    I PTF RIGETTATI producono solo un messaggio — nessun PDF investitore viene generato.
     """
     import warnings
     warnings.filterwarnings("ignore", category=RuntimeWarning)
@@ -900,6 +910,7 @@ def l_analyze(ptf, output_dir, start_date, end_date, benchmark,
             override=override,
             verbose=verbose,
             details_out=details,
+            min_years=min_years,
         )
 
     print(f"\n[iq l-analyze] Completato. {len(df)} PTF analizzati.")
@@ -908,63 +919,41 @@ def l_analyze(ptf, output_dir, start_date, end_date, benchmark,
     n_promoted = (df["Verdetto"] == "PROMOSSO").sum() if "Verdetto" in df.columns else 0
     print(f"\nPromossi: {n_promoted}/{len(df)}")
 
-    # ── Relazione tecnica PDF (--pdf) ────────────────────────────────────────
+    # ── Relazione Investitore PDF (--pdf) ────────────────────────────────────
     if gen_pdf and details:
-        generate_relazione_tecnica_lazy = ns.get("generate_relazione_tecnica_lazy")
-        project_lazy_capital = ns.get("project_lazy_capital")
-        if generate_relazione_tecnica_lazy is None:
+        generate_relazione_investitore_report_fn = ns.get("generate_relazione_investitore_report")
+        if generate_relazione_investitore_report_fn is None:
             raise click.ClickException(
-                "generate_relazione_tecnica_lazy non trovata in mc_functions.py.")
-        from datetime import datetime as _dt
+                "generate_relazione_investitore_report non trovata in r_functions.py.")
         os.makedirs(out_dir, exist_ok=True)
 
         for ptf_name, rich in details.items():
+            verdetto = rich.get("verdetto", "RIGETTATO")
+            if verdetto != "PROMOSSO":
+                print(f"[iq l-analyze] {ptf_name}: RIGETTATO — relazione investitore non generata.")
+                continue
             try:
-                portfolio_cfg = l_registry.get(ptf_name, {})
-                asset_allocation = {k.upper(): v for k, v in portfolio_cfg.items()}
-                risultati = rich.get("risultati", {})
-                frontier_df = (risultati.get("frontier_result") or {}).get("df_special")
-
-                # §6 proiezione capitale via cache MC (P10-P50-P90)
-                capital_projection = None
-                if project_lazy_capital is not None and rich.get("cache_dir"):
-                    try:
-                        proj = project_lazy_capital(
-                            ptf_names=[ptf_name],
-                            cache_dir=rich["cache_dir"],
-                            initial_capital=10_000.0,
-                            horizon_years=10,
-                            percentiles=(10, 50, 90),
-                            plot=False,
-                        )
-                        capital_projection = proj.get(ptf_name)
-                    except Exception as _pe:
-                        if verbose:
-                            print(f"[WARN] proiezione capitale {ptf_name} fallita: {_pe}")
-
-                out_pdf = os.path.join(out_dir, f"{ptf_name}_relazione_tecnica.pdf")
-                generate_relazione_tecnica_lazy(
-                    portfolio_title=ptf_name,
-                    asset_allocation=asset_allocation,
-                    period=(start_date, end_date or _dt.now().date().isoformat()),
-                    pf_proposed=rich.get("pf_proposed"),
-                    pf_benchmark=rich.get("pf_benchmark"),
-                    benchmark=benchmark,
-                    best_freq=risultati.get("best_freq"),
-                    optimal_weights=risultati.get("optimal_weights"),
-                    frontier_df=frontier_df,
-                    stability=rich.get("stability", {}),
-                    dsr=rich.get("dsr"),
-                    mc_a=rich.get("mc_a2", {}),
-                    mc_b=rich.get("mc_b", {}),
-                    capital_projection=capital_projection,
-                    verdetto=rich.get("verdetto", "N/A"),
-                    plots_dir=risultati.get("plots_dir"),
-                    output_path=out_pdf,
+                portfolio_cfg = rich.get("portfolio_cfg") or l_registry.get(ptf_name, {})
+                # Supporta sia formato flat {ticker: peso} sia annidato
+                # {"Title": ..., "tickers": {ticker: peso}, "benchmark": ...}
+                _nested = portfolio_cfg.get("tickers") if isinstance(portfolio_cfg.get("tickers"), dict) else None
+                _flat_tickers = _nested if _nested is not None else portfolio_cfg
+                _title = portfolio_cfg.get("Title") or ptf_name
+                _bm = portfolio_cfg.get("benchmark") or portfolio_cfg.get("benchmark_title") or benchmark
+                portfolio_for_report = {
+                    "Title": _title,
+                    "benchmark": _bm,
+                    "tickers": _flat_tickers,
+                }
+                reports_dir = os.path.join(out_dir, ptf_name)
+                generate_relazione_investitore_report_fn(
+                    out=rich["out"],
+                    portfolio=portfolio_for_report,
+                    reports_dir=reports_dir,
+                    year=None,
                 )
-                print(f"  PDF: {out_pdf}")
             except Exception as exc:
-                print(f"[WARN] Relazione tecnica '{ptf_name}' fallita: {exc}")
+                print(f"[WARN] Relazione investitore '{ptf_name}' fallita: {exc}")
 
 
 # ---------------------------------------------------------------------------

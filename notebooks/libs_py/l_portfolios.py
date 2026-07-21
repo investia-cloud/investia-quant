@@ -159,10 +159,13 @@ lazy_full_equity_95_5 = {
     "SGLD.MI": 0.05,
 }
 
-# L_PORTFOLIO_REGISTRY: costruito automaticamente da tutte le
-# variabili dict {ticker: peso} definite sopra (somma pesi ~1.0).
+# L_PORTFOLIO_REGISTRY: costruito automaticamente da tutte le variabili
+# dict definite sopra che rispettano uno dei due formati L:
+#   - Vecchio (flat):    {ticker: peso, ...}  con somma pesi ~1.0
+#   - Nuovo (annidato):  {"Title": str, "tickers": {ticker: peso}, "benchmark": str}
+#                        con somma pesi di "tickers" ~1.0
 # Qualsiasi nuovo PTF aggiunto a questo file è immediatamente
-# disponibile via 'iq lazy-analyze --ptf <nome_variabile>'.
+# disponibile via 'iq l-analyze --ptf <nome_variabile>'.
 # Questo registry serve esclusivamente al workflow CLI/JN
 # dell'architetto - i PTF dei gestori bancari (webapp futura)
 # useranno un meccanismo runtime separato, non questo file.
@@ -172,11 +175,21 @@ for _name, _obj in list(globals().items()):
     if _name.startswith('_') or _name == 'L_PORTFOLIO_REGISTRY':
         continue
     if isinstance(_obj, dict) and len(_obj) > 0:
+        # Vecchio formato flat: {ticker: peso}
         _vals = list(_obj.values())
         if all(isinstance(v, (int, float)) for v in _vals):
             _total = sum(_vals)
             if 0.95 <= _total <= 1.05:
                 L_PORTFOLIO_REGISTRY[_name] = _obj
+                continue
+        # Nuovo formato annidato: {"Title": ..., "tickers": {ticker: peso}, ...}
+        _tickers = _obj.get('tickers')
+        if isinstance(_tickers, dict) and len(_tickers) > 0:
+            _t_vals = list(_tickers.values())
+            if all(isinstance(v, (int, float)) for v in _t_vals):
+                _t_total = sum(_t_vals)
+                if 0.95 <= _t_total <= 1.05:
+                    L_PORTFOLIO_REGISTRY[_name] = _obj
 del _name, _obj
 
 # Sotto-registry per categoria (basati sul prefisso del nome)
