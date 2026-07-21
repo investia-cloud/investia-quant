@@ -13528,9 +13528,20 @@ def generate_relazione_investitore_pdf(
         canvas.saveState()
         canvas.setFillColor(C_NAVY)
         canvas.rect(0, PAGE_H - 12 * mm, PAGE_W, 12 * mm, fill=1, stroke=0)
+        _logo_path = Path(__file__).resolve().parent.parent.parent / "assets" / "logo_investia.png"
+        _logo_size = 9 * mm
+        _logo_x = 4 * mm
+        _logo_y = PAGE_H - 12 * mm + (12 * mm - _logo_size) / 2
+        if _logo_path.exists():
+            canvas.drawImage(str(_logo_path), _logo_x, _logo_y,
+                             width=_logo_size, height=_logo_size,
+                             mask='auto', preserveAspectRatio=True)
+            _text_x = _logo_x + _logo_size + 3 * mm
+        else:
+            _text_x = MARGIN
         canvas.setFont('Helvetica-Bold', 9)
         canvas.setFillColor(C_WHITE)
-        canvas.drawString(MARGIN, PAGE_H - 8 * mm,
+        canvas.drawString(_text_x, PAGE_H - 8 * mm,
                           'InvestIA — Relazione Investitore')
         canvas.drawRightString(PAGE_W - MARGIN, PAGE_H - 8 * mm, _ptf_label)
         canvas.setFont('Helvetica', 7.5)
@@ -15268,10 +15279,21 @@ def generate_relazione_tecnica(
         canvas.saveState()
         canvas.setFillColor(C_NAVY)
         canvas.rect(0, PAGE_H - 12 * mm, PAGE_W, 12 * mm, fill=1, stroke=0)
+        _logo_path = Path(__file__).resolve().parent.parent.parent / "assets" / "logo_investia.png"
+        _logo_size = 9 * mm
+        _logo_x = 4 * mm
+        _logo_y = PAGE_H - 12 * mm + (12 * mm - _logo_size) / 2
+        if _logo_path.exists():
+            canvas.drawImage(str(_logo_path), _logo_x, _logo_y,
+                             width=_logo_size, height=_logo_size,
+                             mask='auto', preserveAspectRatio=True)
+            _text_x = _logo_x + _logo_size + 3 * mm
+        else:
+            _text_x = MARGIN
         canvas.setFont('Helvetica-Bold', 9)
         canvas.setFillColor(C_WHITE)
-        canvas.drawString(MARGIN, PAGE_H - 8 * mm,
-                          'TSlab — Quantitative Portfolio Lab')
+        canvas.drawString(_text_x, PAGE_H - 8 * mm,
+                          'InvestIA — Relazione Tecnica')
         canvas.drawRightString(PAGE_W - MARGIN, PAGE_H - 8 * mm, _ptf_label)
         canvas.setFont('Helvetica', 7.5)
         canvas.setFillColor(rl_colors.HexColor('#666666'))
