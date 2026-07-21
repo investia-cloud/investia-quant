@@ -2111,10 +2111,16 @@ def _compute_lazy_full(
         ofc_compute_dsr,
     )
 
+    # Supporta sia il vecchio formato flat {ticker: peso} sia il nuovo annidato
+    # {"Title": str, "tickers": {ticker: peso}, "benchmark": str}.
+    # Le funzioni di pipeline si aspettano sempre il flat {ticker: peso}.
+    _nested_tickers = portfolio_cfg.get('tickers') if isinstance(portfolio_cfg.get('tickers'), dict) else None
+    _pf_weights = _nested_tickers if _nested_tickers is not None else portfolio_cfg
+
     # 2. analisi lazy headless + backtest B&H con best_freq
     sub_output_dir = Path(output_dir) / ptf_name
     risultati = run_lazy_analysis(
-        portfolio_cfg=portfolio_cfg,
+        portfolio_cfg=_pf_weights,
         output_dir=sub_output_dir,
         title=ptf_name,
         start_date=start_date,
@@ -2129,7 +2135,7 @@ def _compute_lazy_full(
         freq_selection_metric='sharpe',
         verbose=verbose,
     )
-    pf_proposed = run_bh_backtest(portfolio_cfg, start_date, end_date,
+    pf_proposed = run_bh_backtest(_pf_weights, start_date, end_date,
                                   init_cash, fees, risultati['best_freq'])
 
     # 2b. benchmark B&H (singolo ticker) per il confronto §3 della relazione
@@ -2155,7 +2161,7 @@ def _compute_lazy_full(
 
     # 5. MC B (rebalancing con jitter)
     mc_b = lazy_mc_block_b_rebalancing(
-        portfolio=portfolio_cfg, start_date=start_date, end_date=end_date,
+        portfolio=_pf_weights, start_date=start_date, end_date=end_date,
         best_freq=risultati['best_freq'], n_simulations=n_simulations_mc_b,
         jitter_days=30, init_cash=init_cash, fees=fees, verbose=False,
     )

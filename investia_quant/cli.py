@@ -95,8 +95,12 @@ def _resolve_portfolio(ptf_name: str, ns: dict):
         if "trading_systems" in obj:
             return obj, "K"
         if "tickers" in obj:
-            return obj, "R"
-        # dict semplice {ticker: peso} -> Lazy portfolio
+            # R: tickers è una lista di ticker (motore rotazionale, no pesi fissi)
+            # L nuovo formato: tickers è un dict {ticker: peso} con somma ~1.0
+            if isinstance(obj["tickers"], list):
+                return obj, "R"
+            return obj, "L"
+        # dict semplice {ticker: peso} -> Lazy portfolio vecchio formato
         return obj, "L"
 
     available_r = list(r_registry.keys())
@@ -927,10 +931,16 @@ def l_analyze(ptf, output_dir, start_date, end_date, benchmark,
                 continue
             try:
                 portfolio_cfg = rich.get("portfolio_cfg") or l_registry.get(ptf_name, {})
+                # Supporta sia formato flat {ticker: peso} sia annidato
+                # {"Title": ..., "tickers": {ticker: peso}, "benchmark": ...}
+                _nested = portfolio_cfg.get("tickers") if isinstance(portfolio_cfg.get("tickers"), dict) else None
+                _flat_tickers = _nested if _nested is not None else portfolio_cfg
+                _title = portfolio_cfg.get("Title") or ptf_name
+                _bm = portfolio_cfg.get("benchmark") or portfolio_cfg.get("benchmark_title") or benchmark
                 portfolio_for_report = {
-                    "Title": ptf_name,
-                    "benchmark": benchmark,
-                    "tickers": portfolio_cfg,
+                    "Title": _title,
+                    "benchmark": _bm,
+                    "tickers": _flat_tickers,
                 }
                 reports_dir = os.path.join(out_dir, ptf_name)
                 generate_relazione_investitore_report_fn(
