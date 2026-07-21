@@ -558,8 +558,9 @@ def efficient_frontier_pypfopt(
     compute_real_annual_return: bool = True,
     start_date=None,
     end_date=None,
+    _preloaded_price=None,
 ) -> dict:
-    
+
     if len(tickers) < 2:
         print(
             "[efficient_frontier_pypfopt] Analisi non applicabile con un solo ticker "
@@ -569,17 +570,20 @@ def efficient_frontier_pypfopt(
         )
         return None, None
 
-    # Calcola date di inizio e fine
-    if end_date is None:
-        end_date = datetime.today()
+    if _preloaded_price is not None:
+        price = _preloaded_price
     else:
-        end_date = pd.to_datetime(end_date).to_pydatetime()
-    if start_date is None:
-        start_date = datetime(end_date.year - years, 1, 1)
-    else:
-        start_date = pd.to_datetime(start_date).to_pydatetime()
+        # Calcola date di inizio e fine
+        if end_date is None:
+            end_date = datetime.today()
+        else:
+            end_date = pd.to_datetime(end_date).to_pydatetime()
+        if start_date is None:
+            start_date = datetime(end_date.year - years, 1, 1)
+        else:
+            start_date = pd.to_datetime(start_date).to_pydatetime()
 
-    price = load_ohlcv(tickers, start=start_date, end=end_date)["Close"].dropna(how='any')
+        price = load_ohlcv(tickers, start=start_date, end=end_date)["Close"].dropna(how='any')
     if isinstance(price, pd.Series):
         price = price.to_frame(name=tickers[0])
     mu = expected_returns.mean_historical_return(price)
@@ -973,6 +977,8 @@ def run_portfolio_analysis(
     vbt_plot_width: int = 800,
     run_as_app: bool = False,
     min_years: int = 5,
+    _preloaded: tuple = None,
+    _preloaded_bm_data=None,
 ):
     """
     Backtest e report multipli grafici.
@@ -1000,7 +1006,7 @@ def run_portfolio_analysis(
     pf = run_bh_backtest(
         portfolio, start_date_dt, end_date_dt,
         init_cash=init_cash, fees=fees, rebalance_freq=rebalance_freq,
-        min_years=min_years,
+        min_years=min_years, _preloaded=_preloaded,
     )
     if pf is None:
         print(f"[run_portfolio_analysis] {title!r}: storico insufficiente "
@@ -1011,7 +1017,7 @@ def run_portfolio_analysis(
     # if not run_as_app:
     #     print(f"🔎 Analisi {header} «{title}»")
 
-    benchmark_data = download_data(benchmark,start_date,end_date)
+    benchmark_data = _preloaded_bm_data if _preloaded_bm_data is not None else download_data(benchmark, start_date, end_date)
 
     show_report=False if run_as_app else True
 
@@ -1484,6 +1490,7 @@ def lazy_mc_block_b_rebalancing(
     random_seed: int = 42,
     verbose: bool = False,
     min_years: int = 5,
+    _preloaded_price=None,
 ) -> dict:
     """
     MC Block B — Skill test sul ribilanciamento.
@@ -1500,29 +1507,41 @@ def lazy_mc_block_b_rebalancing(
     weights_dict = {k.upper(): v for k, v in weights_dict.items()}
     tickers = list(weights_dict.keys())
     weights = pd.Series(weights_dict, dtype=float)
+
+    # Costruisce _preloaded_bh per run_bh_backtest se i prezzi sono già disponibili
+    _preloaded_bh = (weights, _preloaded_price) if _preloaded_price is not None else None
+
     # 1. Metriche PTF reale
     # NOTA: passa il portfolio ORIGINALE (non weights_dict) — run_bh_backtest
     # fa la propria estrazione "tickers"/flat internamente, stessa logica qui.
     pf_actual = run_bh_backtest(portfolio, start_date, end_date,
-                                init_cash, fees, best_freq, min_years=min_years)
+                                init_cash, fees, best_freq, min_years=min_years,
+                                _preloaded=_preloaded_bh)
     if pf_actual is None:
         print(f"[lazy_mc_block_b_rebalancing] Storico insufficiente — skip (vedi diagnostica sopra).")
-        return None    
-    
+        return None
+
     actual_sharpe = float(pf_actual.sharpe_ratio())
     actual_cagr   = _cagr_from_equity(pf_actual)
 
-    # 2. Scarica prezzi una sola volta
-    price = load_ohlcv(tickers, start=start_date, end=end_date,
-                       multi_level_index=False)
-    if 'Close' in price.columns.get_level_values(0) if isinstance(price.columns, pd.MultiIndex) else []:
-        price = price['Close']
-    elif 'Close' in price.columns:
-        price = price[['Close'] if len(tickers) == 1 else tickers]
-    if isinstance(price, pd.Series):
-        price = price.to_frame(name=tickers[0])
-    price.columns = [c.upper() for c in price.columns]
-    price = price.dropna(how='any')
+    # 2. Prezzi per il loop simulazioni — usa _preloaded_price se disponibile
+    if _preloaded_price is not None:
+        price = _preloaded_price
+        if isinstance(price, pd.Series):
+            price = price.to_frame(name=tickers[0])
+        price.columns = [c.upper() for c in price.columns]
+        # price è già dropna-aligned da _prepare_bh_data
+    else:
+        price = load_ohlcv(tickers, start=start_date, end=end_date,
+                           multi_level_index=False)
+        if 'Close' in price.columns.get_level_values(0) if isinstance(price.columns, pd.MultiIndex) else []:
+            price = price['Close']
+        elif 'Close' in price.columns:
+            price = price[['Close'] if len(tickers) == 1 else tickers]
+        if isinstance(price, pd.Series):
+            price = price.to_frame(name=tickers[0])
+        price.columns = [c.upper() for c in price.columns]
+        price = price.dropna(how='any')
 
     if price.empty:
         raise ValueError("[lazy_mc_block_b_rebalancing] Nessun dato scaricato.")
@@ -1925,6 +1944,8 @@ def run_lazy_analysis(
     weight_bounds: tuple = (0, 1),
     verbose: bool = False,
     min_years: int = 5,
+    _preloaded_price=None,
+    _preloaded_bm_data=None,
 ) -> dict:
     """
     Pipeline completa Lazy portfolio in modalità headless.
@@ -1960,13 +1981,25 @@ def run_lazy_analysis(
     tickers    = list(portfolio_cfg.keys())
     my_weights = list(portfolio_cfg.values())
 
+    # Se i prezzi PTF sono stati pre-scaricati da _compute_lazy_full, costruiamo
+    # il tuple (_preloaded) da passare a run_bh_backtest evitando ulteriori download.
+    # NOTA: efficient_frontier_pypfopt usa un range basato su `years` (da oggi) che
+    # può differire da _start_date quando start_date è esplicitamente specificato —
+    # per questo la frontiera NON usa _preloaded_price (range potenzialmente diverso).
+    if _preloaded_price is not None:
+        _weights_for_preload = pd.Series(portfolio_cfg, dtype=float)
+        _preloaded_bh = (_weights_for_preload, _preloaded_price)
+    else:
+        _preloaded_bh = None
+
     # ── 1. FREQUENCY SELECTION ───────────────────────────────────────────────
     if auto_freq:
         freqs = ['W', 'M', 'Q', 'Y', None]
         rows = []
         for freq in freqs:
             pf_f = run_bh_backtest(portfolio_cfg, _start_date, end_date,
-                                   init_cash, fees, freq, min_years=min_years)
+                                   init_cash, fees, freq, min_years=min_years,
+                                   _preloaded=_preloaded_bh)
             if pf_f is None:
                 break
             rows.append({
@@ -2026,7 +2059,7 @@ def run_lazy_analysis(
     # ── 2. BACKTEST CON FREQUENZA OTTIMALE ───────────────────────────────────
     portfolio_pf = run_bh_backtest(portfolio_cfg, _start_date, end_date,
                                    init_cash, fees, best_freq,
-                                   min_years=min_years)
+                                   min_years=min_years, _preloaded=_preloaded_bh)
 
     # ── 3. FRONTIERA EFFICIENTE ───────────────────────────────────────────────
     frontier_fig, df_special = efficient_frontier_pypfopt(
@@ -2071,6 +2104,8 @@ def run_lazy_analysis(
         efficient_frontier=False,
         run_as_app=not plot,
         min_years=min_years,
+        _preloaded=_preloaded_bh,
+        _preloaded_bm_data=_preloaded_bm_data,
     )
 
     return {
@@ -2140,6 +2175,22 @@ def _compute_lazy_full(
     _nested_tickers = portfolio_cfg.get('tickers') if isinstance(portfolio_cfg.get('tickers'), dict) else None
     _pf_weights = _nested_tickers if _nested_tickers is not None else portfolio_cfg
 
+    # ── PRE-FETCH UNICO: scarica prezzi PTF e benchmark UNA SOLA VOLTA ──────
+    # Tutti i download successivi nella pipeline vengono eliminati passando
+    # _preloaded_price / _preloaded_bh alle funzioni che lo accettano.
+    _ptf_loaded_weights, _price_ptf = _prepare_bh_data(_pf_weights, start_date, end_date, min_years)
+    if _price_ptf is None:
+        raise ValueError(
+            f"[_compute_lazy_full] {ptf_name}: storico PTF insufficiente "
+            f"(min_years={min_years}) — skip (vedi diagnostica sopra)."
+        )
+
+    _bm_loaded_weights, _price_bm = _prepare_bh_data({benchmark: 1.0}, start_date, end_date, min_years)
+    _bm_preloaded_arg = (_bm_loaded_weights, _price_bm) if _price_bm is not None else None
+    if _price_bm is None and verbose:
+        print(f"[_compute_lazy_full] {ptf_name}: pf_benchmark non disponibile "
+              f"(benchmark={benchmark}, min_years={min_years}) — grafici vs benchmark disabilitati.")
+
     # 2. analisi lazy headless + backtest B&H con best_freq
     sub_output_dir = Path(output_dir) / ptf_name
     risultati = run_lazy_analysis(
@@ -2158,10 +2209,13 @@ def _compute_lazy_full(
         freq_selection_metric='sharpe',
         verbose=verbose,
         min_years=min_years,
+        _preloaded_price=_price_ptf,
+        _preloaded_bm_data=_price_bm,
     )
     pf_proposed = run_bh_backtest(_pf_weights, start_date, end_date,
                                   init_cash, fees, risultati['best_freq'],
-                                  min_years=min_years)
+                                  min_years=min_years,
+                                  _preloaded=(_ptf_loaded_weights, _price_ptf))
     if pf_proposed is None:
         raise ValueError(
             f"[_compute_lazy_full] {ptf_name}: storico insufficiente per "
@@ -2169,15 +2223,16 @@ def _compute_lazy_full(
         )
 
     # 2b. benchmark B&H (singolo ticker) per il confronto §3 della relazione
-    try:
-        pf_benchmark = run_bh_backtest({benchmark: 1.0}, start_date, end_date,
-                                       init_cash, fees, None,
-                                       min_years=min_years)
-    except Exception:
+    if _bm_preloaded_arg is not None:
+        try:
+            pf_benchmark = run_bh_backtest({benchmark: 1.0}, start_date, end_date,
+                                           init_cash, fees, None,
+                                           min_years=min_years,
+                                           _preloaded=_bm_preloaded_arg)
+        except Exception:
+            pf_benchmark = None
+    else:
         pf_benchmark = None
-    if pf_benchmark is None and verbose:
-        print(f"[_compute_lazy_full] {ptf_name}: pf_benchmark non disponibile "
-              f"(benchmark={benchmark}, min_years={min_years}) — grafici vs benchmark disabilitati.")
 
     # 3. stabilità rolling del PTF reale
     stability = lazy_rolling_stability(
@@ -2198,7 +2253,7 @@ def _compute_lazy_full(
         portfolio=_pf_weights, start_date=start_date, end_date=end_date,
         best_freq=risultati['best_freq'], n_simulations=n_simulations_mc_b,
         jitter_days=30, init_cash=init_cash, fees=fees, verbose=False,
-        min_years=min_years,
+        min_years=min_years, _preloaded_price=_price_ptf,
     )
 
     # 6. DSR
