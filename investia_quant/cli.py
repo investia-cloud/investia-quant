@@ -873,87 +873,38 @@ def l_analyze(ptf, output_dir, start_date, end_date, benchmark,
     _get_dir = ns.get("get_analysis_output_dir")
     out_dir = output_dir or str(_get_dir("l_analysis"))
 
-    run_lazy_batch_analysis_fn = ns.get("run_lazy_batch_analysis")
-    if run_lazy_batch_analysis_fn is None:
+    run_lazy_portfolio_analysis_fn = ns.get("run_lazy_portfolio_analysis")
+    if run_lazy_portfolio_analysis_fn is None:
         raise click.ClickException(
-            "run_lazy_batch_analysis non trovata in mc_functions.py "
+            "run_lazy_portfolio_analysis non trovata in mc_functions.py "
             "(verifica che sia stata aggiunta e che _load_all_libs() "
             "abbia importato mc_functions correttamente)."
         )
 
-    # Con --pdf raccogliamo gli oggetti rich per ogni PTF (details_out) così da
-    # poter generare la relazione tecnica a fine pipeline.
-    details = {} if gen_pdf else None
+    result = run_lazy_portfolio_analysis_fn(
+        registry=l_registry,
+        ptf_names=ptf_names,
+        output_dir=out_dir,
+        start_date=start_date,
+        end_date=end_date,
+        benchmark=benchmark,
+        init_cash=init_cash,
+        fees=fees,
+        years=years,
+        n_simulations_mc_a=n_simulations_mc_a,
+        n_simulations_mc_b=n_simulations_mc_b,
+        override=override,
+        verbose=verbose,
+        min_years=min_years,
+        generate_pdf=gen_pdf,
+    )
 
-    # La barra di progresso yfinance usa print diretto su stderr (non logging),
-    # quindi reindirizzo stdout+stderr a devnull durante la chiamata quando non
-    # verbose. Il riepilogo finale è stampato dopo, fuori dal blocco redirect.
-    import os
-    import contextlib
-    with contextlib.ExitStack() as _silence:
-        if not verbose:
-            _devnull = _silence.enter_context(open(os.devnull, "w"))
-            _silence.enter_context(contextlib.redirect_stdout(_devnull))
-            _silence.enter_context(contextlib.redirect_stderr(_devnull))
-        df = run_lazy_batch_analysis_fn(
-            registry=l_registry,
-            ptf_names=ptf_names,
-            output_dir=out_dir,
-            start_date=start_date,
-            end_date=end_date,
-            benchmark=benchmark,
-            init_cash=init_cash,
-            fees=fees,
-            years=years,
-            n_simulations_mc_a=n_simulations_mc_a,
-            n_simulations_mc_b=n_simulations_mc_b,
-            override=override,
-            verbose=verbose,
-            details_out=details,
-            min_years=min_years,
-        )
-
+    df = result['df']
     print(f"\n[iq l-analyze] Completato. {len(df)} PTF analizzati.")
     print(f"Output dir: {out_dir}")
     print(df.to_string(index=False))
     n_promoted = (df["Verdetto"] == "PROMOSSO").sum() if "Verdetto" in df.columns else 0
     print(f"\nPromossi: {n_promoted}/{len(df)}")
-
-    # ── Relazione Investitore PDF (--pdf) ────────────────────────────────────
-    if gen_pdf and details:
-        generate_relazione_investitore_report_fn = ns.get("generate_relazione_investitore_report")
-        if generate_relazione_investitore_report_fn is None:
-            raise click.ClickException(
-                "generate_relazione_investitore_report non trovata in r_functions.py.")
-        os.makedirs(out_dir, exist_ok=True)
-
-        for ptf_name, rich in details.items():
-            verdetto = rich.get("verdetto", "RIGETTATO")
-            if verdetto != "PROMOSSO":
-                print(f"[iq l-analyze] {ptf_name}: RIGETTATO — relazione investitore non generata.")
-                continue
-            try:
-                portfolio_cfg = rich.get("portfolio_cfg") or l_registry.get(ptf_name, {})
-                # Supporta sia formato flat {ticker: peso} sia annidato
-                # {"Title": ..., "tickers": {ticker: peso}, "benchmark": ...}
-                _nested = portfolio_cfg.get("tickers") if isinstance(portfolio_cfg.get("tickers"), dict) else None
-                _flat_tickers = _nested if _nested is not None else portfolio_cfg
-                _title = portfolio_cfg.get("Title") or ptf_name
-                _bm = portfolio_cfg.get("benchmark") or portfolio_cfg.get("benchmark_title") or benchmark
-                portfolio_for_report = {
-                    "Title": _title,
-                    "benchmark": _bm,
-                    "tickers": _flat_tickers,
-                }
-                reports_dir = os.path.join(out_dir, ptf_name)
-                generate_relazione_investitore_report_fn(
-                    out=rich["out"],
-                    portfolio=portfolio_for_report,
-                    reports_dir=reports_dir,
-                    year=None,
-                )
-            except Exception as exc:
-                print(f"[WARN] Relazione investitore '{ptf_name}' fallita: {exc}")
 
 
 # ---------------------------------------------------------------------------
