@@ -3284,3 +3284,100 @@ def generate_relazione_tecnica_lazy(
     doc.build(story, onFirstPage=_draw_hf, onLaterPages=_draw_hf)
     return output_path
 
+
+def run_lazy_portfolio_analysis(
+    registry: dict,
+    ptf_names: list,
+    output_dir: str,
+    start_date: str = '2016-01-01',
+    end_date=None,
+    benchmark: str = 'SPY',
+    init_cash: float = 100_000.0,
+    fees: float = 0.001,
+    years: int = 10,
+    n_simulations_mc_a: int = 1000,
+    n_simulations_mc_b: int = 500,
+    override: bool = False,
+    verbose: bool = False,
+    min_years: int = 5,
+    generate_pdf: bool = False,
+) -> dict:
+    """
+    Entry point unico per iq l-analyze: esegue la pipeline batch Lazy e,
+    se generate_pdf=True, genera la Relazione Investitore PDF per ogni PTF
+    promosso.
+
+    Returns
+    -------
+    dict con chiavi:
+        'df'        : pd.DataFrame di classificazione (output di run_lazy_batch_analysis)
+        'pdf_paths' : dict {ptf_name: Path | None} — presente solo se generate_pdf=True,
+                      None per i PTF saltati o con errori
+    """
+    import os
+    import contextlib
+
+    details = {} if generate_pdf else None
+
+    with contextlib.ExitStack() as _silence:
+        if not verbose:
+            _devnull = _silence.enter_context(open(os.devnull, "w"))
+            _silence.enter_context(contextlib.redirect_stdout(_devnull))
+            _silence.enter_context(contextlib.redirect_stderr(_devnull))
+        df = run_lazy_batch_analysis(
+            registry=registry,
+            ptf_names=ptf_names,
+            output_dir=output_dir,
+            start_date=start_date,
+            end_date=end_date,
+            benchmark=benchmark,
+            init_cash=init_cash,
+            fees=fees,
+            years=years,
+            n_simulations_mc_a=n_simulations_mc_a,
+            n_simulations_mc_b=n_simulations_mc_b,
+            override=override,
+            verbose=verbose,
+            details_out=details,
+            min_years=min_years,
+        )
+
+    result = {'df': df, 'pdf_paths': {}}
+
+    if generate_pdf and details:
+        from r_functions import generate_relazione_investitore_report
+        os.makedirs(output_dir, exist_ok=True)
+
+        for ptf_name, rich in details.items():
+            verdetto = rich.get("verdetto", "RIGETTATO")
+            if verdetto != "PROMOSSO":
+                print(f"[iq l-analyze] {ptf_name}: RIGETTATO — relazione investitore non generata.")
+                result['pdf_paths'][ptf_name] = None
+                continue
+            try:
+                portfolio_cfg = rich.get("portfolio_cfg") or registry.get(ptf_name, {})
+                # Supporta sia formato flat {ticker: peso} sia annidato
+                # {"Title": ..., "tickers": {ticker: peso}, "benchmark": ...}
+                _nested = portfolio_cfg.get("tickers") if isinstance(portfolio_cfg.get("tickers"), dict) else None
+                _flat_tickers = _nested if _nested is not None else portfolio_cfg
+                _title = portfolio_cfg.get("Title") or ptf_name
+                _bm = portfolio_cfg.get("benchmark") or portfolio_cfg.get("benchmark_title") or benchmark
+                portfolio_for_report = {
+                    "Title": _title,
+                    "benchmark": _bm,
+                    "tickers": _flat_tickers,
+                }
+                reports_dir = os.path.join(output_dir, ptf_name)
+                pdf_result = generate_relazione_investitore_report(
+                    out=rich["out"],
+                    portfolio=portfolio_for_report,
+                    reports_dir=reports_dir,
+                    year=None,
+                )
+                result['pdf_paths'][ptf_name] = (pdf_result or {}).get("pdf_path")
+            except Exception as exc:
+                print(f"[WARN] Relazione investitore '{ptf_name}' fallita: {exc}")
+                result['pdf_paths'][ptf_name] = None
+
+    return result
+

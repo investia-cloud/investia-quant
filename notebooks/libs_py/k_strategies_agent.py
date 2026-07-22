@@ -5125,3 +5125,320 @@ def strategy_sma_state(data: pd.DataFrame, params: dict, year: int | None = None
     shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
     shifted_exits   = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
     return shifted_entries, shifted_exits
+
+
+# ─────────────────────────────────────
+# Fonte: The Russell 2000 Rebalancing Trade
+# URL:   https://medium.com/@Kryptera/the-russell-2000-rebalancing-trade-891f29a959b6
+# Data:  2026-07-22 02:00
+# ─────────────────────────────────────
+
+# VALIDAZIONE FALLITA: Manca almeno un indicatore ind_<nome>
+
+############################
+# Strategy russell_rebalance
+############################
+
+import pandas as pd
+import numpy as np
+
+
+strategy_russell_rebalance_param_ranges = {
+    'june_day_range': range(21, 26, 1),
+}
+
+
+def strategy_russell_rebalance(data: pd.DataFrame, params: dict, year: int | None = None):
+    june_day = params.get('june_day_range', 23)
+
+    df = data.copy()
+
+    # Compute entry and exit signals over the full dataset
+    # Entry: first trading day after June {june_day} of each year
+    # Exit:  first trading day of July of the same year
+
+    index = df.index
+
+    entries = pd.Series(False, index=index)
+    exits   = pd.Series(False, index=index)
+
+    years = index.year.unique()
+
+    for yr in years:
+        yr_mask = index.year == yr
+
+        # --- Entry: first trading day strictly after June {june_day} ---
+        june_cutoff = pd.Timestamp(year=int(yr), month=6, day=int(june_day))
+        after_cutoff = index[(index > june_cutoff) & (index.month == 6)]
+        if len(after_cutoff) == 0:
+            # Look into July as well if no June day found after cutoff
+            after_cutoff_jul = index[(index > june_cutoff) & (index.month == 7)]
+            if len(after_cutoff_jul) > 0:
+                entry_date = after_cutoff_jul[0]
+                entries.loc[entry_date] = True
+        else:
+            entry_date = after_cutoff[0]
+            entries.loc[entry_date] = True
+
+        # --- Exit: first trading day of July ---
+        july_days = index[(index.year == yr) & (index.month == 7)]
+        if len(july_days) > 0:
+            exit_date = july_days[0]
+            exits.loc[exit_date] = True
+
+    if year is not None:
+        df = df[df.index.year == int(year)]
+        entries = entries[entries.index.year == int(year)]
+        exits   = exits[exits.index.year == int(year)]
+
+    shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    shifted_exits   = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    return shifted_entries, shifted_exits
+
+
+# ─────────────────────────────────────
+# Fonte: I Found a Volume Delta Divergence Indicator on TradingView.
+# URL:   https://medium.com/@Kryptera/i-found-a-volume-delta-divergence-indicator-on-tradingview-1c03962e9241
+# Data:  2026-07-22 02:01
+# ─────────────────────────────────────
+
+############################
+# Strategy hayden_divergence
+############################
+
+import numpy as np
+import pandas as pd
+
+
+def ind_hayden_divergence_rsi(close: pd.Series, period: int = 14) -> pd.Series:
+    delta = close.diff()
+    gain = np.where(delta > 0, delta, 0.0)
+    loss = np.where(delta < 0, -delta, 0.0)
+    gain_arr = gain.astype(float)
+    loss_arr = loss.astype(float)
+    avg_gain = np.empty(len(close))
+    avg_loss = np.empty(len(close))
+    avg_gain[:] = np.nan
+    avg_loss[:] = np.nan
+    if len(close) < period:
+        rsi = pd.Series(np.full(len(close), 50.0), index=close.index)
+        return rsi
+    avg_gain[period - 1] = np.mean(gain_arr[:period])
+    avg_loss[period - 1] = np.mean(loss_arr[:period])
+    alpha = 1.0 / period
+    for i in range(period, len(close)):
+        avg_gain[i] = avg_gain[i - 1] * (1 - alpha) + gain_arr[i] * alpha
+        avg_loss[i] = avg_loss[i - 1] * (1 - alpha) + loss_arr[i] * alpha
+    safe_loss = np.where(avg_loss != 0, avg_loss, 1.0)
+    rs = np.where(avg_loss != 0, avg_gain / safe_loss, 100.0)
+    rsi_arr = np.where(avg_loss != 0, 100.0 - 100.0 / (1.0 + rs), 100.0)
+    rsi_arr[:period - 1] = np.nan
+    return pd.Series(rsi_arr, index=close.index)
+
+
+def ind_hayden_divergence_pivots(series: pd.Series, lookback: int = 4):
+    vals = series.values.astype(float)
+    n = len(vals)
+    is_pl = np.zeros(n, dtype=bool)
+    is_ph = np.zeros(n, dtype=bool)
+    for i in range(lookback, n - lookback):
+        window = vals[i - lookback: i + lookback + 1]
+        if np.isnan(vals[i]):
+            continue
+        if vals[i] == np.nanmin(window):
+            is_pl[i] = True
+        if vals[i] == np.nanmax(window):
+            is_ph[i] = True
+    pl = pd.Series(is_pl, index=series.index)
+    ph = pd.Series(is_ph, index=series.index)
+    # Shift forward by lookback to remove look-ahead bias
+    pl = pl.shift(lookback).fillna(False).astype(bool)
+    ph = ph.shift(lookback).fillna(False).astype(bool)
+    return pl, ph
+
+
+def ind_hayden_divergence_signals(
+    df: pd.DataFrame,
+    rsi_period: int = 14,
+    pivot_lookback: int = 4,
+    min_strength_pct: int = 25,
+    use_hidden_bull: bool = True,
+):
+    close = df['Close']
+    low = df['Low']
+    high = df['High']
+
+    rsi = ind_hayden_divergence_rsi(close, rsi_period)
+
+    # Hayden RSI Regime: latch above 70 → Bull, drop below 40 → Bear
+    regime_arr = np.zeros(len(close), dtype=int)  # 0=neutral, 1=bull
+    rsi_vals = rsi.values
+    for i in range(len(rsi_vals)):
+        if i == 0:
+            regime_arr[i] = 0
+        else:
+            if rsi_vals[i] >= 70:
+                regime_arr[i] = 1
+            elif rsi_vals[i] <= 40:
+                regime_arr[i] = 0
+            else:
+                regime_arr[i] = regime_arr[i - 1]
+    bull_regime = pd.Series(regime_arr == 1, index=close.index)
+
+    # Pivot detection on RSI and price
+    rsi_pl, rsi_ph = ind_hayden_divergence_pivots(rsi, pivot_lookback)
+    price_pl, price_ph = ind_hayden_divergence_pivots(low, pivot_lookback)
+    price_ph2, _ = ind_hayden_divergence_pivots(high, pivot_lookback)
+
+    # Strength scoring based on bar distance between two pivots
+    def strength_score(dist: int, min_pct: int) -> int:
+        if dist <= 4:
+            s = 100
+        elif dist <= 8:
+            s = 75
+        elif dist <= 12:
+            s = 50
+        elif dist <= 16:
+            s = 25
+        else:
+            s = 0
+        return s if s >= min_pct else 0
+
+    n = len(close)
+    close_vals = close.values
+    low_vals = low.values
+    high_vals = high.values
+    rsi_vals2 = rsi.values
+    rsi_pl_vals = rsi_pl.values
+    rsi_ph_vals = rsi_ph.values
+    price_pl_vals = price_pl.values
+    price_ph_vals = price_ph2.values
+    bull_regime_vals = bull_regime.values
+
+    normal_bull_entry = np.zeros(n, dtype=bool)
+    hidden_bull_entry = np.zeros(n, dtype=bool)
+    normal_bear_exit = np.zeros(n, dtype=bool)
+
+    # For each bar where rsi_pl is true, look back for previous rsi_pl
+    # and check divergence with price_pl
+    rsi_pl_indices = np.where(rsi_pl_vals)[0]
+    price_pl_indices = np.where(price_pl_vals)[0]
+    rsi_ph_indices = np.where(rsi_ph_vals)[0]
+    price_ph_indices = np.where(price_ph_vals)[0]
+
+    # Normal Bullish Divergence: price lower low, RSI higher low
+    for idx_i, i in enumerate(rsi_pl_indices):
+        if idx_i == 0:
+            continue
+        j = rsi_pl_indices[idx_i - 1]
+        dist = i - j
+        sc = strength_score(dist, min_strength_pct)
+        if sc == 0:
+            continue
+        # Find most recent price_pl at or before i
+        prev_price_pl = price_pl_indices[price_pl_indices <= i]
+        prev_price_pl_before = price_pl_indices[price_pl_indices < j]
+        if len(prev_price_pl) == 0 or len(prev_price_pl_before) == 0:
+            continue
+        pi = prev_price_pl[-1]  # price pivot near rsi pivot i
+        pj = prev_price_pl_before[-1]  # price pivot near rsi pivot j
+        if np.isnan(rsi_vals2[i]) or np.isnan(rsi_vals2[j]):
+            continue
+        if np.isnan(low_vals[pi]) or np.isnan(low_vals[pj]):
+            continue
+        # price lower low, RSI higher low
+        if low_vals[pi] < low_vals[pj] and rsi_vals2[i] > rsi_vals2[j]:
+            normal_bull_entry[i] = True
+
+    # Hidden Bullish Divergence (Bull Regime only): price higher low, RSI lower low
+    if use_hidden_bull:
+        for idx_i, i in enumerate(rsi_pl_indices):
+            if idx_i == 0:
+                continue
+            j = rsi_pl_indices[idx_i - 1]
+            dist = i - j
+            sc = strength_score(dist, min_strength_pct)
+            if sc == 0:
+                continue
+            if not bull_regime_vals[i]:
+                continue
+            prev_price_pl = price_pl_indices[price_pl_indices <= i]
+            prev_price_pl_before = price_pl_indices[price_pl_indices < j]
+            if len(prev_price_pl) == 0 or len(prev_price_pl_before) == 0:
+                continue
+            pi = prev_price_pl[-1]
+            pj = prev_price_pl_before[-1]
+            if np.isnan(rsi_vals2[i]) or np.isnan(rsi_vals2[j]):
+                continue
+            if np.isnan(low_vals[pi]) or np.isnan(low_vals[pj]):
+                continue
+            # price higher low, RSI lower low
+            if low_vals[pi] > low_vals[pj] and rsi_vals2[i] < rsi_vals2[j]:
+                hidden_bull_entry[i] = True
+
+    # Normal Bearish Divergence (Exit): price higher high, RSI lower high
+    for idx_i, i in enumerate(rsi_ph_indices):
+        if idx_i == 0:
+            continue
+        j = rsi_ph_indices[idx_i - 1]
+        dist = i - j
+        sc = strength_score(dist, min_strength_pct)
+        if sc == 0:
+            continue
+        prev_price_ph = price_ph_indices[price_ph_indices <= i]
+        prev_price_ph_before = price_ph_indices[price_ph_indices < j]
+        if len(prev_price_ph) == 0 or len(prev_price_ph_before) == 0:
+            continue
+        pi = prev_price_ph[-1]
+        pj = prev_price_ph_before[-1]
+        if np.isnan(rsi_vals2[i]) or np.isnan(rsi_vals2[j]):
+            continue
+        if np.isnan(high_vals[pi]) or np.isnan(high_vals[pj]):
+            continue
+        # price higher high, RSI lower high
+        if high_vals[pi] > high_vals[pj] and rsi_vals2[i] < rsi_vals2[j]:
+            normal_bear_exit[i] = True
+
+    entries = pd.Series(
+        normal_bull_entry | hidden_bull_entry, index=close.index
+    )
+    exits = pd.Series(normal_bear_exit, index=close.index)
+    return entries, exits, rsi, bull_regime
+
+
+strategy_hayden_divergence_param_ranges = {
+    'rsi_period_range': range(10, 21, 5),
+    'pivot_lookback_range': range(3, 7, 1),
+    'min_strength_range': range(25, 76, 25),
+}
+
+
+def strategy_hayden_divergence(data: pd.DataFrame, params: dict, year: int | None = None):
+    rsi_period = params.get('rsi_period_range')
+    pivot_lookback = params.get('pivot_lookback_range')
+    min_strength = params.get('min_strength_range')
+
+    df = data.copy()
+
+    entries, exits, rsi, bull_regime = ind_hayden_divergence_signals(
+        df,
+        rsi_period=rsi_period,
+        pivot_lookback=pivot_lookback,
+        min_strength_pct=min_strength,
+        use_hidden_bull=True,
+    )
+
+    df['RSI'] = rsi
+    df['BullRegime'] = bull_regime
+    df['Entries'] = entries
+    df['Exits'] = exits
+
+    if year is not None:
+        df = df[df.index.year == int(year)]
+
+    entries_f = df['Entries']
+    exits_f = df['Exits']
+
+    shifted_entries = entries_f.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    shifted_exits = exits_f.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    return shifted_entries, shifted_exits
