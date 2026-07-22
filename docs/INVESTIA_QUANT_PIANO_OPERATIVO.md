@@ -1,7 +1,16 @@
 # investia-quant — Piano Operativo
 
-**Ultimo aggiornamento**: 23 giugno 2026
+**Ultimo aggiornamento**: 22 luglio 2026 (consolidamento task filiera R)
 **Root progetto**: `~/investia-quant`
+
+> **Nota consolidamento 22/07**: le voci "0.b" e "0.d-bis" sono state
+> unificate in un'unica voce "Cluster ridisegnato come pre-filtro di
+> selezione universo annuale". La voce "0.c" (narrativa relazione
+> tecnica via LLM) è stata scartata. L'item "5. Potenziamento Block B"
+> è stato unificato con la discussione sui nuovi engine di rotazione
+> del 21/07. Le voci "OFC S2 coherence" e "dubbio meta-overfitting
+> sistema OFC" (discusse il 30/06 in altra sede, mai entrate in questo
+> file) sono state scartate e non compaiono più tra i task aperti.
 
 ---
 
@@ -393,10 +402,14 @@ lo stesso motore.
 
 ### In corso — Design 2027
 
-**0.d-bis Filtro Cluster ridisegnato come pre-selezione d'universo annuale** · filiera R · design 28/06, da implementare per release 2027
+**Cluster ridisegnato come pre-filtro di selezione universo annuale** · filiera R · design 28/06, unifica le precedenti voci 0.b e 0.d-bis — consolidato 22/07
 
 Sostituisce il vecchio path Cluster (accantonato, vedi sopra) con un
-filtro a monte della WFO standard, secondo il principio "Punto 1" sopra:
+filtro a monte della WFO standard, secondo il principio "Punto 1" sopra.
+Assorbe anche l'esigenza di un clustering realmente adattivo al mercato
+(intento di progetto originario, mai implementato prima d'ora): il pool
+deve riflettere il regime corrente, non una partizione statica applicata
+identica a tutte le finestre storiche.
 
 ```
 1. CALCOLO FILTRO (una volta/anno, su dati fino a oggi)
@@ -433,76 +446,21 @@ per-finestra via TestScore) lasciando solo la WFO standard (rinominata
 semplicemente **WFO**, non più "path Standard" in opposizione a
 Cluster). Verificare che la WFO unica funzioni identica a se stessa
 prima e dopo la rimozione (nessuna regressione). Il filtro Cluster
-ridisegnato (0.d-bis) si aggiungerà SOPRA questa base pulita, non sopra
-il codice vecchio.
+ridisegnato si aggiungerà SOPRA questa base pulita, non sopra il codice
+vecchio.
 
-
-
-**0.c Generazione narrativa della relazione tecnica via LLM** · filiera R · proposta di redesign, da valutare con calma
-
-Emerso il 23/06 inseguendo un secondo bug di incoerenza nella relazione
-(`_diagnose_mc` forzava `recommended_path=None` a `'std'` per
-"retro-compat", scrivendo "path candidato al deploy" anche quando nessun
-path supera l'OFC — stessa famiglia del bug del 22/06, sintomo di un
-problema più ampio): la relazione tecnica oggi è generata da una
-combinatoria di `if/elif` scritta a mano per ogni sezione (§3, §6.b, §7),
-una per ciascuna combinazione di promosso/non-promosso × Standard/Cluster
-× profilo × skill profile. Ogni nuovo parametro (oggi: `profile`) aumenta
-la combinatoria e introduce rischio di sezioni che si disallineano tra
-loro — già successo due volte in due giorni consecutivi.
-
-Proposta valutata: separare nettamente **calcolo** (resta deterministico
-Python — OFC, Sharpe/MaxDD/CAGR, `_select_path_by_profile`, tutto
-invariato) da **narrazione** (LLM, una sola chiamata che riceve un
-pacchetto fatti finale e immutabile — es. JSON con tutti i verdetti/numeri
-già calcolati — e scrive §3/§6.b/§7 in un colpo, garantendo coerenza
-interna per costruzione invece che per disciplina di chi scrive il
-codice).
-
-Coerente con "Agente generazione automatica relazioni tecniche (in
-sviluppo)" già presente nel piano da prima, e con l'uso LLM già attivo
-altrove nel progetto (agente K-strategy).
-
-Rischi da non sottovalutare prima di procedere: hallucination numerica
-(serve validare ogni cifra nel testo generato contro il pacchetto fatti,
-non fidarsi alla cieca), riproducibilità (temperature=0 + salvataggio
-dell'output come parte dell'audit trail), nessun problema reale di
-costo/latenza per un report a PTF.
-
-Non task immediato — cambiamento di architettura della relazione, non un
-fix puntuale. Da discutere con calma in una sessione dedicata, non
-implementare di getto.
-
-**0.b Clustering ricalcolato per finestra IS — mai implementato** · filiera R · gap di design metodologico
-
-Verificato il 22/06: l'intento di progetto era un clustering realmente
-adattivo al mercato — ricalcolato per ogni finestra In-Sample (solo dati
-fino a quel punto) e testato Out-Of-Sample sulla finestra successiva,
-coerente col principio WFO stesso. Non è mai stato implementato:
-`run_clustered_wfo` riceve oggi una partizione cluster già calcolata
-(STEP 1, una sola volta, su dati recenti fino a "oggi" — lookback_days=504)
-e la applica identica a tutte le 13 finestre storiche, comprese quelle di
-10 anni fa. Bias look-ahead sulla composizione dei cluster (la struttura
-di mercato di oggi decide come si raggruppavano i titoli nel 2015),
-distinto dal bias già noto sull'universo simbolico (Wikipedia oggi
-applicato a tutto lo storico, mai risolto, resta accettato come limite
-noto del motore).
-
-Idea valutata e giudicata metodologicamente corretta, ma non banale:
-- Costo computazionale: 13x il costo della fase di clustering (oggi 1
-  esecuzione, diventerebbero 13)
+**Punti aperti ereditati dalla vecchia voce 0.b (clustering per finestra IS)**,
+da risolvere in fase di design del pre-filtro, non scartati:
+- Costo computazionale: 13x il costo della fase di clustering se si
+  ricalcola per ogni finestra storica invece che una volta/anno
 - Rischio rumore: finestre iniziali (2012-2014) con poco storico
-  potrebbero produrre partizioni instabili — rischio di sostituire un
-  bias sistematico con rumore casuale, da verificare con dati reali
-- Coerenza col pool eleggibile profile+regime appena costruito (22/06):
-  se la partizione cambia per finestra, un titolo può cambiare label nel
-  tempo → turnover più alto, e il motore oggi non modella commissioni
-  (Total Fees Paid: 0.0 in tutti i log) — diventerebbe più rilevante
+  potrebbero produrre partizioni instabili
+- Turnover più alto se la partizione cambia nel tempo, e il motore oggi
+  non modella commissioni (Total Fees Paid: 0.0 in tutti i log) —
+  diventerebbe più rilevante
 
-Non task immediato (i fix del 22/06 hanno già dato miglioramento concreto
-senza questo), ma il prossimo grande tema metodologico per la filiera R —
-tocca la validità di fondo dei numeri presentati in relazione tecnica.
-Richiede design session dedicata prima di assegnare a Code.
+Richiede design session dedicata prima di assegnare a Code. Tocca la
+validità di fondo dei numeri presentati in relazione tecnica.
 
 **1. Web Lazy portfolio** · filiera Lazy
 
@@ -540,19 +498,39 @@ Azione: definire PTF K e attivare `iq k-analyze` in crontab a fine 2026,
 in parallelo alla certificazione PTF per la release 2027.
 
 
-**5. Potenziamento Block B** · filiera R
+**5. Nuove fonti di skill per la rotazione (potenziamento Block B)** · filiera R · unifica "Potenziamento Block B" e la discussione "nuovi engine di rotazione" (21/07) — consolidato 22/07
 
-Sorgenti di skill alternative al momentum. Motivazione: molti PTF non hanno
-skill momentum ma battono il benchmark per altri driver (clustering Ward + risk-off).
+Motivazione: la MC (Block B, skill tests B1/B2) non mostra skill
+significativo per i motori attuali (momentum, multifactor) in diversi
+PTF/anni — molti PTF battono comunque il benchmark, ma per altri driver
+(clustering Ward + risk-off), non per skill di selezione/rotazione.
 
-Sorgenti candidate:
+Prima domanda da chiarire in design session, prima di scegliere una
+direzione: la MC boccia *tutti* i PTF/anni o solo alcuni? Il problema è
+nel motore di ranking o nella logica di rebalance timing? La risposta
+cambia quale famiglia di alternative ha senso esplorare per prima.
+
+Sorgenti/famiglie candidate:
 - Risk-adjusted (Sharpe/Sortino rotazionale)
 - Idiosyncratic return (residuo rispetto benchmark)
 - Low-volatility (skill nell'evitare drawdown)
 - Quality factor
 - Multi-factor composito
+- Cross-sectional mean reversion / dispersion trading (ranking per
+  deviazione da un equilibrio relativo, non momentum assoluto)
+- Correlation regime rotation (rotazione su cambi di regime di
+  correlazione tra asset, non sui rendimenti individuali)
+- Clustering dinamico come motore di rotazione stesso (rotare tra
+  cluster, non solo usarlo per la selezione del path)
+- Volatility-targeting / risk-parity rotation
+- Trend strength filtering (qualità del trend, es. R²/efficiency ratio
+  di Kaufman, non solo direzione/ampiezza)
+- Regime-switching con HMM
+- Ensemble/voting tra fattori deboli (skill emergente da combinazione,
+  anche se i singoli fattori non passano MC da soli)
 
-Da fare: design session prima di toccare codice.
+Da fare: design session prima di toccare codice — inclusa la domanda
+di cui sopra sull'estensione reale del problema.
 
 **6. Save/load completo per ri-analisi decisionale R-portfolio** · filiera R
 
@@ -959,10 +937,10 @@ e caption Fig.4 anch'esse senza highlight/riferimento fisso quando nessuno
 coerente da §3 a §7, nessuna contraddizione residua.
 
 **Proposta emersa, non implementata**: generazione narrativa via LLM
-invece di combinatoria if/elif scritta a mano — vedi priorità alta, item
-0.c. Motivata direttamente da questi due bug consecutivi, stessa famiglia
-di causa (sezioni diverse, logiche scritte a mano separatamente, rischio
-di disallineamento ad ogni nuovo parametro).
+invece di combinatoria if/elif scritta a mano, motivata direttamente da
+questi due bug consecutivi (sezioni diverse, logiche scritte a mano
+separatamente, rischio di disallineamento ad ogni nuovo parametro).
+Proposta valutata e poi **scartata il 22/07** — non più in coda.
 
 **Incidente recuperato**: confusione tra macchine (`irina`/`adriana`) —
 `origin/main` su `irina` sembrava non avere i commit del 22/06; causa
