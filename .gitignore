@@ -105,3 +105,4 @@ docs/AI_vs_Quant_InvestIA.pdf
 docs/*.pdf
 logs/k_agent.log
 FETCH_HEAD
+notebooks/dev/*-SAVE.ipynb
