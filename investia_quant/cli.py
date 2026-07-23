@@ -114,6 +114,74 @@ def _resolve_portfolio(ptf_name: str, ns: dict):
     )
 
 
+def _load_lazy_universe(universe_path_str: str):
+    """
+    Carica un PTF Lazy ad-hoc da file JSON (opzione --universe di l-analyze).
+
+    Accetta SOLO il formato nuovo/annidato (l_portfolios.py in corso di
+    uniformazione, il vecchio formato flat {ticker: peso} è legacy e non
+    è supportato qui):
+        {"Title": "Nome", "tickers": {"VTI": 0.6, "BND": 0.4}, "benchmark": "SPY"}
+
+    "Title" e "benchmark" sono opzionali (Title default al nome file,
+    benchmark è facoltativo — non tutti i PTF ne specificano uno).
+    "tickers" è obbligatorio, non vuoto, pesi numerici che sommano a ~1.0.
+
+    Non tocca L_PORTFOLIO_REGISTRY — costruisce un registry sintetico
+    monouso, con lo stesso identico shape di un PTF vero, così il resto
+    della pipeline (run_lazy_portfolio_analysis) non nota la differenza.
+
+    Ritorna (ptf_names: list[str], registry: dict).
+    Solleva click.ClickException su file mancante, JSON invalido, struttura
+    non conforme, o pesi che non sommano a ~1.0 (tolleranza 0.95-1.05,
+    stessa di L_PORTFOLIO_REGISTRY).
+    """
+    import json
+    from pathlib import Path as _Path
+
+    universe_path = _Path(universe_path_str)
+    if not universe_path.exists():
+        raise click.ClickException(f"File universe non trovato: {universe_path_str}")
+
+    try:
+        with open(universe_path) as f:
+            raw = json.load(f)
+    except json.JSONDecodeError as e:
+        raise click.ClickException(f"JSON non valido in {universe_path_str}: {e}")
+
+    if not isinstance(raw, dict):
+        raise click.ClickException(
+            "Il JSON deve essere un oggetto: "
+            "{'Title':.., 'tickers': {ticker: peso, ...}, 'benchmark':..}."
+        )
+
+    tickers_dict = raw.get("tickers")
+    if not isinstance(tickers_dict, dict) or not tickers_dict:
+        raise click.ClickException(
+            "'tickers' obbligatorio: un oggetto {ticker: peso} non vuoto. "
+            "Formato atteso: {'Title':.., 'tickers': {...}, 'benchmark':..}."
+        )
+
+    if not all(isinstance(v, (int, float)) for v in tickers_dict.values()):
+        raise click.ClickException("Tutti i pesi in 'tickers' devono essere numerici.")
+
+    total = sum(tickers_dict.values())
+    if not (0.95 <= total <= 1.05):
+        raise click.ClickException(
+            f"I pesi devono sommare a ~1.0 (somma attuale: {total:.4f}). "
+            f"Ticker: {list(tickers_dict.keys())}"
+        )
+
+    title = raw.get("Title") or universe_path.stem
+    benchmark_override = raw.get("benchmark")
+
+    portfolio_obj = {"Title": title, "tickers": tickers_dict}
+    if benchmark_override:
+        portfolio_obj["benchmark"] = benchmark_override
+
+    return [title], {title: portfolio_obj}
+
+
 def _get_credentials(ns):
     load_email_credentials = ns.get("load_email_credentials")
     if load_email_credentials is None:
@@ -793,12 +861,22 @@ def k_analyze(strategies, tickers, ptf, output_dir, start_date, end_date,
     "  iq l-analyze --ptf lazy_etf_port\n"
     "  iq l-analyze --ptf lazy_etf_port --pdf\n"
     "  iq l-analyze --ptf all --override\n"
+    "  iq l-analyze --universe inputs/mio_portafoglio.json --pdf\n"
     "\nCon --pdf: genera la Relazione Investitore solo per PTF PROMOSSI;\n"
     "  i RIGETTATI stampano un messaggio e non producono PDF.\n"
     "  Output: outputs/l_analysis/<timestamp>/<ptf>/<ptf>_Relazione_Investitore.pdf\n"
+    "\n--universe accetta un file JSON nel formato nuovo di l_portfolios.py\n"
+    "  (il vecchio formato flat {ticker: peso} è legacy, non supportato qui):\n"
+    "    {\"Title\": \"Nome\", \"tickers\": {\"VTI\": 0.6, \"BND\": 0.4}, \"benchmark\": \"SPY\"}\n"
+    "  'tickers' obbligatorio, pesi che sommano a ~1.0. 'Title'/'benchmark' opzionali.\n"
+    "  Non tocca L_PORTFOLIO_REGISTRY: il PTF resta ad-hoc, non registrato\n"
+    "  nel file — pensato per PTF definiti da utenti via webapp (R-designer/Lazy,\n"
+    "  vedi ECOSISTEMA_INVESTIA.md §8 D8), non per l'architetto via CLI.\n"
 ))
 @click.option("--ptf", default=None,
     help="Nome Lazy portfolio, oppure 'all' per tutti i PTF nel registry")
+@click.option("--universe", default=None,
+    help="File JSON PTF ad-hoc (formato nuovo: Title/tickers/benchmark) — non nel registry")
 @click.option("--output-dir", default=None,
     help="Directory output (default: outputs/l_analysis/<timestamp>/)")
 @click.option("--start-date", default="2016-01-01", show_default=True,
@@ -822,7 +900,7 @@ def k_analyze(strategies, tickers, ptf, output_dir, start_date, end_date,
 @click.option("--pdf", "gen_pdf", is_flag=True, default=False,
     help="Genera la Relazione Investitore PDF per i PTF promossi (default: solo pipeline)")
 @click.option("--verbose", "-v", is_flag=True, default=False, help="Output verboso")
-def l_analyze(ptf, output_dir, start_date, end_date, benchmark,
+def l_analyze(ptf, universe, output_dir, start_date, end_date, benchmark,
               init_cash, fees, years, n_simulations_mc_a,
               n_simulations_mc_b, override, min_years, gen_pdf, verbose):
     """Pipeline Lazy portfolio: frontiera + backtest + stability + MC A/B + DSR.
@@ -830,6 +908,9 @@ def l_analyze(ptf, output_dir, start_date, end_date, benchmark,
     Batch (--ptf all) o singolo. Con --pdf genera la Relazione Investitore per
     ogni PTF PROMOSSO in outputs/l_analysis/<timestamp>/<ptf>/<ptf_name>_Relazione_Investitore.pdf.
     I PTF RIGETTATI producono solo un messaggio — nessun PDF investitore viene generato.
+
+    --universe accetta un PTF ad-hoc (non registrato in l_portfolios.py) per
+    workflow che generano la definizione a runtime (es. webapp R-designer/Lazy).
     """
     import warnings
     warnings.filterwarnings("ignore", category=RuntimeWarning)
@@ -839,13 +920,19 @@ def l_analyze(ptf, output_dir, start_date, end_date, benchmark,
     import logging
     logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 
-    if not ptf:
-        raise click.ClickException("Specifica --ptf <nome> oppure --ptf all.")
+    if ptf and universe:
+        raise click.ClickException("Usa --ptf oppure --universe, non entrambi.")
+    if not ptf and not universe:
+        raise click.ClickException("Specifica --ptf <nome> oppure --universe <file.json>.")
 
     ns = _load_all_libs()
     l_registry = ns.get("L_PORTFOLIO_REGISTRY", {})
 
-    if ptf.lower() == "all":
+    if universe:
+        ptf_names, l_registry = _load_lazy_universe(universe)
+        if verbose:
+            click.echo(f"[iq l-analyze] PTF ad-hoc da --universe: {ptf_names[0]}")
+    elif ptf.lower() == "all":
         l_lazy_registry = ns.get("L_PORTFOLIO_LAZY", {})
         if not l_lazy_registry:
             # Fallback: se L_PORTFOLIO_LAZY non esiste (versione vecchia
