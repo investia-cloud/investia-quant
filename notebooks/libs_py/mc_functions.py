@@ -3368,6 +3368,27 @@ def run_lazy_portfolio_analysis(
                     "tickers": _flat_tickers,
                 }
                 reports_dir = os.path.join(output_dir, ptf_name)
+                os.makedirs(reports_dir, exist_ok=True)
+
+                # Sommario strutturato (Importo investito, Valore finale
+                # netto, CAGR, Max Drawdown, Deviazione standard, Sharpe,
+                # ...) — dati già calcolati in rich["out"]["sintesi_df"] per
+                # il PDF, mai persistiti prima. Scritto PRIMA del PDF e in
+                # un try/except separato: un problema di serializzazione
+                # non deve mai impedire la generazione del PDF stesso.
+                try:
+                    import json
+                    sintesi_df = rich["out"].get("sintesi_df") if rich.get("out") else None
+                    if sintesi_df is not None and not sintesi_df.empty:
+                        summary_dict = sintesi_df.iloc[0].to_dict()
+                        bm_meta = rich["out"].get("bm_meta") or {}
+                        summary_dict["Benchmark"] = bm_meta.get("benchmark_name")
+                        stats_json_path = os.path.join(reports_dir, "stats_summary.json")
+                        with open(stats_json_path, "w", encoding="utf-8") as _f:
+                            json.dump(summary_dict, _f, ensure_ascii=False, indent=2)
+                except Exception as _exc:
+                    print(f"[WARN] stats_summary.json '{ptf_name}' non scritto: {_exc}")
+
                 pdf_result = generate_relazione_investitore_report(
                     out=rich["out"],
                     portfolio=portfolio_for_report,
