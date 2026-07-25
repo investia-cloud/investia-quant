@@ -3389,6 +3389,23 @@ def run_lazy_portfolio_analysis(
                 except Exception as _exc:
                     print(f"[WARN] stats_summary.json '{ptf_name}' non scritto: {_exc}")
 
+                # Blocco STATISTICHE completo (Alpha/Beta, tracking error,
+                # underwater days, ecc. — Immagine 2 del 23/07) — stesso
+                # dict rich["out"], chiave "stats_df" invece di "sintesi_df".
+                # Try/except separato dal precedente: un problema qui non
+                # deve compromettere stats_summary.json ne' il PDF.
+                try:
+                    import json
+                    stats_df = rich["out"].get("stats_df") if rich.get("out") else None
+                    if stats_df is not None and not stats_df.empty:
+                        value_col = "Valore" if "Valore" in stats_df.columns else stats_df.columns[0]
+                        stats_full_dict = stats_df[value_col].to_dict()
+                        stats_full_path = os.path.join(reports_dir, "stats_full.json")
+                        with open(stats_full_path, "w", encoding="utf-8") as _f:
+                            json.dump(stats_full_dict, _f, ensure_ascii=False, indent=2)
+                except Exception as _exc:
+                    print(f"[WARN] stats_full.json '{ptf_name}' non scritto: {_exc}")
+
                 pdf_result = generate_relazione_investitore_report(
                     out=rich["out"],
                     portfolio=portfolio_for_report,
