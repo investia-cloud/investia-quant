@@ -28,8 +28,8 @@ sandbox_dws_lc = {
     "benchmark": "VAGF.MI"
 }
 
-sandbox_proposed_100k  = {
-    "Title": "Portafoglio Multi-Fondo",
+sandbox_multi_fondo  = {
+    "Title": "Portafoglio liquidita' Multi-Fondo",
     "tickers": {
         "IE00BH04FZ00": 0.10,  # Vanguard EUR Corporate 1-3 Year Bond UCITS ETF
         "LU0034353002": 0.20,  # DWS Floating Rate Notes LC
@@ -37,7 +37,7 @@ sandbox_proposed_100k  = {
         "IE00BK5BQV03": 0.20,  # Vanguard FTSE Developed World UCITS ETF
         "LU2963696674": 0.30,  # DWS Invest StepIn Akkumula LC
     },
-    "benchmark": "VAGF.MI"  # da confermare — benchmark non presente nell'immagine
+    "benchmark": "VAGF.MI"  # 
 }
 
 
