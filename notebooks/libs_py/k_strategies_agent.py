@@ -5442,3 +5442,256 @@ def strategy_hayden_divergence(data: pd.DataFrame, params: dict, year: int | Non
     shifted_entries = entries_f.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
     shifted_exits = exits_f.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
     return shifted_entries, shifted_exits
+
+
+# ─────────────────────────────────────
+# Fonte: Mean Reversion vs. Trend Following: What 26 Years of SPY Data Actually Says
+# URL:   https://medium.com/@Kryptera/mean-reversion-vs-trend-following-what-26-years-of-spy-data-actually-says-eb204d9412ac
+# Data:  2026-07-25 02:00
+# ─────────────────────────────────────
+
+############################
+# Strategy rsi2_sma_cross
+############################
+
+import pandas as pd
+import numpy as np
+
+
+def ind_rsi2_sma_cross_rsi(df: pd.DataFrame, rsi_window: int = 2) -> pd.Series:
+    close = df['Close']
+    delta = close.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.ewm(com=rsi_window - 1, adjust=False, min_periods=rsi_window).mean()
+    avg_loss = loss.ewm(com=rsi_window - 1, adjust=False, min_periods=rsi_window).mean()
+    avg_loss_arr = avg_loss.values
+    avg_gain_arr = avg_gain.values
+    safe_den = np.where(avg_loss_arr != 0, avg_loss_arr, 1.0)
+    rs = np.where(avg_loss_arr != 0, avg_gain_arr / safe_den, 0.0)
+    rsi = 100.0 - (100.0 / (1.0 + rs))
+    return pd.Series(rsi, index=close.index)
+
+
+def ind_rsi2_sma_cross_sma(df: pd.DataFrame, period: int) -> pd.Series:
+    return df['Close'].rolling(period, min_periods=1).mean()
+
+
+strategy_rsi2_sma_cross_param_ranges = {
+    'rsi_oversold_range': range(5, 16, 5),
+    'rsi_overbought_range': range(60, 81, 10),
+    'mr_exit_sma_range': range(3, 10, 3),
+    'sma_fast_range': range(30, 71, 20),
+    'sma_slow_range': range(100, 201, 50),
+}
+
+
+def strategy_rsi2_sma_cross(data: pd.DataFrame, params: dict, year: int | None = None):
+    rsi_oversold = params.get('rsi_oversold_range')
+    rsi_overbought = params.get('rsi_overbought_range')
+    mr_exit_sma_p = params.get('mr_exit_sma_range')
+    sma_fast_p = params.get('sma_fast_range')
+    sma_slow_p = params.get('sma_slow_range')
+
+    df = data.copy()
+
+    rsi = ind_rsi2_sma_cross_rsi(df, rsi_window=2)
+    sma_exit = ind_rsi2_sma_cross_sma(df, period=mr_exit_sma_p)
+    sma_fast = ind_rsi2_sma_cross_sma(df, period=sma_fast_p)
+    sma_slow = ind_rsi2_sma_cross_sma(df, period=sma_slow_p)
+
+    df['RSI'] = rsi
+    df['SMA_EXIT'] = sma_exit
+    df['SMA_FAST'] = sma_fast
+    df['SMA_SLOW'] = sma_slow
+
+    if year is not None:
+        df = df[df.index.year == int(year)]
+
+    # Mean reversion strategy: RSI(2) < oversold → entry, RSI > overbought OR close > sma_exit → exit
+    mr_entries = df['RSI'] < rsi_oversold
+    mr_exits = (df['RSI'] > rsi_overbought) | (df['Close'] > df['SMA_EXIT'])
+
+    # Trend following strategy: golden cross entry, death cross exit
+    fast = df['SMA_FAST']
+    slow = df['SMA_SLOW']
+    fast_prev = fast.shift(1)
+    slow_prev = slow.shift(1)
+
+    tf_entries = (fast > slow) & (fast_prev <= slow_prev)
+    tf_exits = (fast < slow) & (fast_prev >= slow_prev)
+
+    # Combine both strategies: entry on either signal
+    entries = mr_entries | tf_entries
+    exits = mr_exits | tf_exits
+
+    shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    shifted_exits   = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    return shifted_entries, shifted_exits
+
+
+# ─────────────────────────────────────
+# Fonte: I Backtested a TradingView Indicator Called “Space Concept” — Here’s What Actually Happened
+# URL:   https://medium.com/@Kryptera/i-backtested-a-tradingview-indicator-called-space-concept-heres-what-actually-happened-510889acefcf
+# Data:  2026-07-28 02:00
+# ─────────────────────────────────────
+
+############################
+# Strategy space_concept
+############################
+
+import numpy as np
+import pandas as pd
+
+
+def ind_space_concept_sma(df: pd.DataFrame, fast: int = 20, slow: int = 200) -> tuple:
+    close = df['Close']
+    sma_fast = close.rolling(fast, min_periods=1).mean()
+    sma_slow = close.rolling(slow, min_periods=1).mean()
+    return sma_fast, sma_slow
+
+
+def ind_space_concept_space(df: pd.DataFrame,
+                             sma_fast: pd.Series,
+                             sma_slow: pd.Series,
+                             space_lookback: int = 60) -> tuple:
+    close = df['Close']
+    # "space" = absolute distance between fast and slow SMA, normalized by price
+    raw_space = np.abs(sma_fast.values - sma_slow.values)
+    safe_close = np.where(close.values != 0, close.values, 1.0)
+    space = pd.Series(raw_space / safe_close, index=df.index)
+
+    space_min = space.rolling(space_lookback, min_periods=1).min()
+    space_max = space.rolling(space_lookback, min_periods=1).max()
+
+    # narrow = compressed (near multi-month low)
+    space_range = space_max - space_min
+    safe_range = np.where(space_range.values != 0, space_range.values, 1.0)
+    space_pct = pd.Series(
+        np.where(space_range.values != 0,
+                 (space.values - space_min.values) / safe_range,
+                 0.0),
+        index=df.index
+    )
+
+    return space, space_pct
+
+
+def ind_space_concept_bar_range(df: pd.DataFrame, range_lookback: int = 20) -> pd.Series:
+    bar_range = df['High'] - df['Low']
+    range_med = bar_range.rolling(range_lookback, min_periods=1).median()
+    # big range bar = bar range > median
+    big_bar = bar_range > range_med
+    return big_bar
+
+
+def ind_space_concept_trailing_stop(df: pd.DataFrame,
+                                     atr_period: int = 14,
+                                     atr_mult: float = 2.0) -> pd.Series:
+    high = df['High'].values
+    low = df['Low'].values
+    close = df['Close'].values
+    n = len(close)
+
+    hl = high - low
+    hpc = np.abs(high - np.roll(close, 1))
+    lpc = np.abs(low - np.roll(close, 1))
+    hpc[0] = hl[0]
+    lpc[0] = hl[0]
+    tr = np.maximum(np.maximum(hl, hpc), lpc)
+
+    # Wilder smoothing for ATR
+    atr_arr = np.empty(n)
+    atr_arr[0] = tr[0]
+    alpha = 1.0 / atr_period
+    for i in range(1, n):
+        atr_arr[i] = atr_arr[i - 1] * (1.0 - alpha) + tr[i] * alpha
+
+    atr = pd.Series(atr_arr, index=df.index)
+    trailing_stop = df['Close'] - atr_mult * atr
+    return trailing_stop
+
+
+strategy_space_concept_param_ranges = {
+    'fast_sma_range'       : range(10, 31, 10),    # [10, 20, 30]
+    'slow_sma_range'       : range(150, 251, 50),  # [150, 200, 250]
+    'space_lookback_range' : range(40, 81, 20),    # [40, 60, 80]
+    'range_lookback_range' : range(10, 31, 10),    # [10, 20, 30]
+    'atr_mult_range'       : range(15, 31, 5),     # [15, 20, 25, 30] -> /10
+}
+
+
+def strategy_space_concept(data: pd.DataFrame, params: dict, year: int | None = None):
+    fast_sma_p       = params.get('fast_sma_range')
+    slow_sma_p       = params.get('slow_sma_range')
+    space_lb_p       = params.get('space_lookback_range')
+    range_lb_p       = params.get('range_lookback_range')
+    atr_mult_p       = params.get('atr_mult_range') / 10.0
+
+    df = data.copy()
+
+    sma_fast, sma_slow = ind_space_concept_sma(df, fast=fast_sma_p, slow=slow_sma_p)
+    space, space_pct = ind_space_concept_space(df, sma_fast, sma_slow,
+                                                space_lookback=space_lb_p)
+    big_bar = ind_space_concept_bar_range(df, range_lookback=range_lb_p)
+    trailing_stop = ind_space_concept_trailing_stop(df, atr_period=14, atr_mult=atr_mult_p)
+
+    df['SMA_fast']      = sma_fast
+    df['SMA_slow']      = sma_slow
+    df['Space']         = space
+    df['Space_pct']     = space_pct
+    df['Big_bar']       = big_bar
+    df['Trailing_stop'] = trailing_stop
+
+    if year is not None:
+        df = df[df.index.year == int(year)]
+
+    close     = df['Close']
+    sma_f     = df['SMA_fast']
+    sma_s     = df['SMA_slow']
+    sp_pct    = df['Space_pct']
+    bb        = df['Big_bar']
+    tr_stop   = df['Trailing_stop']
+
+    # --- Breakout entry (compression + big bar + directional breakout) ---
+    space_compressed = sp_pct < 0.20   # space in lowest 20% of lookback window
+    price_above_both = (close > sma_f) & (close > sma_s)
+    price_below_both = (close < sma_f) & (close < sma_s)
+
+    breakout_long  = space_compressed & bb & price_above_both
+    breakout_short = space_compressed & bb & price_below_both
+
+    # --- Reversal entry (extreme space + first sign of turning) ---
+    space_extended_up   = sp_pct > 0.80   # space in top 20%
+    space_extended_down = sp_pct > 0.80   # same threshold but opposite direction
+
+    # price above fast SMA, space extended: first bar where price comes back below fast SMA
+    above_fast_prev = sma_f.shift(1)
+    reversal_down  = space_extended_up   & (close < sma_f) & (close.shift(1) >= above_fast_prev)
+    reversal_up    = space_extended_down & (close > sma_f) & (close.shift(1) <= above_fast_prev)
+
+    # Combined entries: long on breakout up or reversal up after downtrend
+    entries_long  = breakout_long  | reversal_up
+    entries_short = breakout_short | reversal_down
+    entries = entries_long | entries_short
+
+    # --- Exits ---
+    # Trailing stop: price crosses below trailing stop (long) or above (short)
+    # Also exit if price crosses back through fast SMA against the trade
+    exit_long  = (close < tr_stop) | (close < sma_f)
+    exit_short = (close > (close - (tr_stop - close))) | (close > sma_f)
+
+    # Partial-TP proxy: price reaches the opposite SMA extreme (space_pct reverting)
+    tp_long  = sp_pct > 0.80   # space stretched long — take partial profit
+    tp_short = sp_pct < 0.20   # space compressed after short — take partial profit
+
+    exits = (exit_long & entries_long.shift(1).fillna(False)) | \
+            (exit_short & entries_short.shift(1).fillna(False)) | \
+            tp_long | tp_short
+
+    # Simplify: exit on trailing stop OR SMA cross-back
+    exits = exit_long | exit_short | tp_long | tp_short
+
+    shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    shifted_exits   = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    return shifted_entries, shifted_exits
