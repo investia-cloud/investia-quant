@@ -13361,6 +13361,93 @@ def _select_investor_figs(out: dict) -> dict:
                 result[slug] = fig
     return result
     
+# def _build_portfolio_anagrafica_table(portfolio: dict, styles: dict):
+#     """
+#     Costruisce la tabella Anagrafica del portafoglio (ISIN/Ticker, Nome,
+#     Peso) per la Relazione Investitore, usando reportlab.platypus.Table.
+
+#     Recupera il nome descrittivo di ciascun asset da company_cache.csv
+#     (via build_company_df_with_cache) quando disponibile; per gli asset
+#     non coperti (es. fondi con NAV non risolvibili da yfinance) mostra
+#     "Nome non disponibile" senza bloccare la generazione del report.
+
+#     Parameters
+#     ----------
+#     portfolio : dict
+#         Formato annidato {"Title", "tickers": ..., ...} dove `tickers` puo'
+#         essere un mapping {ticker: peso} (l_portfolios) o una lista di
+#         ticker (r_portfolios): nel secondo caso i pesi sono derivati come
+#         1/N, equipesatura implicita del portafoglio rotazionale. Supportato
+#         anche il formato flat {ticker: peso} (retrocompatibile, stesso
+#         supporto di run_bh_backtest).
+        
+#     Returns
+#     -------
+#     list — elementi Platypus (Paragraph titolo + Table + Spacer),
+#     pronti per essere aggiunti a `story`.
+#     """
+#     from reportlab.platypus import Table, TableStyle, Paragraph, Spacer
+#     from reportlab.lib import colors as rl_colors
+#     from reportlab.lib.units import mm
+
+#     # weights_dict = dict(portfolio["tickers"]) if "tickers" in portfolio else dict(portfolio)
+    
+#     # `tickers` puo' essere un mapping ticker->peso (l_portfolios) o una
+#     # semplice lista (r_portfolios, es. germany_plan_beneficiaries in
+#     # k_tickers.py): in quest'ultimo caso il portafoglio e' equipesato per
+#     # costruzione e i pesi vanno derivati, non letti.
+#     _tk = portfolio.get("tickers") if isinstance(portfolio, dict) else None
+#     if _tk is None:
+#         weights_dict = dict(portfolio)
+#     elif isinstance(_tk, dict):
+#         weights_dict = dict(_tk)
+#     else:
+#         _n = len(_tk)
+#         weights_dict = {t: (1.0 / _n if _n else 0.0) for t in _tk}
+#     tickers = list(weights_dict.keys())
+
+#     try:
+#         company_df = build_company_df_with_cache(tickers)
+#     except Exception as e:
+#         print(f"[_build_portfolio_anagrafica_table] WARNING: impossibile "
+#               f"recuperare anagrafica asset: {e}")
+#         company_df = pd.DataFrame(columns=["Company"])
+
+#     rows = [["ISIN / Ticker", "Denominazione", "Peso"]]
+#     for tk in tickers:
+#         name = "Nome non disponibile"
+#         if tk in company_df.index:
+#             _name = company_df.loc[tk, "Company"]
+#             if pd.notna(_name) and str(_name).strip():
+#                 name = str(_name)
+#         weight = weights_dict[tk]
+#         rows.append([tk, name, f"{weight * 100:.1f}%"])
+
+#     C_NAVY = rl_colors.HexColor(_RL_NAVY)
+#     C_NAVY_LT = rl_colors.HexColor(_RL_NAVY_LT)
+#     C_GRAY_BD = rl_colors.HexColor(_RL_GRAY_BD)
+
+#     table = Table(rows, colWidths=[35 * mm, styles['content_w'] - 35 * mm - 20 * mm, 20 * mm])
+#     table.setStyle(TableStyle([
+#         ('BACKGROUND', (0, 0), (-1, 0), C_NAVY),
+#         ('TEXTCOLOR', (0, 0), (-1, 0), rl_colors.white),
+#         ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+#         ('FONTSIZE', (0, 0), (-1, -1), 9),
+#         ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+#         ('ALIGN', (2, 0), (2, -1), 'RIGHT'),
+#         ('GRID', (0, 0), (-1, -1), 0.5, C_GRAY_BD),
+#         ('ROWBACKGROUNDS', (0, 1), (-1, -1), [rl_colors.white, rl_colors.HexColor('#F5F7FA')]),
+#         ('TOPPADDING', (0, 0), (-1, -1), 4),
+#         ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+#         ('LEFTPADDING', (0, 0), (-1, -1), 6),
+#     ]))
+
+#     return [
+#         Paragraph("Composizione del Portafoglio", styles['section']),
+#         table,
+#         Spacer(1, 4 * mm),
+#     ]
+
 def _build_portfolio_anagrafica_table(portfolio: dict, styles: dict):
     """
     Costruisce la tabella Anagrafica del portafoglio (ISIN/Ticker, Nome,
@@ -13374,11 +13461,13 @@ def _build_portfolio_anagrafica_table(portfolio: dict, styles: dict):
     Parameters
     ----------
     portfolio : dict
-        Formato annidato {"Title", "tickers": {ticker: peso}, ...} o
-        formato flat {ticker: peso} (retrocompatibile, stesso supporto
-        di run_bh_backtest). Pesi uguali (equipesati, come in
-        r_portfolios) o diversi (come in l_portfolios) — la tabella
-        funziona identicamente in entrambi i casi.
+        Formato annidato {"Title", "tickers": ..., ...} dove `tickers` puo'
+        essere un mapping {ticker: peso} (l_portfolios) oppure una lista di
+        ticker (r_portfolios): nel secondo caso i pesi non esistono nella
+        definizione e vengono derivati come 1/N — equipesatura implicita
+        dell'universo di partenza, non allocazione effettiva. Supportato
+        anche il formato flat {ticker: peso} (retrocompatibile, stesso
+        supporto di run_bh_backtest).
 
     Returns
     -------
@@ -13386,10 +13475,27 @@ def _build_portfolio_anagrafica_table(portfolio: dict, styles: dict):
     pronti per essere aggiunti a `story`.
     """
     from reportlab.platypus import Table, TableStyle, Paragraph, Spacer
+    from reportlab.lib.styles import ParagraphStyle
     from reportlab.lib import colors as rl_colors
     from reportlab.lib.units import mm
 
-    weights_dict = dict(portfolio["tickers"]) if "tickers" in portfolio else dict(portfolio)
+    # `tickers` puo' essere un mapping ticker->peso (l_portfolios) o una
+    # semplice lista (r_portfolios, es. germany_plan_beneficiaries in
+    # k_tickers.py). Nel caso lista i pesi NON esistono nella definizione:
+    # vanno derivati come 1/N, ed e' un universo di selezione, non una
+    # composizione — il motore ne seleziona n_top a ogni ribilanciamento.
+    _tk = portfolio.get("tickers") if isinstance(portfolio, dict) else None
+    if _tk is None:
+        weights_dict = dict(portfolio)
+        _is_universe = False
+    elif isinstance(_tk, dict):
+        weights_dict = dict(_tk)
+        _is_universe = False
+    else:
+        _n = len(_tk)
+        weights_dict = {t: (1.0 / _n if _n else 0.0) for t in _tk}
+        _is_universe = True
+
     tickers = list(weights_dict.keys())
 
     try:
@@ -13399,21 +13505,33 @@ def _build_portfolio_anagrafica_table(portfolio: dict, styles: dict):
               f"recuperare anagrafica asset: {e}")
         company_df = pd.DataFrame(columns=["Company"])
 
-    rows = [["ISIN / Ticker", "Denominazione", "Peso"]]
+    _peso_header = "Peso teorico" if _is_universe else "Peso"
+    rows = [["ISIN / Ticker", "Denominazione", _peso_header]]
+    
+    import re as _re
+    # company_df e' indicizzato per Ticker con colonna ISIN separata
+    # (u_functions.py:566). yfinance non risolve la denominazione di alcuni
+    # fondi e restituisce il proprio codice interno come Company
+    # (0P0001ULK1.F per LU2963696674): non e' un nome, e in un documento per
+    # l'investitore va trattato come mancante anziche' stampato.
+    _rx_yf_code = _re.compile(r'^0P[0-9A-Z]{8,}(\.[A-Z]+)?$')
     for tk in tickers:
         name = "Nome non disponibile"
         if tk in company_df.index:
             _name = company_df.loc[tk, "Company"]
-            if pd.notna(_name) and str(_name).strip():
-                name = str(_name)
+            if pd.notna(_name):
+                _name = str(_name).strip()
+                if _name and _name != tk and not _rx_yf_code.match(_name):
+                    name = _name
         weight = weights_dict[tk]
         rows.append([tk, name, f"{weight * 100:.1f}%"])
-
     C_NAVY = rl_colors.HexColor(_RL_NAVY)
     C_NAVY_LT = rl_colors.HexColor(_RL_NAVY_LT)
     C_GRAY_BD = rl_colors.HexColor(_RL_GRAY_BD)
 
-    table = Table(rows, colWidths=[35 * mm, styles['content_w'] - 35 * mm - 20 * mm, 20 * mm])
+    _w_peso = 26 * mm if _is_universe else 20 * mm
+    table = Table(rows, colWidths=[35 * mm, styles['content_w'] - 35 * mm - _w_peso, _w_peso])
+
     table.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, 0), C_NAVY),
         ('TEXTCOLOR', (0, 0), (-1, 0), rl_colors.white),
@@ -13428,12 +13546,37 @@ def _build_portfolio_anagrafica_table(portfolio: dict, styles: dict):
         ('LEFTPADDING', (0, 0), (-1, -1), 6),
     ]))
 
-    return [
-        Paragraph("Composizione del Portafoglio", styles['section']),
-        table,
-        Spacer(1, 4 * mm),
-    ]
+    # Per un R-portfolio la tabella NON e' la composizione: il motore ruota e
+    # detiene solo n_top titoli alla volta. Chiamarla "Composizione" contraddice
+    # il testo della relazione, che dichiara operativita' e turnover.
+    if _is_universe:
+        _title = "Universo di Selezione"
+        _note_txt = (
+            "Il portafoglio e' a rotazione: la tabella elenca l'universo di "
+            "partenza a pesi teorici equidistribuiti. L'allocazione effettiva "
+            "e' dinamica e seleziona un sottoinsieme dei titoli a ogni "
+            "ribilanciamento."
+        )
+    else:
+        _title = "Composizione del Portafoglio"
+        _note_txt = None
 
+    out = [Paragraph(_title, styles['section']), table]
+
+    if _note_txt:
+        _note_sty = styles.get('small') or styles.get('caption') or ParagraphStyle(
+            name='_anagrafica_note',
+            fontName='Helvetica-Oblique',
+            fontSize=7.5,
+            leading=9.5,
+            textColor=rl_colors.HexColor('#5A6470'),
+        )
+        out.append(Spacer(1, 2 * mm))
+        out.append(Paragraph(_note_txt, _note_sty))
+
+    out.append(Spacer(1, 4 * mm))
+    return out
+    
 def generate_relazione_investitore_pdf(
     *,
     portfolio_title: str,

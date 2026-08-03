@@ -1,6 +1,6 @@
 # investia-quant — Piano Operativo
 
-**Ultimo aggiornamento**: 22 luglio 2026 (consolidamento task filiera R)
+**Ultimo aggiornamento**: 3 agosto 2026 (relazione investitore: fix anagrafica, prompt tematico)
 **Root progetto**: `~/investia-quant`
 
 > **Nota consolidamento 22/07**: le voci "0.b" e "0.d-bis" sono state
@@ -948,6 +948,156 @@ reale: `irina` non aveva fatto `git pull` recente, non un problema di
 lavoro perso. Verificato che il lavoro era già su `adriana`, committato e
 pushato. Nessuna perdita, solo allarme eccessivo per non aver controllato
 con un semplice fetch prima di concludere il peggio.
+
+### Sessione 03/08/2026 — Relazione investitore: anagrafica portafoglio, ptf_type/thesis verificato
+
+**Allineamento macchine**: `adriana` era indietro di 38 commit su
+`cert-monitor` e 45 su `investia-platform` pur dichiarando
+`## main...origin/main` senza divergenze — `verifica_progetti.sh` non fa
+`fetch`, quindi mostra lo stato dell'ultimo contatto col remoto, non
+quello reale. Stessa dinamica dell'incidente del 23/06, a parti
+invertite. Aggiunti `session_start_all.sh` / `session_end_all.sh`:
+wrapper multi-repo sugli script esistenti, che lavorano su tutti e tre i
+progetti invece che sul solo repo corrente — lavorando su
+investia-platform si toccano per definizione più repo, e chiudere la
+sessione da una sola directory lascia gli altri indietro.
+
+**Stash**: 6 stash accumulati dal 29/06, invisibili sia a `git status`
+sia a `git branch` — nessuno degli script di verifica li elencava. Ora
+inclusi nel report di `session_start_all.sh`. Eliminati dopo verifica.
+
+**`k_strategies_agent.py` committato dal cron**: il file è l'output
+giornaliero dell'agente, riscritto ogni notte alle 02:00. Essendo
+tracciato, lasciava il working tree sporco tutti i giorni e bloccava
+ogni allineamento. Il cron ora committa e pusha in coda al run:
+
+```
+00 02 * * *  .../iq k-agent --max 15 --llm anthropic >> .../k_agent.log 2>&1 && cd /home/luca/investia-quant && git add notebooks/libs_py/k_strategies_agent.py && git commit -q -m "chore(k-agent): strategie $(date +\%F)" && git push -q
+```
+
+Nota: se il push fallisce (repo indietro) o l'agente non produce nulla
+di nuovo, la catena `&&` si interrompe in silenzio. Il lavoro resta
+committato in locale, ma può accumularsi per giorni senza segnale.
+
+#### `ptf_type` / `thesis` — verificato, nessun difetto
+
+Sospetto iniziale: i campi `ptf_type: "thematic"` e `thesis` introdotti
+in `r_portfolios.py` non comparivano nella relazione tecnica di Germany
+Plan. Verificato: alimentano `generate_relazione_investitore_llm`
+(`r_functions.py:13119`), non la relazione tecnica. La relazione tecnica
+è un referto statistico neutro; la tesi d'investimento inquadra i numeri
+per chi legge da investitore. Entrambi i rami del prompt condizionale
+(riga 13191) funzionano come previsto:
+
+- **thematic** (Germany Plan): alpha rolling in accelerazione descritto
+  come conferma attesa della tesi
+- **systematic** (default, Portafoglio Multi-Fondo): stabilità descritta
+  come pattern da monitorare, non come vantaggio strutturale
+
+⚠️ **Default silenzioso** a riga 13143: `ptf_def.get("ptf_type",
+"systematic")`. Se `ptf_def` non è il dict giusto, o il campo manca, la
+relazione esce con l'interpretazione sbagliata senza alcun segnale.
+Stesso pattern del fallback di `resolve_n_top` (`.get(..., [3,5,8])`),
+dove un `asset_type` scritto male ricade sul range stock togliendo
+`n_top=1` senza avviso. Nessuno dei due è un problema attuale — i valori
+in `r_portfolios.py` sono corretti — ma sono difetti che si scoprono
+tardi.
+
+#### Fix `_build_portfolio_anagrafica_table` · ✅ branch `fix/anagrafica-tickers-lista`
+
+`ValueError: dictionary update sequence element #0 has length 6; 2 is
+required` alla generazione della relazione investitore su Germany Plan.
+
+Causa: riga 13392, `dict(portfolio["tickers"])`. La funzione era stata
+estesa ai Lazy portfolio, che hanno i pesi come mapping ticker→peso; per
+un R-portfolio `tickers` è una **lista** (es. `germany_plan_beneficiaries`
+in `k_tickers.py:805`) e `dict()` tenta di spacchettare ogni stringa in
+una coppia.
+
+Tre modifiche, tutte in quella funzione:
+
+1. **Tre forme supportate**: `tickers` come lista → pesi derivati `1/N`
+   (equipesatura implicita, con guardia sulla lista vuota); `tickers`
+   come dict → pesi letti; `portfolio` flat → retrocompatibile.
+2. **Universo vs composizione**: per un R-portfolio la tabella non è la
+   composizione — il motore ruota e detiene `n_top` titoli alla volta.
+   Chiamarla "Composizione del Portafoglio" contraddiceva il testo della
+   stessa relazione, che dichiara 1,6 operazioni al mese. Ora titolo
+   "Universo di Selezione", colonna "Peso teorico" (con colonna allargata
+   a 26 mm, l'intestazione non entrava nei 20 mm), e nota esplicativa
+   sotto la tabella. Per i Lazy resta "Composizione del Portafoglio".
+3. **Nome non risolto**: yfinance restituisce il proprio codice interno
+   come `Company` per alcuni fondi (`0P0001ULK1.F` per `LU2963696674`).
+   In un documento destinato all'investitore va trattato come mancante.
+   Guardia su pattern `^0P[0-9A-Z]{8,}(\.[A-Z]+)?$`. Nota: il confronto
+   ingenuo `nome != ticker` non funziona — `company_df` è indicizzato per
+   Ticker con colonna ISIN separata (`u_functions.py:566`), e per i Lazy
+   l'indice contiene ISIN, quindi le due stringhe differiscono sempre.
+
+Verificato su entrambi i portafogli. Strada alternativa per il nome
+reale del fondo: un override analogo a `ticker_isin_overrides.csv`, ma è
+funzionalità nuova, non inclusa.
+
+#### Numeri relazione investitore Germany Plan — verificato, nessun difetto
+
+CumRet 229,89% / CAGR 11,01% / MaxDD 69,98% coincidevano con la riga
+"Multifactor — Base" della relazione tecnica, su periodi dichiarati
+diversi (2015 vs 2012). Verificato: `out` arriva dal chiamante, e nel JN
+era impostato `variant_scelta = "BASE"` con `engine_scelto =
+"Multifactor"`. Il codice ha fatto quanto richiesto; la coincidenza era
+la stessa serie.
+
+Scelta deliberata e coerente col profilo tematico: l'overlay Risk ON/OFF
+taglia l'esposizione nei regimi avversi, comportamento desiderabile su un
+sistematico ma non su un posizionamento tematico, dove l'esposizione
+continua è il punto. Da tenere presente che la §7 della relazione tecnica
+raccomandava Momentum, e che Multifactor Base ha il MaxDD peggiore delle
+quattro varianti (69,98% contro 62,02%).
+
+#### Aperto — prompt tesi e p-value complessivo
+
+La relazione investitore di Germany Plan cita il p-value medio degli
+ultimi 90 giorni (4,74%) come "significatività che inizia a essere
+rilevante", senza menzionare il p-value sull'intero periodo (0,238, non
+significativo). Le due misure sono diverse e la lettura è difendibile per
+un tematico — l'orizzonte completo include nove anni precedenti alla
+tesi, in cui il posizionamento non aveva ragione d'essere — ma quel
+ragionamento non compare nel documento: un lettore esterno vede solo il
+numero favorevole.
+
+Patch proposta, non ancora applicata — ramo `thematic` di
+`_thesis_instruction` (`r_functions.py:13191`), da fare su branch
+`fix/thesis-prompt-pvalue`:
+
+```
+"Poiche' ptf_type='thematic', un alpha rolling in aumento nella finestra "
+"recente e' la conferma attesa che la tesi d'investimento (vedi campo "
+"'thesis') si sta confermando — descrivilo in questi termini. "
+"OBBLIGATORIO: cita anche il p-value dell'alpha sull'intero periodo, "
+"anche quando non e' significativo, e spiega in una frase perche' su un "
+"tematico non e' la metrica dirimente — l'orizzonte completo include gli "
+"anni precedenti alla tesi, in cui il posizionamento non aveva ancora "
+"una ragione d'essere. Non presentare il solo p-value recente come se "
+"fosse la significativita' complessiva."
+```
+
+Da validare su rerun: che il modello non trasformi la spiegazione in una
+excusatio lunga. Se accade, accorciare a una frase.
+
+#### Nota di metodo
+
+Il piano piattaforma `ECOSISTEMA_INVESTIA.md` è stato quasi sostituito da
+un documento costruito senza aprire il file reale (v2.6, 83 KB): la
+versione era stata dedotta da una citazione di seconda mano. Il
+risultato cancellava D7–D18 e l'intero sottosistema KID. Branch
+eliminato, nessuna perdita.
+
+> **Regola**: nessuna affermazione sullo stato di un file senza averlo
+> aperto nella sessione corrente, e ogni affermazione citata con file e
+> riga. Un'affermazione senza citazione è da trattare come non
+> verificata.
+
+---
 
 
 ## Deploy VPS — procedura standard
