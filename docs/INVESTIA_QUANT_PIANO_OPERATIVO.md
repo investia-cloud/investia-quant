@@ -1,6 +1,6 @@
 # investia-quant — Piano Operativo
 
-**Ultimo aggiornamento**: 3 agosto 2026 (relazione investitore: fix anagrafica, prompt tematico)
+**Ultimo aggiornamento**: 4 agosto 2026 (famiglie rotazionali, vincolo equipesatura, criteri nuovi engine)
 **Root progetto**: `~/investia-quant`
 
 > **Nota consolidamento 22/07**: le voci "0.b" e "0.d-bis" sono state
@@ -1099,6 +1099,194 @@ eliminato, nessuna perdita.
 
 ---
 
+
+### Sessione 04/08/2026 — Famiglie rotazionali, vincolo di equipesatura, criteri per nuovi engine
+
+Discussione di progetto, nessuna modifica al codice. Messa per iscritto
+perché discussioni analoghe si sono ripetute più volte nell'ultimo anno
+senza lasciare traccia.
+
+#### Vincolo non negoziabile — R-portfolio equipesati
+
+**Gli R-portfolio sono equipesati, senza eccezioni.** `1/n_top` sui
+titoli selezionati, sempre. Non è un default né un parametro: è una
+proprietà della famiglia.
+
+Conseguenza operativa: un nuovo engine può modificare **solo il
+ranking**, cioè quali titoli entrano. Mai l'allocazione. Qualunque
+proposta che assegni pesi differenziati — volatility targeting, risk
+parity, inverse-vol weighting — è **fuori dalla famiglia R-portfolio**
+per costruzione, non per parametrizzazione, e non va valutata come
+engine candidato.
+
+I portafogli non equipesati avranno una famiglia propria, basata sulla
+rotazione delle strategie (vedi sotto).
+
+#### Le famiglie rotazionali, distinte
+
+| | **R-portfolio** | **R-Strategies** (famiglia futura) |
+|---|---|---|
+| Cosa ruota | Titoli dentro un universo | Metodi di allocazione |
+| Pesi | `1/n_top`, sempre | Differenziati, prodotti dal metodo |
+| Engine | Momentum, Multifactor | Metodi di allocazione confrontati per blocco |
+| Pipeline | WFO + OFC + MC + DSR | Oggi solo WFO propria |
+| Stato | Produzione | Esplorativo, `R_Strategies.ipynb` |
+
+#### Cosa contiene oggi `R_Strategies.ipynb` (verificato 04/08)
+
+Il notebook contiene **due blocchi indipendenti**, spesso confusi come
+un unico esperimento:
+
+**1. `wfo_universe_selector_momentum` (§ Universe momentum WFO)** —
+seleziona *quali titoli* compongono l'universo, con WFO propria
+(`train_years=3, test_years=1`), `param_grid` su
+`primary` / `top_percentage` / `primary_lookback_months` /
+`secondary_*`, `shift_forward=True` contro il look-ahead,
+`weighting="equal"`, `selection_rule="composite"` con pesi multimetrici.
+
+⚠️ **Non è un engine di rotazione: è un pre-filtro dell'universo con
+ottimizzazione propria** — cioè lo stesso slot architetturale del
+**Punto 1** (filtri di pre-selezione), dove è previsto Cluster v2.
+Esiste, funziona, e non era mai stato collegato a quel ragionamento. Da
+tenere presente quando si affronterà il redesign Cluster: potrebbe
+esserci sovrapposizione, o materiale riusabile.
+
+**2. `wfo_method_rotation_allocation` (§ Strategy WFO)** — ruota tra
+metodi di allocazione, restituisce `weights`, con
+`plot_strategy_pie` a mostrare la distribuzione delle strategie
+selezionate. È l'abbozzo della famiglia non equipesata.
+
+Due caratteristiche che il motore R **non** ha:
+- **`tc=0.001`** — costi di transazione modellati. Il motore R riporta
+  `Total Fees Paid: 0.0` in tutti i log, ed è la domanda aperta del
+  design Cluster v2 (turnover più alto senza modello di costo che lo
+  penalizzi).
+- **`rebalance_freqs=["ME","QE","YE","BH"]` come parametro cercato**,
+  non fissato. Rilevante perché B2 (rebalance timing) fallisce su
+  Germany Plan: nel motore R la frequenza mensile è imposta, qui è
+  oggetto di ricerca.
+
+Manca invece tutto il resto: nessun OFC, nessuna MC, nessun DSR. Ha una
+WFO propria, non quella del motore R.
+
+#### Analisi articolo esterno — "Quick 5 ETF Rotational Strategy" (Paper to Profit, 04/08)
+
+Strategia: universo di 5 ETF (VTI, AGG, VNQ, DBC, GLD), ranking per
+momentum medio multi-orizzonte, top 3 equipesati, ribilanciamento
+mensile.
+
+```
+M_mix = (R_1 + R_3 + R_6 + R_9 + R_12) / 5      R_k = P_t / P_{t-k} - 1
+```
+
+**Cosa è interessante**: invece di ottimizzare `momentum_lookback_days`
+come fa il motore R, media cinque orizzonti fissi. Inversione
+metodologica — l'orizzonte è trattato come ignoto da diversificare, non
+come parametro da scegliere. Effetto collaterale positivo: un grado di
+libertà in meno nel param_grid, quindi meno penalizzazione DSR a parità
+di Sharpe.
+
+**Perché non è un candidato naturale per la nostra pipeline**: `M_mix`
+ha **zero parametri**. La pipeline è costruita per esplorare uno spazio
+parametrico e giudicarne la robustezza; con un engine senza gradi di
+libertà, S1 (diversità parametrica) e S4 (DSR su n trial) diventano
+quasi vacui. Ci passa dentro ma non la usa.
+
+Nota tecnica sulla formula: la media è semplice ma `R_1` è contenuto
+anche in `R_3`, `R_6`, `R_9`, `R_12` — il mese più recente pesa cinque
+volte, l'undicesimo una sola. Tilt implicito sul breve, non dichiarato
+nell'articolo.
+
+Altre osservazioni sull'articolo, non trasferibili ma utili:
+- La riduzione di drawdown (25,77% contro 50,84% di VTI) viene dalla
+  **rotazione cross-asset**: obbligazionario e oro sono *dentro*
+  l'universo di rotazione. È l'equivalente continuo del nostro overlay
+  Risk ON/OFF, che invece è binario e agisce fuori dalla selezione.
+  Su un universo monoclasse (es. Germany Plan, MaxDD 69,98%) la
+  rotazione non può ridurre il drawdown: non c'è nulla su cui
+  rifugiarsi.
+- **Costi**: colonna netta a 10bp su turnover mensile medio 27,81%, con
+  perdita di 36 punti base di CAGR (10,99% → 10,63%). Ordine di
+  grandezza utile quando si affronterà il modello commissioni.
+- **Nessuna validazione**: il basket viene da una ricerca su 126.144
+  configurazioni, senza walk-forward né correzione per numero di trial.
+  I numeri pubblicati sono in-sample. È esattamente ciò che S3 e S4
+  esistono per catturare.
+
+#### Criteri per un engine candidato (fissati 04/08)
+
+Un nuovo engine di rotazione R-portfolio deve avere **tutte e tre**:
+
+1. **Modifica il ranking, mai l'allocazione** — vincolo di equipesatura
+2. **Ha parametri veri da ottimizzare** — altrimenti la pipeline non
+   può giudicarlo
+3. **Porta un'ipotesi economica distinta** — non un caso particolare del
+   Multifactor
+
+Il terzo criterio esclude buona parte delle famiglie censite nell'item 5:
+il Multifactor **già combina** momentum, ivol, sortino e idio con pesi
+(`momentum_weight`, `ivol_weight`, `sortino_weight`, `idio_weight`).
+Risk-adjusted rotation, low-volatility e idiosyncratic return sono
+quindi casi particolari del Multifactor con pesi degenerati, non engine
+nuovi: implementarli separatamente duplicherebbe.
+
+Restano in gioco, come criteri di **ordinamento** genuinamente diversi:
+
+| Candidato | Ipotesi | Perché è ortogonale |
+|---|---|---|
+| **Trend strength** (R² / efficiency ratio di Kaufman) | Conta la *qualità* del trend, non l'ampiezza | Nessun peso del Multifactor misura la linearità del percorso |
+| **Cross-sectional mean reversion** | Segno opposto: compra i peggiori | Unica ipotesi economica davvero contraria. Test diagnostico: se la pipeline promuove sia momentum sia il suo contrario sullo stesso universo, il problema è nella pipeline |
+| **Correlation regime rotation** | Ruota in base al regime di correlazione dell'universo | Proprietà dell'universo, non del singolo titolo |
+| **Ensemble / voting** | Combina fattori deboli per voto anziché per pesi | Aggregazione diversa, non pesi diversi |
+
+**Esclusi dal vincolo di equipesatura**: volatility targeting, risk
+parity, inverse-vol weighting. Materiale per la famiglia R-Strategies.
+
+#### Prima di implementare qualunque engine — la diagnosi manca ancora
+
+L'item 5 resta una **design session**, non un task di implementazione, e
+la prima domanda è invariata dal 21/07: *la MC boccia tutti i PTF e
+tutti gli anni, o solo alcuni? Il problema è nel ranking o nel rebalance
+timing?*
+
+Su Germany Plan **B1 e B2 falliscono entrambi** (rotation reshuffle
+p=0.877, rebalance timing p=0.811 su Momentum): né la selezione né il
+timing dimostrano skill. Aggiungere un engine senza sapere quale dei due
+sia il collo di bottiglia rischia di essere lavoro sprecato — se il
+problema è il timing, un ranking migliore non lo risolve.
+
+Nota collaterale: `wfo_method_rotation_allocation` tratta già la
+frequenza di ribilanciamento come parametro cercato. Se la diagnosi
+indicasse B2 come collo di bottiglia, quella è la direzione, e il
+materiale esiste già.
+
+#### Voci di piano risultate stantie (verificate 03-04/08)
+
+Tre voci descrivevano problemi non più esistenti. Il piano ha undici
+settimane di sedimentazione: **prima di riprendere il lavoro sul motore
+R, rileggere "Lavori in piedi" e "Tech debt" verificando ogni voce
+contro il codice**, non fidandosi della descrizione.
+
+- **`compare_wfo_pipelines` — patch mai applicata**: falso. La firma
+  attuale (`r_functions.py:18951`) non ha alcun parametro
+  `results_cluster`; prende un dict generico `{nome: risultati}` ed è
+  già agnostica per costruzione.
+- **`fix/report-path-and-sections-parity` — ~9 commit non mergiati**:
+  falso. `git log origin/main..origin/fix/report-path-and-sections-parity`
+  restituisce vuoto, tutto il contenuto è in `main`. Branch cancellato.
+- **`feature/ranking-multifactor-v2` — lavoro sospeso**: idem, tutto in
+  `main`.
+
+Ripulito anche il remoto: 21 branch mergiati cancellati, resta solo
+`main`.
+
+#### Nota operativa — `git fetch --prune`
+
+`session_start.sh` (passo 1/5) fa `git fetch origin` senza `--prune`:
+i riferimenti a branch remoti cancellati altrove restano nella lista
+locale e compaiono come "non mergiati". Da aggiungere.
+
+---
 
 ## Deploy VPS — procedura standard
 
