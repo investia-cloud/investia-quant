@@ -1106,6 +1106,13 @@ Discussione di progetto, nessuna modifica al codice. Messa per iscritto
 perché discussioni analoghe si sono ripetute più volte nell'ultimo anno
 senza lasciare traccia.
 
+> **Convenzione di questa sezione**: ogni affermazione sullo stato del
+> codice è seguita dalla fonte (file e riga, o l'artefatto da cui è
+> letta). Le affermazioni prive di fonte sono marcate **[da
+> verificare]** e vanno trattate come non verificate finché qualcuno non
+> le controlla. Serve a non ripetere l'errore ricorrente: dedurre da una
+> descrizione plausibile invece di leggere il codice.
+
 #### Vincolo non negoziabile — R-portfolio equipesati
 
 **Gli R-portfolio sono equipesati, senza eccezioni.** `1/n_top` sui
@@ -1132,17 +1139,39 @@ rotazione delle strategie (vedi sotto).
 | Pipeline | WFO + OFC + MC + DSR | Oggi solo WFO propria |
 | Stato | Produzione | Esplorativo, `R_Strategies.ipynb` |
 
-#### Cosa contiene oggi `R_Strategies.ipynb` (verificato 04/08)
+#### Parametri reali dei due engine R (verificato)
+
+Fonte: relazione tecnica Germany Plan 2026-08-03, §6.a.1 e §6.a.2, campo
+`params` del segnale S1 — output reale del sistema, non documentazione.
+
+```
+Momentum     ['momentum_lookback_days', 'riskparity_lookback_days',
+              'n_top', 'momentum_weight', 'ivol_weight']
+Multifactor  ['momentum_lookback_days', 'riskparity_lookback_days',
+              'n_top', 'momentum_weight', 'ivol_weight',
+              'sortino_weight', 'idio_weight']
+```
+
+`rebalance_frequency` è anch'esso un `EngineParams` cercato dalla WFO:
+presente nel param_grid (`r_functions.py:2088-2089`), letto dal motore
+(righe 525 e 17799), con esempio `'QE'` alla riga 5237. Non compare
+nella lista S1 sopra perché quella riporta i soli parametri su cui è
+calcolata la diversità del plateau.
+
+Spazi parametrici su Germany Plan (relazione tecnica §2): Momentum 2.304
+combinazioni, Multifactor 62.208.
+
+#### Cosa contiene oggi `R_Strategies.ipynb` (verificato 04/08 leggendo il notebook)
 
 Il notebook contiene **due blocchi indipendenti**, spesso confusi come
-un unico esperimento:
+un unico esperimento.
 
-**1. `wfo_universe_selector_momentum` (§ Universe momentum WFO)** —
-seleziona *quali titoli* compongono l'universo, con WFO propria
-(`train_years=3, test_years=1`), `param_grid` su
-`primary` / `top_percentage` / `primary_lookback_months` /
-`secondary_*`, `shift_forward=True` contro il look-ahead,
-`weighting="equal"`, `selection_rule="composite"` con pesi multimetrici.
+**1. `wfo_universe_selector_momentum` (§ Universe momentum WFO, cella 19)**
+— seleziona *quali titoli* compongono l'universo, con WFO propria
+(`train_years=3, test_years=1`), `param_grid` su `primary` /
+`top_percentage` / `primary_lookback_months` / `secondary_lookback_months`
+/ `secondary_top`, `shift_forward=True` contro il look-ahead,
+`weighting="equal"`, `selection_rule="composite"`, `fee_bps=0.01`.
 
 ⚠️ **Non è un engine di rotazione: è un pre-filtro dell'universo con
 ottimizzazione propria** — cioè lo stesso slot architetturale del
@@ -1151,23 +1180,31 @@ Esiste, funziona, e non era mai stato collegato a quel ragionamento. Da
 tenere presente quando si affronterà il redesign Cluster: potrebbe
 esserci sovrapposizione, o materiale riusabile.
 
-**2. `wfo_method_rotation_allocation` (§ Strategy WFO)** — ruota tra
-metodi di allocazione, restituisce `weights`, con
+**2. `wfo_method_rotation_allocation` (§ Strategy WFO, cella 23)** —
+ruota tra metodi di allocazione, restituisce `weights`, con
 `plot_strategy_pie` a mostrare la distribuzione delle strategie
-selezionate. È l'abbozzo della famiglia non equipesata.
+selezionate e `generate_portfolio_plan` a produrre il piano operativo.
+È l'abbozzo della famiglia non equipesata.
 
-Due caratteristiche che il motore R **non** ha:
-- **`tc=0.001`** — costi di transazione modellati. Il motore R riporta
-  `Total Fees Paid: 0.0` in tutti i log, ed è la domanda aperta del
-  design Cluster v2 (turnover più alto senza modello di costo che lo
-  penalizzi).
-- **`rebalance_freqs=["ME","QE","YE","BH"]` come parametro cercato**,
-  non fissato. Rilevante perché B2 (rebalance timing) fallisce su
-  Germany Plan: nel motore R la frequenza mensile è imposta, qui è
-  oggetto di ricerca.
+Parametri della chiamata: `train_years=3, test_years=1`, `rf=0.0`,
+**`tc=0.001`**, `rebalance_freqs=["ME","QE","YE","BH"]`,
+`min_valid_ratio=0.9`.
 
-Manca invece tutto il resto: nessun OFC, nessuna MC, nessun DSR. Ha una
-WFO propria, non quella del motore R.
+**Differenza reale col motore R: i costi di transazione.** `tc=0.001` è
+modellato qui; il motore R riporta `Total Fees Paid: 0.0` in tutti i log
+**[da verificare — affermazione presa da questo piano, non riletta nei
+log]**. È la stessa questione aperta nel design Cluster v2, dove un
+turnover più alto non ha oggi un modello di costo che lo penalizzi.
+
+**Non è invece una differenza `rebalance_freqs`**: come sopra,
+`rebalance_frequency` è già cercato dalla WFO del motore R. Una versione
+precedente di questa nota affermava il contrario, dedotto dal
+fallimento di B2 su Germany Plan — inferenza priva di fondamento, B2
+confronta il timing con date casuali e non dice nulla sul contenuto del
+param_grid.
+
+Manca invece tutto il resto della pipeline: nessun OFC, nessuna MC,
+nessun DSR. `R_Strategies` ha una WFO propria, non quella del motore R.
 
 #### Analisi articolo esterno — "Quick 5 ETF Rotational Strategy" (Paper to Profit, 04/08)
 
@@ -1179,12 +1216,11 @@ mensile.
 M_mix = (R_1 + R_3 + R_6 + R_9 + R_12) / 5      R_k = P_t / P_{t-k} - 1
 ```
 
-**Cosa è interessante**: invece di ottimizzare `momentum_lookback_days`
-come fa il motore R, media cinque orizzonti fissi. Inversione
-metodologica — l'orizzonte è trattato come ignoto da diversificare, non
-come parametro da scegliere. Effetto collaterale positivo: un grado di
-libertà in meno nel param_grid, quindi meno penalizzazione DSR a parità
-di Sharpe.
+**Cosa è interessante**: invece di ottimizzare `momentum_lookback_days`,
+media cinque orizzonti fissi. Inversione metodologica — l'orizzonte è
+trattato come ignoto da diversificare, non come parametro da scegliere.
+Effetto collaterale positivo: un grado di libertà in meno nel
+param_grid, quindi meno penalizzazione DSR a parità di Sharpe.
 
 **Perché non è un candidato naturale per la nostra pipeline**: `M_mix`
 ha **zero parametri**. La pipeline è costruita per esplorare uno spazio
@@ -1192,22 +1228,22 @@ parametrico e giudicarne la robustezza; con un engine senza gradi di
 libertà, S1 (diversità parametrica) e S4 (DSR su n trial) diventano
 quasi vacui. Ci passa dentro ma non la usa.
 
-Nota tecnica sulla formula: la media è semplice ma `R_1` è contenuto
-anche in `R_3`, `R_6`, `R_9`, `R_12` — il mese più recente pesa cinque
-volte, l'undicesimo una sola. Tilt implicito sul breve, non dichiarato
+Nota sulla formula: la media è semplice ma `R_1` è contenuto anche in
+`R_3`, `R_6`, `R_9`, `R_12` — il mese più recente pesa cinque volte,
+l'undicesimo una sola. Tilt implicito sul breve, non dichiarato
 nell'articolo.
 
-Altre osservazioni sull'articolo, non trasferibili ma utili:
-- La riduzione di drawdown (25,77% contro 50,84% di VTI) viene dalla
-  **rotazione cross-asset**: obbligazionario e oro sono *dentro*
-  l'universo di rotazione. È l'equivalente continuo del nostro overlay
-  Risk ON/OFF, che invece è binario e agisce fuori dalla selezione.
-  Su un universo monoclasse (es. Germany Plan, MaxDD 69,98%) la
-  rotazione non può ridurre il drawdown: non c'è nulla su cui
-  rifugiarsi.
+Altre osservazioni, non trasferibili ma utili:
+- La riduzione di drawdown (25,77% contro 50,84% di VTI, dal tearsheet
+  dell'articolo) viene dalla **rotazione cross-asset**: obbligazionario
+  e oro sono *dentro* l'universo di rotazione. È l'equivalente continuo
+  dell'overlay Risk ON/OFF, che invece è binario e agisce fuori dalla
+  selezione. Su un universo monoclasse la rotazione non può ridurre il
+  drawdown: non c'è nulla su cui rifugiarsi. Germany Plan ha MaxDD
+  69,98% (relazione investitore 2026-08-03).
 - **Costi**: colonna netta a 10bp su turnover mensile medio 27,81%, con
   perdita di 36 punti base di CAGR (10,99% → 10,63%). Ordine di
-  grandezza utile quando si affronterà il modello commissioni.
+  grandezza utile per il modello commissioni.
 - **Nessuna validazione**: il basket viene da una ricerca su 126.144
   configurazioni, senza walk-forward né correzione per numero di trial.
   I numeri pubblicati sono in-sample. È esattamente ciò che S3 e S4
@@ -1223,18 +1259,22 @@ Un nuovo engine di rotazione R-portfolio deve avere **tutte e tre**:
 3. **Porta un'ipotesi economica distinta** — non un caso particolare del
    Multifactor
 
-Il terzo criterio esclude buona parte delle famiglie censite nell'item 5:
-il Multifactor **già combina** momentum, ivol, sortino e idio con pesi
-(`momentum_weight`, `ivol_weight`, `sortino_weight`, `idio_weight`).
-Risk-adjusted rotation, low-volatility e idiosyncratic return sono
-quindi casi particolari del Multifactor con pesi degenerati, non engine
-nuovi: implementarli separatamente duplicherebbe.
+Sul terzo criterio: il Multifactor combina momentum, ivol, sortino e
+idio tramite `momentum_weight`, `ivol_weight`, `sortino_weight`,
+`idio_weight` (verificato sopra). **[Da verificare]**: se rotazione
+risk-adjusted, low-volatility e idiosyncratic return siano davvero casi
+particolari del Multifactor con pesi degenerati. È plausibile ma non
+dimostrato — un `sortino_weight` come componente di un ranking composito
+non è necessariamente equivalente a un ranking puro per Sortino rolling,
+e la differenza dipende da come i pesi entrano nel punteggio. Da
+controllare nel codice del ranking prima di scartare quelle tre
+famiglie.
 
 Restano in gioco, come criteri di **ordinamento** genuinamente diversi:
 
-| Candidato | Ipotesi | Perché è ortogonale |
+| Candidato | Ipotesi | Perché sembra ortogonale |
 |---|---|---|
-| **Trend strength** (R² / efficiency ratio di Kaufman) | Conta la *qualità* del trend, non l'ampiezza | Nessun peso del Multifactor misura la linearità del percorso |
+| **Trend strength** (R² / efficiency ratio di Kaufman) | Conta la *qualità* del trend, non l'ampiezza | Nessuno dei quattro pesi misura la linearità del percorso |
 | **Cross-sectional mean reversion** | Segno opposto: compra i peggiori | Unica ipotesi economica davvero contraria. Test diagnostico: se la pipeline promuove sia momentum sia il suo contrario sullo stesso universo, il problema è nella pipeline |
 | **Correlation regime rotation** | Ruota in base al regime di correlazione dell'universo | Proprietà dell'universo, non del singolo titolo |
 | **Ensemble / voting** | Combina fattori deboli per voto anziché per pesi | Aggregazione diversa, non pesi diversi |
@@ -1249,16 +1289,15 @@ la prima domanda è invariata dal 21/07: *la MC boccia tutti i PTF e
 tutti gli anni, o solo alcuni? Il problema è nel ranking o nel rebalance
 timing?*
 
-Su Germany Plan **B1 e B2 falliscono entrambi** (rotation reshuffle
-p=0.877, rebalance timing p=0.811 su Momentum): né la selezione né il
-timing dimostrano skill. Aggiungere un engine senza sapere quale dei due
-sia il collo di bottiglia rischia di essere lavoro sprecato — se il
-problema è il timing, un ranking migliore non lo risolve.
+Su Germany Plan **B1 e B2 falliscono entrambi** — rotation reshuffle
+p=0,877 e rebalance timing p=0,811 su Momentum; p=0,712 e p=0,746 su
+Multifactor (relazione tecnica §5.a). Né la selezione né il timing
+dimostrano skill. Aggiungere un engine senza sapere quale dei due sia il
+collo di bottiglia rischia di essere lavoro sprecato: se il problema è
+il timing, un ranking migliore non lo risolve.
 
-Nota collaterale: `wfo_method_rotation_allocation` tratta già la
-frequenza di ribilanciamento come parametro cercato. Se la diagnosi
-indicasse B2 come collo di bottiglia, quella è la direzione, e il
-materiale esiste già.
+Da tenere presente che `rebalance_frequency` è già un parametro cercato,
+quindi il fallimento di B2 non si spiega con una frequenza imposta.
 
 #### Voci di piano risultate stantie (verificate 03-04/08)
 
