@@ -1292,28 +1292,183 @@ Un nuovo engine di rotazione R-portfolio deve avere **tutte e tre**:
 3. **Porta un'ipotesi economica distinta** — non un caso particolare del
    Multifactor
 
-Sul terzo criterio: il Multifactor combina momentum, ivol, sortino e
-idio tramite `momentum_weight`, `ivol_weight`, `sortino_weight`,
-`idio_weight` (verificato sopra). **[Da verificare]**: se rotazione
-risk-adjusted, low-volatility e idiosyncratic return siano davvero casi
-particolari del Multifactor con pesi degenerati. È plausibile ma non
-dimostrato — un `sortino_weight` come componente di un ranking composito
-non è necessariamente equivalente a un ranking puro per Sortino rolling,
-e la differenza dipende da come i pesi entrano nel punteggio. Da
-controllare nel codice del ranking prima di scartare quelle tre
-famiglie.
+#### Come funziona davvero il ranking Multifactor (verificato 04/08)
 
-Restano in gioco, come criteri di **ordinamento** genuinamente diversi:
+`compute_combo_score` (`r_functions.py:17678`, definita **una sola
+volta**, nessuna duplicazione) combina **rank percentili
+cross-sectional**, non z-score né valori grezzi:
 
-| Candidato | Ipotesi | Perché sembra ortogonale |
-|---|---|---|
-| **Trend strength** (R² / efficiency ratio di Kaufman) | Conta la *qualità* del trend, non l'ampiezza | Nessuno dei quattro pesi misura la linearità del percorso |
-| **Cross-sectional mean reversion** | Segno opposto: compra i peggiori | Unica ipotesi economica davvero contraria. Test diagnostico: se la pipeline promuove sia momentum sia il suo contrario sullo stesso universo, il problema è nella pipeline |
-| **Correlation regime rotation** | Ruota in base al regime di correlazione dell'universo | Proprietà dell'universo, non del singolo titolo |
-| **Ensemble / voting** | Combina fattori deboli per voto anziché per pesi | Aggregazione diversa, non pesi diversi |
+```python
+rank_i = signals[fname].rank(pct=True, axis=1, na_option="bottom")   # :17700-17706
+combo  = w * rank_i if combo is None else combo + w * rank_i
+return combo / total_w                                              # :17706-17707
+```
+
+`total_w = sum(w for w in weights.values() if w > 0)` (`:17699`) — i pesi
+sono normalizzati sulla somma degli attivi, non devono sommare a 1.
+
+**Conseguenza dimostrata**: con un solo peso positivo, `combo` è
+esattamente il rank percentile di quel segnale. Un `sortino_weight=1` con
+gli altri a zero produce **lo stesso ordinamento** di un ranking puro per
+Sortino rolling.
+
+#### Composizione reale del param_grid (verificato 04/08)
+
+`build_wfo_grid` (`r_functions.py:7782`), nessuna delega a funzioni
+esterne o file di configurazione.
+
+**Parametri base**, identici per i due engine (`:7819-7825`):
+
+| Parametro | Valori |
+|---|---|
+| `rebalance_frequency` | `["QE", "ME"]` |
+| `momentum_lookback_days` | `[10, 20, 40, 60]` |
+| `riskparity_lookback_days` | `[10, 20, 40, 60]` |
+| `n_top` | da `_N_TOP_TABLE` (`:7769`), per `asset_type` e `profile` |
+| `filter_ema` · `filter_volatility` · `filter_min_momentum` | `[True, False]` |
+
+**Pesi — Multifactor** (`:7841-7845`): prodotto cartesiano completo,
+`_w_vals = [0.0, 0.5, 1.0]` su quattro pesi → 81 combinazioni.
+Indipendenti, nessun vincolo di somma, nessun pairing.
+
+**Pesi — Momentum** (`:7831-7836`): tre coppie fisse
+(`momentum_weight` 0.5/0.7/1.0, `ivol_weight` complementare),
+`sortino_weight` e `idio_weight` sempre 0.
+
+**Segnali**: i quattro fattori (`momentum`, `ivol`, `sortino`, `idio`)
+sono tutti esposti come peso. I tre ausiliari (`_vol`, `_ema`,
+`_momentum_raw`, `:17667-17676`) servono solo ai filtri e non entrano
+nel ranking — `_ema` e `_momentum_raw` sono grezzi e ridondanti rispetto
+ai fattori, quindi non sono capacità sprecate.
+
+> **Il Multifactor NON è sottoutilizzato sui pesi.** La griglia esplora
+> già ogni configurazione, incluse tutte le monofattore. Dove la griglia
+> è invece stretta è la **scala temporale**: `momentum_lookback_days` va
+> da 10 a 60 giorni, cioè da due settimane a tre mesi. Osservazione, non
+> critica — ma è lì che sta il vincolo, non sui fattori.
+
+**Due dettagli emersi:**
+
+- **Un trial su 81 è invalido.** La combinazione `{0,0,0,0}` viene
+  generata dalla griglia ma `ScoreParamsV2.__post_init__` (`:7535-7538`)
+  solleva `ValueError` se la somma dei pesi è zero. Da capire se la WFO
+  la salti o propaghi l'eccezione; in ogni caso `n=62208` include un
+  trial non valutabile che entra nel DSR.
+- **Pesi negativi rifiutati per contratto** (`:17526-17533`,
+  `ValueError` se `val < 0`).
+
+#### Il criterio 3, riformulato dopo la verifica
+
+Poiché il combo è una **combinazione lineare di rank percentili**, il
+Multifactor può esprimere qualunque criterio che sia media pesata dei
+segnali già disponibili. Quindi:
+
+**Non sono engine nuovi — sono configurazioni già esplorate a ogni run:**
+rotazione risk-adjusted (via `sortino_weight`), low-volatility (via
+`ivol_weight`), idiosyncratic return (via `idio_weight`). Implementarli
+separatamente duplicherebbe capacità esistenti.
+
+**Cross-sectional mean reversion non è un engine, è una decisione di
+progetto**: sarebbe momentum con peso negativo, ma i pesi negativi sono
+rifiutati per contratto. Esporlo significa rimuovere quel vincolo, con
+tutto ciò che comporta — non scrivere un engine.
+
+**Restano genuinamente nuovi** solo i criteri che introducono un segnale
+assente da `signals`, o che non sono combinazione lineare di rank:
+
+| Candidato | Perché è nuovo |
+|---|---|
+| **Trend strength** (R² / efficiency ratio di Kaufman) | Introduce un segnale che non esiste: nessuno dei quattro misura la linearità del percorso, solo l'ampiezza |
+| **Correlation regime rotation** | Dipende dalla matrice di correlazione dell'universo, non da un punteggio per titolo: non esprimibile come rank cross-sectional |
+| **Ensemble / voting** | Aggrega per conteggio di voti, non per media pesata: forma diversa, non pesi diversi |
 
 **Esclusi dal vincolo di equipesatura**: volatility targeting, risk
 parity, inverse-vol weighting. Materiale per la famiglia R-Strategies.
+
+#### ⚠️ Il DSR usa la griglia piena, la WFO gira su quella ridotta (verificato 04/08)
+
+Risultato più importante della ricognizione, e non ovvio da leggere.
+
+**Il percorso reale.** `run_r_portfolio_analysis` **non** chiama
+`run_wfo_pipeline` ma `run_wfo_pipeline_legacy_cluster` (`:17246`), dove
+il parametro `autoreduce` non esiste; la stability analysis è eseguita
+manualmente prima della chiamata (`:17219-17234`).
+
+In `run_wfo_pipeline` (`:19153`, `autoreduce: bool = True`) la riduzione
+filtra la griglia sui soli flag booleani con valore univoco
+(`_STABILITY_FLAGS`) e **sostituisce** `param_grid` in-place
+(`:19279`); `walk_forward_rotational` riceve solo la ridotta (`:19295`).
+Il conteggio pieno è preso **prima** della riduzione:
+`_n_full_trials = len(param_grid)` (`:19252`).
+
+**Il numero che finisce nel DSR è quello pieno**
+(`run_r_portfolio_analysis:17346`):
+
+```python
+overfitting_check_rotational(
+    param_grid     = reduced_grid,    # ridotta → S1/S2
+    n_total_trials = n_full_trials,   # PIENA  → S4 DSR
+)
+```
+
+e da lì `n_trials` (`:12286`) → `_ofc_s4_dsr` (`:12300`) →
+`ofc_compute_dsr(sr, n_trials, T)` (`:12117`). I valori 2.304 e 62.208
+della relazione tecnica sono quindi la **cardinalità piena**.
+
+**Due letture possibili, entrambe difendibili — decisione da prendere:**
+
+1. **È corretto così.** La riduzione per stabilità *guarda i dati* per
+   decidere quali flag siano stabili: quelle configurazioni sono state
+   esplorate, anche se non sono arrivate alla WFO finale. Contare solo la
+   ridotta nasconderebbe il multiple testing compiuto dal passo di
+   riduzione stesso.
+2. **È troppo severo.** Il DSR penalizza per trial che la WFO non ha mai
+   valutato, e la penalizzazione cresce con `log(n)`.
+
+La lettura 1 è più prudente ed è coerente col principio anti-overfitting
+del progetto. **Non risulta però documentata da nessuna parte come
+scelta deliberata**, e senza quella nota la prima persona che la
+incontra la scambierà per un difetto. Da fissare per iscritto quale sia
+l'interpretazione corretta, qualunque essa sia.
+
+*Riferimento numerico*: Multifactor esplora uno spazio 27 volte più
+grande di Momentum e ottiene DSR 0,4776 contro 0,4790 (relazione tecnica
+Germany Plan §6.a) — la penalizzazione per numero di trial mangia
+esattamente il vantaggio di Sharpe. Il costo di allargare la griglia è
+quindi misurabile, e questo rende la domanda "la griglia è
+sottoutilizzata?" meno ovvia di quanto sembri: più parametri non
+significa più informazione utilizzabile.
+
+#### Difetto minore — `n_reduced_trials` non propagato
+
+La relazione tecnica riporta "Grid size reduced — N/A comb." per
+entrambi gli engine. Causa: `run_r_portfolio_analysis` **calcola**
+`n_reduced_trials` (`:17228`) ma **non lo espone** nel dict restituito,
+quindi `_rp.get('n_reduced_trials')` è `None` e diventa `'N/A'`
+(`:16675`). Il campo esiste nel dict di ritorno di `run_wfo_pipeline`
+(`:19437`), che però non è la funzione usata da quel percorso.
+
+Il fallback è deliberato e corretto — commento a `:16672`: *"Per
+n_reduced_trials NON usare n_full_trials come proxy: sarebbe
+silenziosamente sbagliato. Mostrare 'N/A'"*. Stessa filosofia dei
+fallback parlanti adottata in `cert-monitor`.
+
+**Fix**: propagare `n_reduced_trials` nel return di
+`run_r_portfolio_analysis`. Piccolo, e rende leggibile un dato oggi
+invisibile — utile proprio per valutare la questione del DSR sopra.
+
+#### Principio di progetto — contenimento dell'overfitting
+
+**Evitare l'overfitting è un must del progetto**, non una preferenza. È
+il criterio che rende coerente una griglia stretta anche dove sarebbe
+tecnicamente allargabile, e va invocato esplicitamente quando si valuta
+di aggiungere parametri o engine.
+
+Nota di onestà: non risulta documentato che l'attuale composizione del
+param_grid sia stata scelta *deliberatamente* per contenere
+l'overfitting. Il principio vale come vincolo di progetto; l'intenzione
+dietro la specifica griglia non è attestata e non va inventata a
+posteriori.
 
 #### Prima di implementare qualunque engine — la diagnosi manca ancora
 
