@@ -1,6 +1,6 @@
 # investia-quant — Piano Operativo
 
-**Ultimo aggiornamento**: 4 agosto 2026 (famiglie rotazionali, vincolo equipesatura, criteri nuovi engine)
+**Ultimo aggiornamento**: 4 agosto 2026 (famiglie rotazionali, criteri nuovi engine, regola di verifica)
 **Root progetto**: `~/investia-quant`
 
 > **Nota consolidamento 22/07**: le voci "0.b" e "0.d-bis" sono state
@@ -614,7 +614,49 @@ Fase 6  release annuale         → deploy VPS
 - **Notebook `.ipynb`**: non committare per soli output celle. `git add` esplicito.
 - **AUTONOMIA nei prompt Code**: sempre inclusa per evitare interruzioni.
 - **Verifiche funzionali**: mai delegare a Code — le fa l'architetto.
-- **Code solo per**: modifiche codice complesse, multi-file.
+  Sono verifiche funzionali: il numero è corretto? il PDF è leggibile?
+  il comportamento è quello atteso? Richiedono giudizio sul dominio.
+- **Verifiche fattuali statiche**: sempre delegare a Code, in sola
+  lettura. Sono verifiche fattuali: cosa contiene il param_grid, che
+  firma ha la funzione, dove viene scritto un campo, quali branch hanno
+  commit non mergiati. Non richiedono giudizio, richiedono di aprire il
+  file. **Questa voce corregge la precedente formulazione "Code solo
+  per: modifiche codice complesse, multi-file"**, che di fatto
+  scoraggiava l'uso dello strumento proprio dove costa meno e serve di
+  più.
+
+### ⚠️ Regola di verifica (fissata 04/08/2026)
+
+> **Nessuna affermazione sullo stato di codice, file, repo o documento
+> senza averlo aperto nella sessione corrente.** Ogni affermazione va
+> citata con `file:riga` o con l'artefatto da cui è letta. Un'affermazione
+> priva di citazione è **non verificata** e va marcata come tale, non
+> presentata come fatto.
+
+**Come si verifica**, in ordine di preferenza:
+1. Aprire il file (`view`, `sed -n`)
+2. Code in sola lettura, con un prompt mirato
+3. Se nessuna delle due è possibile: **dichiarare che non è verificato**
+
+**Cosa NON è verifica:**
+- dedurre da questo piano — il 03-04/08 tre voci su tre verificate sono
+  risultate stantie (`compare_wfo_pipelines`,
+  `fix/report-path-and-sections-parity`, `feature/ranking-multifactor-v2`)
+- dedurre da un'affermazione di seconda mano — è così che
+  `ECOSISTEMA_INVESTIA.md` v2.6 è stato scambiato per v1.3, con un piano
+  costruito sopra che cancellava undici sessioni di lavoro
+- dedurre da un comportamento osservato — il fallimento di B2 su Germany
+  Plan è stato preso come prova che `rebalance_frequency` fosse imposto,
+  mentre è un `EngineParams` cercato dalla WFO (`r_functions.py:2088-2089`)
+
+**Perché la regola è severa**: questi sono sistemi di investimento, non
+prototipi. Il costo di un'inferenza sbagliata non è un bug visibile ma
+un documento di progetto che diventa la base di decisioni successive —
+e nessuno rilegge un'affermazione plausibile. È la stessa classe di
+errore dei fallback silenziosi corretti in `cert-monitor` il 29/07: la
+posizione più esposta del portafoglio mostrata come la più sicura,
+perché un valore mancante era stato sostituito da una stima plausibile
+invece che da un errore parlante.
 
 ### Template prompt Code
 
@@ -1190,13 +1232,7 @@ Parametri della chiamata: `train_years=3, test_years=1`, `rf=0.0`,
 **`tc=0.001`**, `rebalance_freqs=["ME","QE","YE","BH"]`,
 `min_valid_ratio=0.9`.
 
-**Differenza reale col motore R: i costi di transazione.** `tc=0.001` è
-modellato qui; il motore R riporta `Total Fees Paid: 0.0` in tutti i log
-**[da verificare — affermazione presa da questo piano, non riletta nei
-log]**. È la stessa questione aperta nel design Cluster v2, dove un
-turnover più alto non ha oggi un modello di costo che lo penalizzi.
-
-**Non è invece una differenza `rebalance_freqs`**: come sopra,
+**Non è una differenza `rebalance_freqs`**: come sopra,
 `rebalance_frequency` è già cercato dalla WFO del motore R. Una versione
 precedente di questa nota affermava il contrario, dedotto dal
 fallimento di B2 su Germany Plan — inferenza priva di fondamento, B2
@@ -1241,9 +1277,6 @@ Altre osservazioni, non trasferibili ma utili:
   selezione. Su un universo monoclasse la rotazione non può ridurre il
   drawdown: non c'è nulla su cui rifugiarsi. Germany Plan ha MaxDD
   69,98% (relazione investitore 2026-08-03).
-- **Costi**: colonna netta a 10bp su turnover mensile medio 27,81%, con
-  perdita di 36 punti base di CAGR (10,99% → 10,63%). Ordine di
-  grandezza utile per il modello commissioni.
 - **Nessuna validazione**: il basket viene da una ricerca su 126.144
   configurazioni, senza walk-forward né correzione per numero di trial.
   I numeri pubblicati sono in-sample. È esattamente ciò che S3 e S4
