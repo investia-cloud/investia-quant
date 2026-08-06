@@ -5695,3 +5695,206 @@ def strategy_space_concept(data: pd.DataFrame, params: dict, year: int | None = 
     shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
     shifted_exits   = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
     return shifted_entries, shifted_exits
+
+
+# ─────────────────────────────────────
+# Fonte: What Happens When You Split Idle Cash Between Gold and Bonds Instead of Just Gold
+# URL:   https://medium.com/@Kryptera/what-happens-when-you-split-idle-cash-between-gold-and-bonds-instead-of-just-gold-1080506b59d4
+# Data:  2026-08-06 02:00
+# ─────────────────────────────────────
+
+############################
+# Strategy spy_idle_cash_split
+############################
+
+import pandas as pd
+import numpy as np
+
+
+def ind_spy_idle_cash_split_rsi(close: pd.Series, period: int = 2) -> pd.Series:
+    delta = close.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    arr_g = gain.values
+    arr_l = loss.values
+    avg_g = np.empty(len(arr_g))
+    avg_l = np.empty(len(arr_l))
+    avg_g[0] = arr_g[0]
+    avg_l[0] = arr_l[0]
+    alpha = 1.0 / period
+    for i in range(1, len(arr_g)):
+        avg_g[i] = alpha * arr_g[i] + (1.0 - alpha) * avg_g[i - 1]
+        avg_l[i] = alpha * arr_l[i] + (1.0 - alpha) * avg_l[i - 1]
+    safe_den = np.where(avg_l != 0, avg_l, 1.0)
+    rs = np.where(avg_l != 0, avg_g / safe_den, 0.0)
+    rsi = 100.0 - 100.0 / (1.0 + rs)
+    return pd.Series(rsi, index=close.index)
+
+
+def ind_spy_idle_cash_split_sma(close: pd.Series, period: int) -> pd.Series:
+    return close.rolling(period, min_periods=1).mean()
+
+
+def ind_spy_idle_cash_split_golden_cross(
+    close: pd.Series, fast: int = 50, slow: int = 200
+) -> pd.Series:
+    sma_fast = ind_spy_idle_cash_split_sma(close, fast)
+    sma_slow = ind_spy_idle_cash_split_sma(close, slow)
+    return sma_fast > sma_slow
+
+
+strategy_spy_idle_cash_split_param_ranges = {
+    'rsi_period_range':     range(2, 5, 1),
+    'rsi_oversold_range':   range(10, 20, 5),
+    'rsi_overbought_range': range(60, 80, 10),
+    'sma_fast_range':       range(40, 60, 10),
+    'sma_slow_range':       range(90, 120, 15),
+    'exit_sma_range':       range(3, 8, 2),
+}
+
+
+def strategy_spy_idle_cash_split(data: pd.DataFrame, params: dict, year: int | None = None):
+    rsi_period     = params.get('rsi_period_range')
+    rsi_oversold   = params.get('rsi_oversold_range')
+    rsi_overbought = params.get('rsi_overbought_range')
+    sma_fast_p     = params.get('sma_fast_range')
+    sma_slow_p     = params.get('sma_slow_range')
+    exit_sma_p     = params.get('exit_sma_range')
+
+    df = data.copy()
+    close = df['Close']
+
+    # RSI mean reversion signals
+    rsi = ind_spy_idle_cash_split_rsi(close, period=rsi_period)
+    sma_exit = ind_spy_idle_cash_split_sma(close, period=exit_sma_p)
+
+    # Trend following signals (SMA cross)
+    sma_fast = ind_spy_idle_cash_split_sma(close, period=sma_fast_p)
+    sma_slow = ind_spy_idle_cash_split_sma(close, period=sma_slow_p)
+
+    df['RSI']       = rsi
+    df['SMA_EXIT']  = sma_exit
+    df['SMA_FAST']  = sma_fast
+    df['SMA_SLOW']  = sma_slow
+
+    # Golden cross for SPY itself (50/200 MA)
+    gld_cross_spy = ind_spy_idle_cash_split_golden_cross(close, fast=50, slow=200)
+    df['GLD_CROSS_SPY'] = gld_cross_spy
+
+    # Mean Reversion entries/exits
+    mr_entries = df['RSI'] < rsi_oversold
+    mr_exits   = (df['RSI'] > rsi_overbought) | (close > df['SMA_EXIT'])
+
+    # Trend Following entries/exits (SMA cross)
+    tf_cross_above = (df['SMA_FAST'] > df['SMA_SLOW']) & (df['SMA_FAST'].shift(1) <= df['SMA_SLOW'].shift(1))
+    tf_cross_below = (df['SMA_FAST'] < df['SMA_SLOW']) & (df['SMA_FAST'].shift(1) >= df['SMA_SLOW'].shift(1))
+
+    tf_entries = tf_cross_above
+    tf_exits   = tf_cross_below
+
+    # Combined: use MR as primary, TF as secondary confirmation
+    # Entry: MR oversold OR TF golden cross bullish entry while trend is up
+    entries = mr_entries | (tf_entries & df['GLD_CROSS_SPY'])
+
+    # Exit: MR overbought/above exit SMA OR TF dead cross
+    exits = mr_exits | tf_exits
+
+    if year is not None:
+        df = df[df.index.year == int(year)]
+        entries = entries[entries.index.isin(df.index)]
+        exits   = exits[exits.index.isin(df.index)]
+
+    shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    shifted_exits   = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    return shifted_entries, shifted_exits
+
+
+# ─────────────────────────────────────
+# Fonte: We Combined Mean Reversion and Trend Following. Here’s What Actually Happened.
+# URL:   https://medium.com/@Kryptera/we-combined-mean-reversion-and-trend-following-heres-what-actually-happened-95fe85ffc679
+# Data:  2026-08-06 02:01
+# ─────────────────────────────────────
+
+############################
+# Strategy rsi2_mr_sma_tf
+############################
+
+import pandas as pd
+import numpy as np
+
+
+def ind_rsi2_mr_sma_tf_rsi(df: pd.DataFrame, rsi_window: int = 2) -> pd.Series:
+    close = df['Close']
+    delta = close.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    arr_gain = gain.values
+    arr_loss = loss.values
+    avg_gain = np.empty(len(arr_gain))
+    avg_loss = np.empty(len(arr_loss))
+    avg_gain[0] = arr_gain[0]
+    avg_loss[0] = arr_loss[0]
+    alpha = 1.0 / rsi_window
+    for i in range(1, len(arr_gain)):
+        avg_gain[i] = alpha * arr_gain[i] + (1 - alpha) * avg_gain[i - 1]
+        avg_loss[i] = alpha * arr_loss[i] + (1 - alpha) * avg_loss[i - 1]
+    safe_loss = np.where(avg_loss != 0, avg_loss, 1.0)
+    rs = np.where(avg_loss != 0, avg_gain / safe_loss, 100.0)
+    rsi = np.where(avg_loss != 0, 100.0 - 100.0 / (1.0 + rs), 100.0)
+    return pd.Series(rsi, index=close.index)
+
+
+def ind_rsi2_mr_sma_tf_sma(df: pd.DataFrame, period: int) -> pd.Series:
+    return df['Close'].rolling(period, min_periods=1).mean()
+
+
+strategy_rsi2_mr_sma_tf_param_ranges = {
+    'rsi_oversold_range': range(5, 16, 5),
+    'rsi_overbought_range': range(60, 81, 10),
+    'mr_exit_sma_range': range(3, 9, 3),
+    'sma_fast_range': range(40, 61, 10),
+    'sma_slow_range': range(150, 211, 30),
+}
+
+
+def strategy_rsi2_mr_sma_tf(data: pd.DataFrame, params: dict, year: int | None = None):
+    rsi_oversold = params.get('rsi_oversold_range')
+    rsi_overbought = params.get('rsi_overbought_range')
+    mr_exit_sma_p = params.get('mr_exit_sma_range')
+    sma_fast_p = params.get('sma_fast_range')
+    sma_slow_p = params.get('sma_slow_range')
+
+    df = data.copy()
+
+    rsi = ind_rsi2_mr_sma_tf_rsi(df, rsi_window=2)
+    sma_exit = ind_rsi2_mr_sma_tf_sma(df, period=mr_exit_sma_p)
+    sma_fast = ind_rsi2_mr_sma_tf_sma(df, period=sma_fast_p)
+    sma_slow = ind_rsi2_mr_sma_tf_sma(df, period=sma_slow_p)
+
+    df['RSI'] = rsi
+    df['SMA_EXIT'] = sma_exit
+    df['SMA_FAST'] = sma_fast
+    df['SMA_SLOW'] = sma_slow
+
+    if year is not None:
+        df = df[df.index.year == int(year)]
+
+    # Mean Reversion entries/exits
+    mr_entries = df['RSI'] < rsi_oversold
+    mr_exits = (df['RSI'] > rsi_overbought) | (df['Close'] > df['SMA_EXIT'])
+
+    # Trend Following entries/exits (golden/death cross)
+    fast = df['SMA_FAST']
+    slow = df['SMA_SLOW']
+    fast_prev = fast.shift(1)
+    slow_prev = slow.shift(1)
+    tf_entries = (fast > slow) & (fast_prev <= slow_prev)
+    tf_exits = (fast < slow) & (fast_prev >= slow_prev)
+
+    # Combine: entry on either signal, exit on either exit
+    entries = mr_entries | tf_entries
+    exits = mr_exits | tf_exits
+
+    shifted_entries = entries.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    shifted_exits = exits.shift(1).astype(bool).fillna(False).infer_objects(copy=False)
+    return shifted_entries, shifted_exits
