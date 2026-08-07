@@ -1,6 +1,6 @@
 # investia-quant — Piano Operativo
 
-**Ultimo aggiornamento**: 4 agosto 2026 (famiglie rotazionali, criteri nuovi engine, regola di verifica)
+**Ultimo aggiornamento**: 7 agosto 2026 (filiera Lazy: 5 PTF scala di rischio, frequency selection allineata JN/CLI)
 **Root progetto**: `~/investia-quant`
 
 > **Nota consolidamento 22/07**: le voci "0.b" e "0.d-bis" sono state
@@ -215,6 +215,57 @@ lavoro, ma lezione operativa: verificare sempre `git branch` prima di
 un commit quando si torna da un `checkout` precedente.
 
 ### Priorità MASSIMA
+
+**0.i Volatilità Lazy: scarto ~1,45x tra framework e webapp, presente anche sul buy-and-hold** · filiera Lazy · ⚠️ APERTO 07/08
+
+Su `sandbox_crescita`, stesso periodo e stessa curva equity:
+
+| | CAGR | MaxDD | Volatilità | Sharpe |
+|---|---|---|---|---|
+| Framework (JN e CLI) | 13,23% (BH) | 20,45% | ~10,9% implicita | 1,205 |
+| Webapp | 13,17% | 20,19% | **15,78%** misurata | **0,86** |
+
+CAGR e MaxDD si riconciliano — il CAGR con la sola convenzione di
+conteggio anni: 2,1548^(252/1564) = 13,17% (giorni di trading, web)
+contro 2,1548^(1/6,153) = 13,29% (calendario, framework). La volatilità
+no: rapporto 15,78 / 10,9 ≈ **1,45**, vicino a √2. Lo scarto
+**sopravvive sul buy-and-hold**, dove non si ribilancia affatto: non è
+frequenza, non sono commissioni, non è la regola di selezione.
+
+Due ipotesi che si escludono a vicenda:
+
+- **A** — la serie giornaliera dei fondi è a scatti. Sono fondi indice
+  con ISIN, non ETF: se yfinance restituisce NAV solo su una frazione
+  dei giorni e il resto è forward-fill, i rendimenti alternano zeri e
+  movimenti che ne contengono due; la vol annualizzata su base
+  giornaliera si gonfia di ~√2, quella settimanale recupera il valore
+  vero. In questo scenario sbaglia il web, e la `BestFreq` settimanale
+  scelta dal vecchio codice era il sintomo dello stesso problema.
+- **B** — la costante di annualizzazione del framework è errata e
+  15,78% è il valore corretto. Nota però che 15,78/1,414 ≈ 11,2% di
+  volatilità annua per un 80/20 sviluppati/emergenti interamente
+  azionario è basso.
+
+Test che le separa, sulla sola serie di `IE00B5456744` (isola il dato
+dalla logica di portafoglio):
+
+```python
+r  = px.pct_change().dropna()
+rw = px.resample('W-FRI').last().pct_change().dropna()
+print((r == 0).mean() * 100)                            # % giorni a rendimento zero
+print(r.autocorr(1))                                    # autocorrelazione lag-1
+print(r.std()*np.sqrt(252) / (rw.std()*np.sqrt(52)))    # rapporto daily/weekly
+```
+
+Quota di giorni piatti alta + autocorrelazione lag-1 nettamente
+negativa → ipotesi A. Serie pulita e rapporto comunque ~1,41 → ipotesi
+B, e il problema è nella costante del framework.
+
+**Perché è priorità massima**: finché non è risolto, ogni Sharpe della
+filiera Lazy è provvisorio — incluso l'1,215 validato il 07/08. Tocca
+qualunque numero già mostrato in relazione tecnica Lazy.
+
+---
 
 **0.d Path Cluster — diagnosi precisa: look-ahead nella selezione, non solo gap di persistenza** · filiera R · ⚠️ aggiornato 28/06 sera
 
@@ -475,6 +526,35 @@ per cert-monitor (il modulo è cresciuto oltre il monitoraggio: analisi
 evoluta, gestione portafoglio certificati, export smart via LLM). Rename
 solo a livello UI/docs — repo GitHub invariato.
 
+### Priorità alta — filiera Lazy (07/08)
+
+**0.j Benchmark Lazy: due anagrafiche indipendenti con lo stesso nome PTF** · filiera Lazy · ⚠️ APERTO 07/08
+
+`l_portfolios.py` dichiara ora un `benchmark` esplicito per tutti i 24
+PTF. La webapp mostra però su `sandbox_crescita`
+`Benchmark source: external`, `Benchmark name: SPY` e un link
+"Modifica": è un oggetto della piattaforma con campo editabile, non una
+lettura di `l_portfolios.py`.
+
+Due questioni distinte:
+
+1. **Lato investia-quant, da accertare**: `run_lazy_analysis` legge il
+   campo `benchmark` del dict PTF, o usa un default proprio? Se lo
+   ignora, il campo nel file è decorativo. Sospetto lo stesso pattern di
+   B-016 — valore ricalcolato localmente invece di letto dalla fonte.
+   Prompt di diagnosi pronto (tracciare l'origine del benchmark nelle
+   tre funzioni della pipeline Lazy, verificare se il campo sopravvive
+   al passaggio o viene scartato a monte, e se il default è silenzioso).
+2. **Lato design, non risolvibile con una patch**: due fonti di verità
+   per lo stesso PTF, nessun meccanismo che le allinei. Va deciso quale
+   è autoritativa e come la webapp la legge.
+
+Nota collaterale: la conversione al formato annidato ha assegnato un
+benchmark esplicito ai 19 PTF che prima non ne avevano. I risultati già
+prodotti su quei PTF potrebbero non essere riproducibili — confrontare
+con il default precedente di `run_lazy_analysis` prima di rigenerare
+relazioni.
+
 ### Priorità media
 
 **2. Agente relazioni tecniche** · filiera R
@@ -484,6 +564,56 @@ Batch su tutti i PTF: chiama `run_r_portfolio_analysis()` in loop.
 **3. Comprensione R_Strategies + fix API vectorbt** · filiera R-strategies
 
 Fix `from_returns` → `from_holding`. Ruolo operativo da chiarire.
+
+**0.k `DSR` Lazy: valore fuori dominio, identico allo Sharpe** · filiera Lazy · ⚠️ APERTO 07/08
+
+Sulla tabella riepilogativa di `sandbox_crescita` la colonna `DSR`
+riporta esattamente lo Sharpe della stessa riga: 1,219 nel run
+originale, 1,215 con Y, 1,202 con BH. Il DSR è una probabilità in [0,1]
+con soglia di promozione 0,95 — un valore > 1 non è ammissibile.
+
+Il verdetto della riga è `2/3 PROMOSSO`, quindi il criterio DSR potrebbe
+contribuire al conteggio con un pass che non esiste. Da accertare: se la
+colonna stampa lo Sharpe, se il DSR non è calcolato per i Lazy e ricade
+sul valore accanto, e come è composto `CriteriPassati`. Prompt di sola
+lettura pronto.
+
+**0.l Celle che leggono come misure senza esserlo (storico corto)** · filiera Lazy · informativo
+
+Su `sandbox_crescita` lo storico comune parte dal **2020-06-09** (6,15
+anni): il vincolo non sono i benchmark ma i fondi stessi. Con
+`min_years = 1` non esiste alcun guard di lunghezza minima oltre quella
+soglia, quindi `PLoss5y% = 0.0` e `MinSafeHorizon = 3` vengono calcolati
+su circa **una** finestra quinquennale non sovrapposta, dentro una delle
+fasi azionarie più favorevoli mai registrate.
+
+Non è un bug: è una cella che nel PDF investitore legge come misura. Da
+decidere se sopprimerla, accompagnarla con il numero di finestre
+indipendenti, o richiedere uno storico minimo per calcolarla. Stessa
+famiglia della cautela già annotata il 18/06 sulle proiezioni di
+capitale a 30 anni costruite su un solo storico decennale.
+
+**0.m CAGR su BH: 13,18 (CLI) vs 13,23 (JN), stessa frequenza** · filiera Lazy · minore
+
+Unica divergenza residua tra i due percorsi dopo l'allineamento di
+B-016. Su ogni altra frequenza i valori coincidono alla terza cifra
+(Y: 13,16 entrambi; M: 13,21 entrambi). Probabilmente la convenzione di
+annualizzazione (252 giorni contro calendario) che su BH pesa
+diversamente, o un arrotondamento sul numero di anni. Da guardare
+insieme a 0.i, che ha la stessa radice sospetta.
+
+**0.n `MC_B_pvalue` non è indipendente dalla frequenza** · filiera Lazy · informativo
+
+Sullo stesso PTF: 0,82 (W) → 0,374 (Y) → 0,538 (M) → 0,832 (BH). Il
+test di skill sul ribilanciamento gira sulla curva della frequenza
+scelta, quindi il p-value si muove con essa. `MC_B_skill` resta `False`
+in tutti i casi e il verdetto non cambia, ma il numero non va letto come
+stabile né confrontato tra run con frequenze diverse.
+
+Coerente con l'osservazione già aperta dal 18/06 (`MC_B_skill` sempre
+`False` su tutti i PTF Lazy: fatto vero o test senza potere
+statistico) — e ora si sa che a quell'osservazione contribuiva anche la
+frequenza sbagliata.
 
 ### Priorità bassa
 
@@ -564,6 +694,35 @@ i path + gestire la ricostruzione di `compare_wfo_pipelines`).
   anche se logicamente indipendenti — verificare sempre per confine di
   funzione, non per range di righe, specialmente su file con funzioni
   storicamente intrecciate (es. `r_functions.py`).
+
+- **Item di metodo (07/08) — regole decisionali duplicate JN/CLI**: ogni
+  logica di scelta scritta due volte, una nel notebook e una nel
+  percorso CLI, è candidata a divergere silenziosamente. Occorrenze
+  finora: B-005 (narrativa 6.b/6.c), B-014 (`_recommended_path` vs
+  `_build_verdict_text`), B-016 (`BestFreq`). Le prime due sulla filiera
+  R, la terza sulla Lazy. Tutte trovate per caso, nessuna da una
+  ricerca sistematica. Una passata mirata — grep sulle funzioni che
+  ritornano una scelta (`best_*`, `recommended_*`, `_select_*`,
+  `idxmax`/`argmax` applicati a metriche) verificando che abbiano un
+  solo punto di decisione — costerebbe meno di quanto è costato
+  trovarne tre.
+- **Lezione operativa (07/08)**: una cache che non include i parametri
+  del run nella propria chiave restituisce risultati coerenti ma non
+  quelli richiesti, istantaneamente e senza segnale (B-017). Il
+  campanello è stato il tempo di esecuzione, non il valore: un run che
+  deve scaricare cinque serie e girare due blocchi Monte Carlo non può
+  essere istantaneo. Verificare il tempo prima del contenuto.
+- **Lezione operativa (07/08)**: `git stash pop` applica sul branch
+  corrente, non su quello di provenienza. Uno `stash push` seguito da un
+  `checkout -b` fallito (branch già esistente) lascia il lavoro sul
+  branch sbagliato senza errore evidente — l'output dello `stash push`
+  riporta il branch di origine (`On <branch>: <messaggio>`) e va letto,
+  perché è l'unico punto in cui compare.
+- **Lezione operativa (07/08)**: `git commit --amend` su un commit già
+  pushato, senza `--force-with-lease`, non riscrive nulla: crea un
+  commit nuovo sopra quello vecchio. In `main` restano ora due merge
+  commit per lo stesso merge (`9eee04f` col messaggio sporco, `09e065b`
+  con quello corretto). Innocuo sul contenuto, storia rumorosa.
 
 ---
 
@@ -667,8 +826,14 @@ AUTONOMIA: completa tutti i task in sequenza senza chiedere conferma
 intermedia. Segnala solo se colpisci una condizione STOP SE.
 Alla fine stampa un riepilogo di tutto ciò che è stato fatto.
 
-MODALITÀ: solo modifiche codice. NON eseguire rerun. NON leggere
-output generati. La verifica la fa l'architetto.
+MODALITÀ: prima di toccare qualunque file, verifica con
+`git branch --show-current` di essere sul branch indicato. Se non lo
+sei, FERMATI e segnala — non crearlo, non fare checkout.
+NON eseguire comandi git oltre a quelli esplicitamente richiesti:
+nessun commit, nessun merge, nessun push, nessuna creazione o
+cancellazione di branch, nessuno stash.
+Solo modifiche codice. NON eseguire rerun. NON leggere output
+generati. La verifica la fa l'architetto.
 
 CONTESTO:
 File: [nome_file]
@@ -712,6 +877,69 @@ Non risolvere autonomamente. Segnala e attendi istruzioni.
 ### B-013 — stesso problema di B-012 ma sul `full_grid` del path Standard: `n_top=1` non escluso per `asset_type="stock"` → concentrazione totale su singolo titolo (caso reale: SNDK, rally ~60x in un anno, catturato al 100% da `n_top=1` nella finestra 2026) · RESOLVED (22/06, stessa `resolve_n_top` riusata)
 ### B-014 — `_recommended_path()` (tie-break fisso "Cluster vince se promosso") disallineata da `_build_verdict_text` CASO C (Sharpe con soglia 0.05) quando entrambi i path PROMOTED — §3 e §7 potevano mostrare raccomandazioni opposte nello stesso documento; criterio inoltre cieco al profilo (satellite/core) · RESOLVED (23/06, unificato in `_select_path_by_profile`: satellite=Sharpe soglia 0.05 invariato, core=MaxDD con eccezione se CAGR < benchmark)
 ### B-015 — `_diagnose_mc` forzava `recommended_path=None` a `'std'` (fallback dead-code) quando nessun path supera l'OFC, dichiarando "Standard candidato al deploy" in §6.b in contraddizione con §7 ("deploy non raccomandato") · RESOLVED (23/06, early return per caso genuino None — §6.b/§3/Fig.4 ora mostrano entrambi i path senza endorsement)
+
+### B-016 — `BestFreq` calcolato con `idxmax()` grezzo in `run_lazy_analysis`, seconda implementazione della regola di scelta · filiera Lazy · RESOLVED (07/08)
+
+`run_lazy_analysis` determinava la frequenza di ribilanciamento vincente
+con `idxmax()` sullo Sharpe, su una lista `['W','M','Q','Y',None]`
+hardcoded — ignorando il `best_freq` che `compare_rebalance_frequencies`
+già ritorna come secondo valore, e con esso la banda di tolleranza
+(candidate entro l'1% dal massimo) e il tie-break su `Ops_Anno` minimo.
+Due implementazioni indipendenti della stessa decisione: il JN usava
+quella corretta, la CLI la propria.
+
+Effetto su `sandbox_crescita`: CLI → `W` (89,9 operazioni/anno), JN →
+`Y` (2,1), a fronte di uno spread di Sharpe dell'**1,2%** sull'intero
+set (1,2195 W → 1,2051 BH). Un `idxmax()` su differenze di quel calibro
+non seleziona un ottimo, seleziona rumore.
+
+RESOLVED: la regola vive ora solo in `compare_rebalance_frequencies`, il
+blocco duplicato è stato eliminato. Aggiunta
+`LAZY_DEFAULT_FREQS = ('Q','Y')`, flag CLI `--freqs`, colonna `FreqSet`
+nella tabella riepilogativa.
+
+Terza occorrenza dello stesso pattern dopo B-005 e B-014, prima sulla
+filiera Lazy — vedi item di metodo in Tech debt.
+
+### B-017 — cache Lazy non parametro-aware: risultati serviti con parametri diversi da quelli richiesti · filiera Lazy · RESOLVED (07/08)
+
+La chiave di cache era `outputs/lazy_cache/{ptf_name}.pkl` — solo il
+nome del PTF, nessun parametro. Dopo l'introduzione di `--freqs`, tre
+run consecutivi di `iq l-analyze --ptf sandbox_crescita` hanno
+restituito **istantaneamente** `BestFreq = W`, valore impossibile col
+nuovo default `('Q','Y')`, perché serviti da cache calcolata prima della
+patch. Nessun warning, exit 0, output dir creata regolarmente.
+
+Scoperto solo perché `W` era vistosamente fuori dal set richiesto: due
+run con `--freqs` diversi ma entrambi plausibili sarebbero stati
+indistinguibili.
+
+RESOLVED: al load il `FreqSet` della cache viene confrontato con quello
+del run corrente (normalizzati come tag ordinato); se divergono la cache
+viene ignorata con riga `[INFO]` a schermo e la pipeline ricalcola. Nome
+file invariato.
+
+Stessa famiglia dei difetti già censiti (default silenzioso di
+`ptf_type`, fallback di `resolve_n_top`, `risk_off_tickers` vuota):
+nessun errore di calcolo, risultato coerente ma non quello richiesto.
+
+### B-018 — `--freqs` con valore invalido terminava con exit 0 e batch vuoto · filiera Lazy · RESOLVED (07/08)
+
+`iq l-analyze --ptf sandbox_crescita --freqs W,Z` terminava con
+`Completato. 0 PTF analizzati`, DataFrame vuoto, `Promossi: 0/0`, exit
+code 0 e output dir creata — senza mai nominare `Z`. Un typo nel
+parametro era indistinguibile da un run legittimo che non promuove
+nulla; su `--ptf all` un `Promossi: 0/12` avrebbe letto come esito
+statistico.
+
+RESOLVED: validazione in `cli.py` prima di entrare nella pipeline
+(`ClickException`, exit 1, nessuna output dir) e in `run_lazy_analysis`
+(`ValueError`, per le chiamate dal notebook che non passano da Click).
+Il `try/except` che degrada un PTF fallito dentro un batch è stato
+mantenuto — serve al multi-PTF — ma ora stampa
+`[ERRORE] {ptf}: {tipo}: {messaggio}` su `stderr`. Exit code distinto
+tra "nessuno analizzato" (errore, `SystemExit(2)`) e "nessuno promosso"
+(esito legittimo, exit 0).
 
 ---
 
@@ -1512,6 +1740,118 @@ Ripulito anche il remoto: 21 branch mergiati cancellati, resta solo
 `session_start.sh` (passo 1/5) fa `git fetch origin` senza `--prune`:
 i riferimenti a branch remoti cancellati altrove restano nella lista
 locale e compaiono come "non mergiati". Da aggiungere.
+
+---
+
+### Sessione 07/08/2026 — Filiera Lazy: 5 PTF scala di rischio, frequency selection allineata JN/CLI
+
+**`l_portfolios.py` — 5 nuovi PTF + formato unico** (branch
+`feature/l-portfolios-nuovo-formato`, mergiato in `main`):
+
+- Aggiunti `sandbox_crescita`, `sandbox_energetico`, `sandbox_liscio`,
+  `sandbox_calma`, `sandbox_protezione` — scala di rischio a 5 gradini
+  su universo comune di 5 fondi indice EUR, quota azionaria
+  100/70/50/30/15%.
+- Convertiti al formato annidato `{Title, tickers, benchmark}` i 19 PTF
+  ancora nel formato flat. Il parser del registry mantiene il supporto
+  al vecchio formato per retro-compatibilità, ma nessun PTF lo usa più.
+- `lazy_balanced_60_20_20` non è più un alias allo stesso oggetto di
+  `lazy_greta_base_etf_ita`: composizione identica, `Title` proprio.
+- Registry verificato con import reale: 24 PTF, somma pesi 1.0000 su
+  tutti, nessuna entry persa (LAZY 14, EQUITY 1, SANDBOX 9).
+
+**Convenzione benchmark fissata**, documentata nel docstring del file:
+coerenza di valuta/mercato — PTF EUR/Milano → benchmark Milano, PTF
+US-listed → USD; multi-asset EUR → scala Vanguard LifeStrategy per quota
+azionaria (`V20A.MI`/`V40A.MI`/`V60A.MI`/`V80A.MI`), arrotondando al
+gradino più vicino con **tie-break verso l'alto** (benchmark più
+difficile da battere, claim di alpha più prudente); 100% azionario EUR →
+`VWCE.MI`; obbligazionari/liquidità → `VAGF.MI`.
+
+Caveat noto: i `V##A.MI` esistono da fine 2020. Su questi PTF non è
+vincolante (i fondi stessi partono dal 2020-06-09), ma su PTF a storico
+lungo lo diventa — alternativa a storico dal 2008 è la scala iShares
+Core Allocation (`AOA`/`AOR`/`AOM`/`AOK`), che però rompe la coerenza
+valutaria e introduce FX nell'alpha. Decisione da rivedere caso per
+caso, non regola universale.
+
+Anagrafica: i cinque fondi sono fondi indice con ISIN irlandesi, non ETF
+quotati. yfinance restituirà probabilmente codici `0P00…` come
+`Company`, intercettati dalla guardia `^0P[0-9A-Z]{8,}` introdotta il
+3/08 — nomi vuoti su tutte e cinque le righe della tabella. Candidato
+naturale per un override tipo `ticker_isin_overrides.csv`.
+
+**Frequency selection — B-016/017/018** (branch
+`fix/lazy-freq-selection-cli`, mergiato in `main`):
+
+Trigger: `iq l-analyze --ptf sandbox_crescita` restituiva `BestFreq = W`
+(89,9 operazioni/anno) su un lazy portfolio. Il JN sullo stesso PTF dava
+`Y`.
+
+Percorso della diagnosi, con due ipotesi scartate lungo la strada:
+
+1. *Costi a zero* — scartata: `fees = 0.001` è un default esplicito del
+   JN e i costi sono applicati per frequenza (W paga 265,43 € contro
+   99,90 € del BH). Il `Total Fees Paid: 0.0` citato inizialmente viene
+   dai log del **motore rotazionale**, filiera diversa: attribuzione
+   sbagliata, corretta dall'architetto.
+2. *Parametri diversi tra JN e CLI* — scartata: JN a W dà Sharpe
+   1,219486, CLI 1,219. Stesso numero, stessa tabella. Non due percorsi
+   di calcolo, ma due regole di scelta.
+3. Causa reale: `idxmax()` duplicato in `run_lazy_analysis` (B-016).
+
+**Proprietà della regola, non ovvia, da tenere presente**: la banda
+dell'1% è relativa al massimo del set, quindi rimuovere una frequenza
+può *aggiungerne* un'altra all'insieme dei finalisti. Con
+`['W','M','Q','Y',BH]` il massimo è W 1,219486 e la soglia 1,20729 → BH
+(1,205066) resta fuori per 0,0022 → vince Y. Togliendo W il massimo
+diventa Y 1,215006 e la soglia 1,202856 → BH rientra → vince BH. Il
+vincitore dipende anche dalle alternative che non vincono.
+
+Nota di lettura: il messaggio a schermo dice "Frequenza ottimale
+(Sharpe…)" ma il criterio effettivo è *il minor numero di operazioni tra
+quelle statisticamente equivalenti*. Su `sandbox_crescita` lo spread
+totale è dell'1,2% — la frequenza non fa differenza misurabile e la
+regola sceglie correttamente la più parsimoniosa. Buona regola,
+etichetta che la descrive male.
+
+**Decisione: `BH` ammessa dalla CLI, fuori dal default.** Il messaggio
+d'errore precedente ("valori non supportati: ['BH']") affermava il
+falso — `BH` è calcolata da `compare_rebalance_frequencies` e il
+notebook la passa regolarmente. Inoltre `W` e `M` erano accettate pur
+essendo anch'esse non-lazy: ibrido non intenzionale. Criterio adottato:
+**la CLI esprime tutto ciò che la libreria calcola, il default
+protegge**. `LAZY_DEFAULT_FREQS = ('Q','Y')`, con W/M/BH selezionabili
+come termine di confronto.
+
+Ragione dell'esclusione dal default, per quando la si rimetterà in
+discussione: `Q`/`Y` perché il ribilanciamento settimanale o mensile non
+è lazy in nessuna convenzione di riferimento (Bogleheads e Ferri su base
+annuale, Swedroe a soglia 5/25, Vanguard: oltre l'annuale/semestrale
+nessun guadagno risk-adjusted); `BH` fuori perché senza ribilanciamento
+i pesi derivano e su una **scala profilata** il profilo di rischio che
+definisce il prodotto si dissolve — `sandbox_protezione` al 15% di
+azionario non resta al 15%.
+
+**Verifica end-to-end su `sandbox_crescita`**, tutti i rami:
+`default → Y/Q,Y`; `--freqs W,M → M`; `--freqs Q,Y,W → Y` con ricalcolo;
+`--freqs Q,Y,BH → BH`; `--freqs "" →` ClickException;
+`--freqs W,Z →` errore che nomina `Z`, exit 1; secondo run identico
+istantaneo. Coincide con il JN riga per riga.
+
+**Incidente operativo**: Code ha creato il branch
+`fix/lazy-freq-selection-cli` senza che il prompt lo chiedesse (il
+prompt diceva "verifica di essere sul branch indicato"), lasciandolo
+vuoto e lavorando nel working tree — condiviso tra i branch. Un
+`stash push` + `checkout -b` fallito ha poi depositato il lavoro su
+`main`. Nessuna perdita, storia corretta, ma da qui l'aggiunta al
+template prompt Code sul divieto di comandi git non richiesti.
+
+**Osservazioni aperte generate da questa sessione**: item 0.i
+(volatilità framework vs webapp, priorità massima), 0.j (benchmark: due
+anagrafiche indipendenti), 0.k (DSR fuori dominio), 0.l (celle che
+leggono come misure su storico corto), 0.m (CAGR BH), 0.n
+(`MC_B_pvalue` dipendente dalla frequenza).
 
 ---
 
