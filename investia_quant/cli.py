@@ -899,10 +899,14 @@ def k_analyze(strategies, tickers, ptf, output_dir, start_date, end_date,
     help="Storico minimo comune richiesto (anni) per run_bh_backtest e MC Block B")
 @click.option("--pdf", "gen_pdf", is_flag=True, default=False,
     help="Genera la Relazione Investitore PDF per i PTF promossi (default: solo pipeline)")
+@click.option("--freqs", default="Q,Y", show_default=True,
+    help="Frequenze di ribilanciamento da valutare, separate da virgola (default: Q,Y). "
+         "Valori: W M Q Y BH. "
+         "W/M/BH ammesse per confronto, fuori dal default: non compatibili con un lazy portfolio.")
 @click.option("--verbose", "-v", is_flag=True, default=False, help="Output verboso")
 def l_analyze(ptf, universe, output_dir, start_date, end_date, benchmark,
               init_cash, fees, years, n_simulations_mc_a,
-              n_simulations_mc_b, override, min_years, gen_pdf, verbose):
+              n_simulations_mc_b, override, min_years, gen_pdf, freqs, verbose):
     """Pipeline Lazy portfolio: frontiera + backtest + stability + MC A/B + DSR.
 
     Batch (--ptf all) o singolo. Con --pdf genera la Relazione Investitore per
@@ -924,6 +928,19 @@ def l_analyze(ptf, universe, output_dir, start_date, end_date, benchmark,
         raise click.ClickException("Usa --ptf oppure --universe, non entrambi.")
     if not ptf and not universe:
         raise click.ClickException("Specifica --ptf <nome> oppure --universe <file.json>.")
+
+    _freqs_parsed = tuple(f.strip().upper() for f in freqs.split(",") if f.strip())
+    if not _freqs_parsed:
+        raise click.ClickException("--freqs non può essere vuoto. Esempio: --freqs Q,Y")
+    _cli_supported = {'W', 'M', 'Q', 'Y', 'BH'}
+    _cli_invalid = [f for f in _freqs_parsed if f not in _cli_supported]
+    if _cli_invalid:
+        raise click.ClickException(
+            f"--freqs: valori non supportati: {_cli_invalid}. "
+            f"Valori ammessi: {sorted(_cli_supported)} (default: Q,Y)."
+        )
+    # BH è l'etichetta utente per buy & hold; la libreria lo rappresenta come None.
+    _freqs_parsed = tuple(None if f == 'BH' else f for f in _freqs_parsed)
 
     ns = _load_all_libs()
     l_registry = ns.get("L_PORTFOLIO_REGISTRY", {})
@@ -984,6 +1001,7 @@ def l_analyze(ptf, universe, output_dir, start_date, end_date, benchmark,
         verbose=verbose,
         min_years=min_years,
         generate_pdf=gen_pdf,
+        freqs=_freqs_parsed,
     )
 
     df = result['df']
@@ -992,6 +1010,8 @@ def l_analyze(ptf, universe, output_dir, start_date, end_date, benchmark,
     print(df.to_string(index=False))
     n_promoted = (df["Verdetto"] == "PROMOSSO").sum() if "Verdetto" in df.columns else 0
     print(f"\nPromossi: {n_promoted}/{len(df)}")
+    if len(df) == 0:
+        raise SystemExit(2)
 
 
 # ---------------------------------------------------------------------------

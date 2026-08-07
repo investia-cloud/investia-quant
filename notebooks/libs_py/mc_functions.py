@@ -13,6 +13,13 @@ import plotly.graph_objects as go
 from u_functions import (build_and_plot_portfolio_contributions, download_data, load_ohlcv, generate_lazy_portfolio_performance, plot_cumulative_and_rolling_returns, plot_monthly_returns, plot_multiple_portfolios, my_display)
 from r_functions import mc_run_iid_bootstrap, mc_run_block_bootstrap
 
+# Frequenze di default per i PTF Lazy. W, M e BH (buy & hold / None)
+# sono accettate dalla libreria ma fuori dal default: non compatibili
+# con un lazy portfolio (W/M: cadenza troppo alta; BH: i pesi derivano
+# e il profilo di rischio che definisce il PTF non e' piu' garantito).
+# Passare freqs=['Q','Y','BH'] esplicitamente per includerle nel confronto.
+LAZY_DEFAULT_FREQS = ('Q', 'Y')
+
 # Fallback sicuro per display(): usa quello di IPython in Jupyter,
 # altrimenti ripiega su print() quando il modulo è importato da script Python puro.
 try:
@@ -1941,6 +1948,7 @@ def run_lazy_analysis(
     save_png: bool = True,
     auto_freq: bool = True,
     freq_selection_metric: str = 'sharpe',
+    freqs: tuple = None,
     weight_bounds: tuple = (0, 1),
     verbose: bool = False,
     min_years: int = 5,
@@ -1994,61 +2002,57 @@ def run_lazy_analysis(
 
     # ── 1. FREQUENCY SELECTION ───────────────────────────────────────────────
     if auto_freq:
-        freqs = ['W', 'M', 'Q', 'Y', None]
-        rows = []
-        for freq in freqs:
-            pf_f = run_bh_backtest(portfolio_cfg, _start_date, end_date,
-                                   init_cash, fees, freq, min_years=min_years,
-                                   _preloaded=_preloaded_bh)
-            if pf_f is None:
-                break
-            rows.append({
-                'Freq':        freq if freq is not None else 'BH',
-                'Sharpe':      _safe_metric(pf_f, 'sharpe'),
-                'CAGR':        _cagr_from_equity(pf_f),
-                'TotalReturn': _safe_metric(pf_f, 'total_return'),
-                'MaxDD':       abs(_safe_metric(pf_f, 'max_drawdown')),
-            })
-        if not rows:
+        _freqs = list(freqs) if freqs is not None else list(LAZY_DEFAULT_FREQS)
+        if not _freqs:
+            raise ValueError(
+                "[run_lazy_analysis] 'freqs' non può essere una lista vuota."
+            )
+        # 'BH' è alias stringa di None (buy & hold); normalizzato prima della validazione.
+        _freqs = [None if f == 'BH' else f for f in _freqs]
+        _supported = {'W', 'M', 'Q', 'Y', None}
+        _invalid = [f for f in _freqs if f not in _supported]
+        if _invalid:
+            raise ValueError(
+                f"[run_lazy_analysis] frequenze non supportate: {_invalid}. "
+                f"Valori ammessi: {sorted(str(v) for v in _supported if v is not None) + ['BH', 'None']}."
+            )
+
+        freq_df, best_freq = compare_rebalance_frequencies(
+            portfolio=portfolio_cfg,
+            start_date=_start_date,
+            end_date=end_date,
+            init_cash=init_cash,
+            fees=fees,
+            freqs=_freqs,
+            min_years=min_years,
+            verbose=verbose,
+        )
+        if freq_df is None or best_freq is None and freq_df is None:
             raise ValueError(
                 f"[run_lazy_analysis] {title!r}: storico insufficiente per tutte le "
-                f"frequenze (min_years={min_years}) — impossibile selezionare best_freq."
+                f"frequenze {_freqs} (min_years={min_years}) — impossibile selezionare best_freq."
             )
-        freq_df = pd.DataFrame(rows)
 
-        metric_map = {
-            'sharpe':       ('Sharpe',      'max'),
-            'cagr':         ('CAGR',        'max'),
-            'total_return': ('TotalReturn', 'max'),
-            'max_dd':       ('MaxDD',       'min'),
-        }
-        col, goal = metric_map.get(freq_selection_metric, ('Sharpe', 'max'))
-        if goal == 'max':
-            best_label = freq_df.loc[freq_df[col].idxmax(), 'Freq']
-        else:
-            best_label = freq_df.loc[freq_df[col].idxmin(), 'Freq']
-        best_freq = None if best_label == 'BH' else best_label
-
-        if verbose:
-            print(f"Frequenza ottimale ({freq_selection_metric}): {best_label}")
+        if save_png and freq_df is not None:
             try:
-                from IPython.display import display as _disp
-                _disp(freq_df)
-            except Exception:
-                print(freq_df.to_string())
-
-        if save_png:
-            try:
-                metrics = ['Sharpe', 'CAGR', 'TotalReturn', 'MaxDD']
-                fig_f, axes = plt.subplots(2, 2, figsize=(10, 7))
-                fig_f.suptitle('Confronto Frequenze Ribilanciamento', fontsize=13)
-                for ax, m in zip(axes.flat, metrics):
-                    ax.bar(freq_df['Freq'].astype(str), freq_df[m])
-                    ax.set_title(m)
-                    ax.set_xlabel('Frequenza')
-                plt.tight_layout()
-                plt.savefig(str(plots_dir / 'freq_comparison.png'), dpi=120)
-                plt.close(fig_f)
+                metrics = [c for c in ['Sharpe', 'CAGR%', 'TotalReturn%', 'MaxDD%'] if c in freq_df.columns]
+                if not metrics:
+                    metrics = [c for c in freq_df.columns if c not in ('Freq', 'N_Ops', 'Ops_Anno', 'Fees_Paid', 'Fees_pct', 'Calmar')]
+                n_metrics = len(metrics)
+                if n_metrics:
+                    cols_g = 2
+                    rows_g = (n_metrics + 1) // 2
+                    fig_f, axes = plt.subplots(rows_g, cols_g, figsize=(10, 7))
+                    fig_f.suptitle('Confronto Frequenze Ribilanciamento', fontsize=13)
+                    for ax, m in zip(np.array(axes).flat, metrics):
+                        ax.bar(freq_df['Freq'].astype(str), freq_df[m])
+                        ax.set_title(m)
+                        ax.set_xlabel('Frequenza')
+                    for ax in list(np.array(axes).flat)[n_metrics:]:
+                        ax.set_visible(False)
+                    plt.tight_layout()
+                    plt.savefig(str(plots_dir / 'freq_comparison.png'), dpi=120)
+                    plt.close(fig_f)
             except Exception as _e:
                 if verbose:
                     print(f"[run_lazy_analysis] freq_comparison.png non salvato: {_e}")
@@ -2133,6 +2137,7 @@ def _compute_lazy_full(
     verbose=False,
     need_out: bool = False,
     min_years: int = 5,
+    freqs: tuple = None,
 ) -> dict:
     """
     Pipeline Lazy completa per un SINGOLO PTF: analisi headless + backtest
@@ -2207,6 +2212,7 @@ def _compute_lazy_full(
         save_png=True,
         auto_freq=True,
         freq_selection_metric='sharpe',
+        freqs=freqs,
         verbose=verbose,
         min_years=min_years,
         _preloaded_price=_price_ptf,
@@ -2274,9 +2280,11 @@ def _compute_lazy_full(
     verdetto = 'PROMOSSO' if n_passed >= 2 else 'RIGETTATO'
 
     # 8. riga di classificazione
+    _freqs_used = freqs if freqs is not None else LAZY_DEFAULT_FREQS
     row = {
         'Nome': ptf_name,
         'BestFreq': risultati['best_freq'] or 'BH',
+        'FreqSet': ','.join('BH' if f is None else str(f) for f in _freqs_used),
         'CAGR%': round(cagr * 100, 2),
         'Sharpe': round(sr, 3),
         'MaxDD%': round(maxdd * 100, 2),
@@ -2345,6 +2353,7 @@ def run_lazy_batch_analysis(
     verbose=False,
     details_out: dict = None,
     min_years: int = 5,
+    freqs: tuple = None,
 ) -> "pd.DataFrame":
     """
     Esegue la pipeline Lazy completa (run_lazy_analysis + stability +
@@ -2384,15 +2393,26 @@ def run_lazy_batch_analysis(
             print(f"[WARN] PTF '{ptf_name}' non trovato nel registry: skip.")
             continue
 
+        _freqs_for_cache = freqs if freqs is not None else LAZY_DEFAULT_FREQS
+        _freqs_tag = '-'.join(sorted('BH' if f is None else str(f) for f in _freqs_for_cache))
         cache_file = _cache_dir / f'{ptf_name}.pkl'
         if (not override) and (not need_details) and cache_file.exists():
             try:
                 with open(cache_file, 'rb') as f:
                     cached_row = pickle.load(f)
-                rows.append(cached_row)
-                if verbose:
-                    print(f"[CACHE] {ptf_name}: caricato da {cache_file}")
-                continue
+                _cached_freq_set = cached_row.get('FreqSet', '')
+                _cached_tag = '-'.join(sorted(_cached_freq_set.split(','))) if _cached_freq_set else ''
+                if _cached_tag != _freqs_tag:
+                    print(
+                        f"[INFO] {ptf_name}: cache ignorata: freqs richiesto "
+                        f"{','.join(sorted('BH' if f is None else str(f) for f in _freqs_for_cache))}, "
+                        f"cache {_cached_freq_set or '?'} — ricalcolo."
+                    )
+                else:
+                    rows.append(cached_row)
+                    if verbose:
+                        print(f"[CACHE] {ptf_name}: caricato da {cache_file}")
+                    continue
             except Exception as e:
                 if verbose:
                     print(f"[CACHE] {ptf_name}: cache corrotta ({e}), ricalcolo.")
@@ -2414,6 +2434,7 @@ def run_lazy_batch_analysis(
                 verbose=verbose,
                 need_out=need_details,
                 min_years=min_years,
+                freqs=freqs,
             )
             row = rich['row']
             mc_a2 = rich['mc_a2']
@@ -2436,7 +2457,8 @@ def run_lazy_batch_analysis(
                 if verbose:
                     print(f"[CACHE] {ptf_name}: impossibile salvare mc_a2 cache ({e}).")
         except Exception as e:
-            print(f"[WARN] PTF '{ptf_name}' fallito: {type(e).__name__}: {e} — continuo col prossimo.")
+            import sys as _sys
+            print(f"[ERRORE] {ptf_name}: {type(e).__name__}: {e} — continuo col prossimo.", file=_sys.stderr)
             continue
 
     # 9. costruzione e salvataggio CSV
@@ -3301,6 +3323,7 @@ def run_lazy_portfolio_analysis(
     verbose: bool = False,
     min_years: int = 5,
     generate_pdf: bool = False,
+    freqs: tuple = None,
 ) -> dict:
     """
     Entry point unico per iq l-analyze: esegue la pipeline batch Lazy e,
@@ -3340,6 +3363,7 @@ def run_lazy_portfolio_analysis(
             verbose=verbose,
             details_out=details,
             min_years=min_years,
+            freqs=freqs,
         )
 
     result = {'df': df, 'pdf_paths': {}}
