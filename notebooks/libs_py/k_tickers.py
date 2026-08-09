@@ -844,6 +844,39 @@ germany_plan_beneficiaries = [
     # "BBBY",     # titolo di test: grande volailita' pessi performance
 ]
 
+us_strategic_tech_beneficiaries = [
+    # 🧠 Semiconduttori — produzione domestica / reshoring / AI compute
+    "INTC",     # 🏭 Intel — fabs USA; beneficiario diretto della capacità produttiva domestica
+    "GFS",      # 🏭 GlobalFoundries — foundry USA; produzione domestica strategica
+    "MU",       # 💾 Micron — memoria; espansione produttiva negli USA
+    "NVDA",     # 🧠 NVIDIA — AI compute e leadership tecnologica USA
+    "AMD",      # ⚡ AMD — CPU/GPU e acceleratori AI
+    "AVGO",     # 🔌 Broadcom — networking/ASIC per infrastruttura AI
+
+    # 🛠️ Semiconductor equipment / supply chain
+    "AMAT",     # 🏗️ Applied Materials — equipment per produzione chip
+    "LRCX",     # 🧪 Lam Research — wafer fabrication equipment
+    "KLAC",     # 🔬 KLA — process control / metrology
+    "TER",      # 🧰 Teradyne — semiconductor test equipment
+
+    # 🧲 Terre rare & minerali critici
+    "MP",       # 🧲 MP Materials — mine-to-magnet USA; partnership diretta con DoD
+    "USAR",     # 🇺🇸 USA Rare Earth — mine-to-magnet; Texas/Oklahoma/South Carolina
+    "UUUU",     # ⚛️ Energy Fuels — rare earth separation + uranium / critical materials
+    "NB",       # ⛏️ NioCorp — Elk Creek; niobio, scandio, titanio e potenziali REE
+
+    # ⚛️ Quantum computing
+    "IONQ",     # ⚛️ IonQ — trapped-ion quantum computing
+    "RGTI",     # 🧊 Rigetti — superconducting quantum computers
+    "QBTS",     # 🔷 D-Wave Quantum — quantum annealing
+    "QUBT",     # 💡 Quantum Computing Inc. — photonic / quantum technologies
+
+    # 🖥️ Quantum ecosystem / industrializzazione
+    "IBM",      # ⚛️ IBM — quantum hardware, software e research
+    "GOOGL",    # 🧪 Alphabet — Google Quantum AI
+    "MSFT",     # 🔬 Microsoft — quantum computing / cloud ecosystem
+]
+
 # =============================================================================
 # 🇮🇹 UNIVERSE: Italy Big Cap — R-Portfolio
 # Validata con yfinance + yahooquery — tutti i ticker scaricano correttamente.

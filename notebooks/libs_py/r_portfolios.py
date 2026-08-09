@@ -99,6 +99,26 @@ portfolio_italy_big_cap = {
     "benchmark_title": "CSMIB.MI"
 }
 
+portfolio_us_strategic_tech = {
+    "Title": "US Strategic Tech",
+    "tickers": us_strategic_tech_beneficiaries,
+    "benchmark_portfolio": None,
+    "benchmark_title": "^GSPC",
+    "ptf_type": "thematic",
+    "thesis": (
+        "Posizionamento sulla nuova politica industriale e tecnologica USA "
+        "volta a rafforzare l'autonomia strategica nazionale in semiconduttori, "
+        "minerali critici/terre rare e quantum computing (2025-...). "
+        "La tesi e' recente e sostenuta da interventi federali, incentivi alla "
+        "produzione domestica, sicurezza delle supply chain e accelerazione "
+        "della leadership tecnologica americana. E' atteso e desiderabile un "
+        "alpha crescente nelle finestre rolling piu' recenti, coerente con una "
+        "tesi tematica ancora in fase di sviluppo; l'assenza di miglioramento "
+        "recente dell'alpha costituirebbe invece evidenza contraria alla tesi."
+    ),
+}
+
+
 # Registry: mappa nome_stringa → oggetto portafoglio
 # Usato dalla CLI per risolvere --ptf <nome>
 R_PORTFOLIO_REGISTRY = {
@@ -113,3 +133,5 @@ R_PORTFOLIO_REGISTRY = {
     "germany_plan":        portfolio_germany_plan,
     "italy_big_cap":       portfolio_italy_big_cap,
 }
+
+
