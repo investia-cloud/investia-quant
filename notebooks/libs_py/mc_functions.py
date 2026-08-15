@@ -365,7 +365,7 @@ def compare_rebalance_frequencies(
 
         rows.append({
             'Freq'        : freq if freq is not None else 'BH',
-            'Sharpe'      : float(pf.sharpe_ratio()),
+            'Sharpe'      : float(pf.sharpe_ratio(year_freq='252 days')),
             'Calmar'      : round(calmar, 2) if not np.isnan(calmar) else np.nan,
             'CAGR%'       : round(cagr * 100, 2),
             'TotalReturn%': round(float(pf.total_return()) * 100, 2),
@@ -673,7 +673,7 @@ def efficient_frontier_pypfopt(
             )
             annual_return_real = pf_bh.annualized_return() * 100
             volatility_real = pf_bh.annualized_volatility() * 100
-            sharpe_real = pf_bh.sharpe_ratio()
+            sharpe_real = pf_bh.sharpe_ratio(year_freq='252 days')
 
         special["my_portfolio"] = {
             "weights": weights_dict,
@@ -861,7 +861,7 @@ def efficient_frontier_pypfopt_RECOVERY(
             )
             annual_return_real = pf_bh.annualized_return() * 100
             volatility_real = pf_bh.annualized_volatility() * 100
-            sharpe_real = pf_bh.sharpe_ratio()
+            sharpe_real = pf_bh.sharpe_ratio(year_freq='252 days')
 
         special["my_portfolio"] = {
             "weights": weights_dict,
@@ -1338,7 +1338,7 @@ def _cagr_from_equity(pf, ann: int = 252) -> float:
 def _safe_metric(pf, metric: str) -> float:
     try:
         if metric == 'sharpe':
-            return float(pf.sharpe_ratio())
+            return float(pf.sharpe_ratio(year_freq='252 days'))
         elif metric == 'total_return':
             return float(pf.total_return())
         elif metric == 'max_drawdown':
@@ -1528,7 +1528,7 @@ def lazy_mc_block_b_rebalancing(
         print(f"[lazy_mc_block_b_rebalancing] Storico insufficiente — skip (vedi diagnostica sopra).")
         return None
 
-    actual_sharpe = float(pf_actual.sharpe_ratio())
+    actual_sharpe = float(pf_actual.sharpe_ratio(year_freq='252 days'))
     actual_cagr   = _cagr_from_equity(pf_actual)
 
     # 2. Prezzi per il loop simulazioni — usa _preloaded_price se disponibile
@@ -1598,7 +1598,7 @@ def lazy_mc_block_b_rebalancing(
                 cash_sharing=True,
                 freq='D',
             )
-            sim_sharpes.append(float(pf_sim.sharpe_ratio()))
+            sim_sharpes.append(float(pf_sim.sharpe_ratio(year_freq='252 days')))
             sim_cagrs.append(_cagr_from_equity(pf_sim))
         except Exception:
             continue
@@ -2154,7 +2154,9 @@ def _compute_lazy_full(
         'mc_a1'        : MC iid bootstrap
         'mc_a2'        : MC block bootstrap (usato anche da project_lazy_capital)
         'mc_b'         : MC Block B (skill ribilanciamento)
-        'dsr'          : Deflated Sharpe Ratio
+        'dsr'          : DSR semplificato (Bailey & Lopez de Prado, formula ridotta
+                         SR_hat - z/√T, SENZA correzione skew/curtosi) — è uno Sharpe
+                         penalizzato, in unità di Sharpe: NON è una probabilità in [0,1]
         'sr', 'T'      : Sharpe e n. osservazioni
         'cagr','maxdd' : metriche aggregate
         'checks'       : dict dei 3 criteri
@@ -2262,10 +2264,21 @@ def _compute_lazy_full(
         min_years=min_years, _preloaded_price=_price_ptf,
     )
 
-    # 6. DSR
-    sr = float(pf_proposed.sharpe_ratio())
+    # 6. DSR — n_trials = numero di frequenze candidate effettivamente valutate
+    # dalla frequency selection (multiple testing reale su freq_df). Nessun
+    # fallback silenzioso: se freq_df non è disponibile, n_trials non è
+    # determinabile in modo affidabile e la pipeline deve fermarsi.
+    sr = float(pf_proposed.sharpe_ratio(year_freq='252 days'))
     T = int(pf_proposed.value().dropna().__len__())
-    dsr = ofc_compute_dsr(sr_hat=sr, n_trials=1, T=T)
+    _freq_df = risultati.get('freq_df')
+    if _freq_df is None or len(_freq_df) == 0:
+        raise ValueError(
+            f"[_compute_lazy_full] {ptf_name}: impossibile determinare n_trials per il DSR "
+            f"— 'freq_df' (output di run_lazy_analysis) assente o vuoto. Atteso un DataFrame "
+            f"con una riga per ogni frequenza candidata valutata dalla frequency selection."
+        )
+    n_trials = len(_freq_df)
+    dsr = ofc_compute_dsr(sr_hat=sr, n_trials=n_trials, T=T)
 
     # 7. metriche e verdetto
     cagr = _cagr_from_equity(pf_proposed)
@@ -2294,7 +2307,7 @@ def _compute_lazy_full(
         'MC_A2_Sharpe_p50': round(mc_a2['percentiles']['p50']['Sharpe'], 3),
         'MC_B_pvalue': round(mc_b['p_value_sharpe'], 3),
         'MC_B_skill': mc_b['skill'],
-        'DSR': round(dsr, 3),
+        'DSR(SR_adj)': round(dsr, 3),
         'CriteriPassati': f"{n_passed}/3",
         'Verdetto': verdetto,
     }
@@ -2617,11 +2630,13 @@ def style_lazy_classification(df):
     """
     Applica gradiente colore a tutte le metriche numeriche della
     classification Lazy. Verde=migliore, rosso=peggiore per ogni
-    colonna (Sharpe/CAGR/DSR alto=verde, MaxDD/PLoss5y%/MC_B_pvalue
+    colonna (Sharpe/CAGR/DSR(SR_adj) alto=verde, MaxDD/PLoss5y%/MC_B_pvalue
     alto=rosso - direzione invertita dove 'meno è meglio').
+    DSR(SR_adj) = Sharpe deflazionato in unità di Sharpe (formula
+    semplificata, senza correzione skew/curtosi) — NON è una probabilità.
     Ritorna un pandas Styler.
     """
-    cols_higher_better = ['CAGR%', 'Sharpe', 'MC_A2_Sharpe_p50', 'DSR']
+    cols_higher_better = ['CAGR%', 'Sharpe', 'MC_A2_Sharpe_p50', 'DSR(SR_adj)']
     cols_lower_better  = ['MaxDD%', 'PLoss5y%', 'MC_B_pvalue']
 
     styler = df.style
@@ -3056,7 +3071,7 @@ def generate_relazione_tecnica_lazy(
         try:
             if which == 'cum':    return f"{float(pf.total_return()) * 100:.1f}%"
             if which == 'cagr':   return f"{_cagr_from_equity(pf) * 100:.1f}%"
-            if which == 'sharpe': return f"{float(pf.sharpe_ratio()):.2f}"
+            if which == 'sharpe': return f"{float(pf.sharpe_ratio(year_freq='252 days')):.2f}"
             if which == 'maxdd':  return f"{abs(float(pf.max_drawdown())) * 100:.1f}%"
         except Exception:
             return 'N/A'
@@ -3177,7 +3192,7 @@ def generate_relazione_tecnica_lazy(
          'STABILE' if stability.get('stable') else 'INSTABILE'],
         ['Soglia P(loss)', _pct(stability.get('loss_prob_threshold')), '—'],
         ['Min safe horizon', f"{_msh}y" if _msh is not None else 'N/A', '—'],
-        ['Deflated Sharpe Ratio (DSR)', _num(dsr, 3),
+        ['DSR (Sharpe deflazionato — non è una probabilità)', _num(dsr, 3),
          'POSITIVO' if (dsr is not None and dsr > 0) else 'NON POSITIVO'],
     ]
     val_t = Table(val_rows, colWidths=[70 * mm, _hw - 10 * mm, _hw + 10 * mm])
@@ -3283,7 +3298,7 @@ def generate_relazione_tecnica_lazy(
         f"CAGR {_metric(pf_proposed, 'cagr')}, Sharpe {_metric(pf_proposed, 'sharpe')}, "
         f"MaxDD {_metric(pf_proposed, 'maxdd')}; "
         f"P(rolling {_th}y &lt; 0%) {_pct(_ploss) if _ploss is not None else 'N/A'}; "
-        f"DSR {_num(dsr, 3)}."
+        f"DSR (Sharpe deflazionato) {_num(dsr, 3)}."
     )
     vbox = Table([[Paragraph(_vtext, st_vbox)]], colWidths=[CONTENT_W])
     vbox.setStyle(TableStyle([
