@@ -862,8 +862,10 @@ def k_analyze(strategies, tickers, ptf, output_dir, start_date, end_date,
     "  iq l-analyze --ptf lazy_etf_port --pdf\n"
     "  iq l-analyze --ptf all --override\n"
     "  iq l-analyze --universe inputs/mio_portafoglio.json --pdf\n"
-    "\nCon --pdf: genera la Relazione Investitore solo per PTF PROMOSSI;\n"
-    "  i RIGETTATI stampano un messaggio e non producono PDF.\n"
+    "\nCon --pdf: genera la Relazione Investitore per OGNI PTF analizzato\n"
+    "  (il Lazy non produce un verdetto PROMOSSO/RIGETTATO — misura e\n"
+    "  riporta, la decisione se portare un portafoglio in produzione e'\n"
+    "  dell'architetto).\n"
     "  Output: outputs/l_analysis/<timestamp>/<ptf>/<ptf>_Relazione_Investitore.pdf\n"
     "\n--universe accetta un file JSON nel formato nuovo di l_portfolios.py\n"
     "  (il vecchio formato flat {ticker: peso} è legacy, non supportato qui):\n"
@@ -898,7 +900,7 @@ def k_analyze(strategies, tickers, ptf, output_dir, start_date, end_date,
 @click.option("--min-years", default=5, show_default=True,
     help="Storico minimo comune richiesto (anni) per run_bh_backtest e MC Block B")
 @click.option("--pdf", "gen_pdf", is_flag=True, default=False,
-    help="Genera la Relazione Investitore PDF per i PTF promossi (default: solo pipeline)")
+    help="Genera la Relazione Investitore PDF per ogni PTF analizzato (default: solo pipeline)")
 @click.option("--freqs", default="Q,Y", show_default=True,
     help="Frequenze di ribilanciamento da valutare, separate da virgola (default: Q,Y). "
          "Valori: W M Q Y BH. "
@@ -907,11 +909,12 @@ def k_analyze(strategies, tickers, ptf, output_dir, start_date, end_date,
 def l_analyze(ptf, universe, output_dir, start_date, end_date, benchmark,
               init_cash, fees, years, n_simulations_mc_a,
               n_simulations_mc_b, override, min_years, gen_pdf, freqs, verbose):
-    """Pipeline Lazy portfolio: frontiera + backtest + stability + MC A/B + DSR.
+    """Pipeline Lazy portfolio: frontiera + backtest + stability + MC A/B.
 
     Batch (--ptf all) o singolo. Con --pdf genera la Relazione Investitore per
-    ogni PTF PROMOSSO in outputs/l_analysis/<timestamp>/<ptf>/<ptf_name>_Relazione_Investitore.pdf.
-    I PTF RIGETTATI producono solo un messaggio — nessun PDF investitore viene generato.
+    OGNI PTF analizzato in outputs/l_analysis/<timestamp>/<ptf>/<ptf_name>_Relazione_Investitore.pdf.
+    Nessun verdetto PROMOSSO/RIGETTATO: la pipeline misura e riporta, non
+    decide — la selezione di quali PTF portare in produzione è dell'architetto.
 
     --universe accetta un PTF ad-hoc (non registrato in l_portfolios.py) per
     workflow che generano la definizione a runtime (es. webapp R-designer/Lazy).
@@ -1008,8 +1011,6 @@ def l_analyze(ptf, universe, output_dir, start_date, end_date, benchmark,
     print(f"\n[iq l-analyze] Completato. {len(df)} PTF analizzati.")
     print(f"Output dir: {out_dir}")
     print(df.to_string(index=False))
-    n_promoted = (df["Verdetto"] == "PROMOSSO").sum() if "Verdetto" in df.columns else 0
-    print(f"\nPromossi: {n_promoted}/{len(df)}")
     if len(df) == 0:
         raise SystemExit(2)
 

@@ -2141,7 +2141,8 @@ def _compute_lazy_full(
 ) -> dict:
     """
     Pipeline Lazy completa per un SINGOLO PTF: analisi headless + backtest
-    B&H + stability rolling + MC A1/A2 + MC B + DSR + metriche + verdetto.
+    B&H + stability rolling + MC A1/A2 + MC B + metriche. Nessun verdetto:
+    misura e riporta, non decide (vedi commento nel punto 7 del corpo).
 
     Estratta dal loop di run_lazy_batch_analysis() per essere riusabile sia
     nella classificazione batch (riga CSV) sia nella relazione tecnica PDF
@@ -2154,27 +2155,20 @@ def _compute_lazy_full(
         'mc_a1'        : MC iid bootstrap
         'mc_a2'        : MC block bootstrap (usato anche da project_lazy_capital)
         'mc_b'         : MC Block B (skill ribilanciamento)
-        'dsr'          : Deflated Sharpe Ratio (deflated_sharpe_ratio, r_functions.py)
-                         — probabilità in [0,1] che lo Sharpe osservato sia
-                         genuinamente positivo, corretta per multiple testing
-                         (n_trials), skewness e curtosi. Soglia standard: >= 0.95
         'sr', 'T'      : Sharpe e n. osservazioni
         'cagr','maxdd' : metriche aggregate
-        'checks'       : dict dei 3 criteri
-        'verdetto'     : 'PROMOSSO' | 'RIGETTATO'
         'row'          : riga di classificazione (per il CSV batch)
         'portfolio_cfg': dict originale dal registry (ticker:weight)
         'out'          : output di generate_lazy_portfolio_performance (solo se
                          need_out=True) — necessario per generate_relazione_investitore_report
     """
     from pathlib import Path
-    # mc_run_iid_bootstrap / mc_run_block_bootstrap / deflated_sharpe_ratio sono
-    # definite in r_functions.py e NON importate a livello di modulo qui:
-    # import locale per evitare di toccare le import globali di mc_functions.py.
+    # mc_run_iid_bootstrap / mc_run_block_bootstrap sono definite in
+    # r_functions.py e NON importate a livello di modulo qui: import
+    # locale per evitare di toccare le import globali di mc_functions.py.
     from r_functions import (
         mc_run_iid_bootstrap,
         mc_run_block_bootstrap,
-        deflated_sharpe_ratio,
     )
 
     # Supporta sia il vecchio formato flat {ticker: peso} sia il nuovo annidato
@@ -2265,48 +2259,23 @@ def _compute_lazy_full(
         min_years=min_years, _preloaded_price=_price_ptf,
     )
 
-    # 6. DSR — n_trials = numero di frequenze candidate effettivamente valutate
-    # dalla frequency selection (multiple testing reale su freq_df). Nessun
-    # fallback silenzioso: se freq_df non è disponibile, n_trials non è
-    # determinabile in modo affidabile e la pipeline deve fermarsi.
-    sr = float(pf_proposed.sharpe_ratio(year_freq='252 days'))  # annualizzato — per report/CSV ('row[Sharpe]')
+    # DSR non calcolato per Lazy: corregge lo Sharpe per multiple testing da
+    # ricerca su griglia, ma i pesi Lazy non nascono da una ricerca (asset
+    # allocation) — con n_trials=2 (due frequenze candidate) non discrimina mai.
+    sr = float(pf_proposed.sharpe_ratio(year_freq='252 days'))
     T = int(pf_proposed.value().dropna().__len__())
-    _freq_df = risultati.get('freq_df')
-    if _freq_df is None or len(_freq_df) == 0:
-        raise ValueError(
-            f"[_compute_lazy_full] {ptf_name}: impossibile determinare n_trials per il DSR "
-            f"— 'freq_df' (output di run_lazy_analysis) assente o vuoto. Atteso un DataFrame "
-            f"con una riga per ogni frequenza candidata valutata dalla frequency selection."
-        )
-    n_trials = len(_freq_df)
-    from scipy.stats import skew as _skew, kurtosis as _kurt
-    _pf_rets = pf_proposed.returns().dropna()
-    _skewness = float(_skew(_pf_rets.values))
-    _kurt_val = float(_kurt(_pf_rets.values, fisher=True))
-    # deflated_sharpe_ratio richiede lo Sharpe PER-PERIODO (stessa scala del
-    # numero di osservazioni passato come n_obs), NON l'annualizzato `sr`
-    # sopra — stesso fattore sqrt(252) con cui `sr` è stato annualizzato
-    # (year_freq='252 days'), qui ricavato direttamente da _pf_rets per
-    # evitare arrotondamenti nel round-trip di divisione.
-    _std = float(_pf_rets.std(ddof=1))
-    _sr_per_period = float(_pf_rets.mean()) / _std if _std > 0 else 0.0
-    dsr_result = deflated_sharpe_ratio(
-        sharpe_ratio=_sr_per_period, n_obs=len(_pf_rets), skewness=_skewness, kurtosis=_kurt_val,
-        n_trials=n_trials, sr_benchmark=0.0,
-    )
-    dsr = dsr_result['dsr']
 
-    # 7. metriche e verdetto
+    # 7. metriche
     cagr = _cagr_from_equity(pf_proposed)
     maxdd = abs(float(pf_proposed.max_drawdown()))
 
-    checks = {
-        'mc_a2_sharpe_p50_positive': mc_a2['percentiles']['p50']['Sharpe'] > 0,
-        'mc_b_skill': mc_b['skill'],
-        'dsr_significant': dsr >= 0.95,
-    }
-    n_passed = sum(checks.values())
-    verdetto = 'PROMOSSO' if n_passed >= 2 else 'RIGETTATO'
+    # Nessun verdetto PROMOSSO/RIGETTATO per Lazy: un'allocazione statica
+    # scelta per ragioni di asset allocation non è il risultato di una
+    # ricerca su griglia. I criteri ereditati da R/K rispondevano a domande
+    # che il Lazy non pone (DSR: multiple testing qui inesistente;
+    # mc_b_skill: skill di timing di ribilanciamento, sempre False, coerente
+    # con la letteratura). La pipeline misura e riporta; la decisione se
+    # portare un portafoglio in produzione è dell'architetto.
 
     # 8. riga di classificazione
     _freqs_used = freqs if freqs is not None else LAZY_DEFAULT_FREQS
@@ -2323,9 +2292,6 @@ def _compute_lazy_full(
         'MC_A2_Sharpe_p50': round(mc_a2['percentiles']['p50']['Sharpe'], 3),
         'MC_B_pvalue': round(mc_b['p_value_sharpe'], 3),
         'MC_B_skill': mc_b['skill'],
-        'DSR(prob)': round(dsr, 3),
-        'CriteriPassati': f"{n_passed}/3",
-        'Verdetto': verdetto,
     }
 
     # 9. performance report (solo se richiesto per PDF investitore — evita overhead
@@ -2352,13 +2318,10 @@ def _compute_lazy_full(
         'mc_a1': mc_a1,
         'mc_a2': mc_a2,
         'mc_b': mc_b,
-        'dsr': dsr,
         'sr': sr,
         'T': T,
         'cagr': cagr,
         'maxdd': maxdd,
-        'checks': checks,
-        'verdetto': verdetto,
         'row': row,
         'portfolio_cfg': portfolio_cfg,
         'out': out_perf,
@@ -2386,13 +2349,14 @@ def run_lazy_batch_analysis(
 ) -> "pd.DataFrame":
     """
     Esegue la pipeline Lazy completa (run_lazy_analysis + stability +
-    MC A1/A2 + MC B + DSR + verdetto) su una lista di PTF dal registry.
+    MC A1/A2 + MC B) su una lista di PTF dal registry. Nessun verdetto:
+    misura e riporta, non decide.
     Salva un CSV 'classification_<timestamp>.csv' in output_dir.
     Ritorna il DataFrame classification.
 
     Se `details_out` è un dict, viene popolato in-place con
     {ptf_name: rich_dict} dove rich_dict è l'output di _compute_lazy_full()
-    (oggetti completi: pf, stability, mc_a1/a2, mc_b, dsr, frontiera, ecc.).
+    (oggetti completi: pf, stability, mc_a1/a2, mc_b, frontiera, ecc.).
     Necessario per generare la relazione tecnica PDF (iq l-analyze --pdf):
     quando richiesto, i PTF vengono ricalcolati anche se in cache, così gli
     oggetti rich sono disponibili (la cache row/mc_a2 viene comunque aggiornata).
@@ -2507,9 +2471,14 @@ def run_lazy_batch_analysis(
 
 
 def load_lazy_classifications(lazy_dir, pattern='*/classification_*.csv',
-                               filter_mode='ALL', sort_by='Sharpe',
+                               sort_by='Sharpe',
                                sort_asc=False, dedup=True):
     """Carica e consolida tutti i CSV classification Lazy trovati.
+
+    Restituisce SEMPRE tutte le righe: il Lazy non produce un verdetto
+    PROMOSSO/RIGETTATO (misura e riporta, non decide), quindi non c'è un
+    criterio della pipeline con cui filtrare. Per restringere l'insieme,
+    passa una lista esplicita di nomi al chiamante (es. plot_lazy_equity_curves).
 
     Se dedup=True (default, classifica principale), in presenza dello stesso
     PTF in run diversi mantiene solo il run piu' recente. Usa dedup=False per
@@ -2538,18 +2507,15 @@ def load_lazy_classifications(lazy_dir, pattern='*/classification_*.csv',
     if dedup:
         df = df.sort_values('_run', ascending=False)
         df = df.drop_duplicates(subset=['Nome'], keep='first')
-    if filter_mode == 'PROMOTED':
-        df = df[df['Verdetto'] == 'PROMOSSO']
-    elif filter_mode == 'FAILED':
-        df = df[df['Verdetto'] == 'RIGETTATO']
     if sort_by in df.columns:
         df = df.sort_values(sort_by, ascending=sort_asc)
     return df.reset_index(drop=True)
 
 
 def plot_lazy_equity_curves(
-    promoted_df,
+    classification_df,
     registry: dict,
+    names: list = None,
     top: int = 5,
     sort_by: str = 'Sharpe',
     start_date: str = '2016-01-01',
@@ -2560,7 +2526,17 @@ def plot_lazy_equity_curves(
     common_period_only: bool = True,
 ) -> None:
     """
-    Plotta le equity curve dei top N PTF promossi (per sort_by).
+    Plotta le equity curve di un sottoinsieme di PTF Lazy dalla classification.
+
+    Il Lazy non produce un verdetto PROMOSSO/RIGETTATO: `classification_df`
+    contiene TUTTI i PTF analizzati (output di load_lazy_classifications).
+    Restringere l'insieme da plottare è una scelta esplicita di chi chiama:
+    - `names`: lista esplicita di 'Nome' da includere (se passata, ha
+      precedenza — nessun ordinamento/troncamento automatico oltre a quello
+      implicito nell'ordine della lista).
+    - altrimenti, `top` N per `sort_by` (default: i 5 con Sharpe più alto) —
+      un criterio numerico esplicito, non un verdetto calcolato dalla pipeline.
+
     mode='overlay': un solo grafico Plotly con tutte le curve
     normalizzate a base 100 (confrontabili indipendentemente dai pesi).
     mode='separate': un grafico per PTF.
@@ -2571,7 +2547,10 @@ def plot_lazy_equity_curves(
     import plotly.express as px
     import plotly.graph_objects as go
 
-    top_df = promoted_df.sort_values(sort_by, ascending=False).head(top)
+    if names is not None:
+        top_df = classification_df[classification_df['Nome'].isin(names)]
+    else:
+        top_df = classification_df.sort_values(sort_by, ascending=False).head(top)
 
     # Fase 1: accumula le equity series raw (non normalizzate)
     raw_curves = {}
@@ -2627,8 +2606,9 @@ def plot_lazy_equity_curves(
         for nome, serie in curves.items():
             fig.add_trace(go.Scatter(x=serie.index, y=serie.values,
                                      mode='lines', name=nome))
+        _title_n = len(top_df) if names is not None else top
         fig.update_layout(
-            title=f'Top {top} PTF promossi — Equity Curve (base 100){titolo_suffix}',
+            title=f'{_title_n} PTF Lazy — Equity Curve (base 100){titolo_suffix}',
             height=500,
         )
         fig.show()
@@ -2646,13 +2626,11 @@ def style_lazy_classification(df):
     """
     Applica gradiente colore a tutte le metriche numeriche della
     classification Lazy. Verde=migliore, rosso=peggiore per ogni
-    colonna (Sharpe/CAGR/DSR(prob) alto=verde, MaxDD/PLoss5y%/MC_B_pvalue
-    alto=rosso - direzione invertita dove 'meno è meglio').
-    DSR(prob) = Deflated Sharpe Ratio, PROBABILITÀ in [0,1] (deflated_sharpe_ratio,
-    Bailey & Lopez de Prado) — corretta per multiple testing, skewness e curtosi.
+    colonna (Sharpe/CAGR/MC_A2_Sharpe_p50 alto=verde, MaxDD/PLoss5y%/
+    MC_B_pvalue alto=rosso - direzione invertita dove 'meno è meglio').
     Ritorna un pandas Styler.
     """
-    cols_higher_better = ['CAGR%', 'Sharpe', 'MC_A2_Sharpe_p50', 'DSR(prob)']
+    cols_higher_better = ['CAGR%', 'Sharpe', 'MC_A2_Sharpe_p50']
     cols_lower_better  = ['MaxDD%', 'PLoss5y%', 'MC_B_pvalue']
 
     styler = df.style
@@ -2903,10 +2881,8 @@ def generate_relazione_tecnica_lazy(
     period: tuple,
     pf_proposed,
     stability: dict,
-    dsr: float,
     mc_a: dict,
     mc_b: dict,
-    verdetto: str,
     output_path,
     ptf_type: str = 'lazy',
     optimal_weights: dict = None,
@@ -2930,11 +2906,11 @@ def generate_relazione_tecnica_lazy(
         §2 Configurazione      — asset class/pesi, freq ribilanciamento, periodo
         §3 Metriche comparative— CAGR/Sharpe/MaxDD vs benchmark, frontiera
                                  (reale vs teorica)
-        §4 Validazione         — lazy_rolling_stability (P(roll 5y < 0%)), DSR
+        §4 Validazione         — lazy_rolling_stability (P(roll 5y < 0%))
         §5 Monte Carlo         — Block A (CI) + Block B (skill test) — solo
                                  risultati numerici, nessun disclaimer/caveat
         §6 Proiezione capitale — project_lazy_capital, percentili P10-P50-P90
-        §7 Decisione finale    — verdetto promozione
+        §7 Sintesi             — solo metriche, nessun verdetto
 
     Parameters
     ----------
@@ -3208,8 +3184,6 @@ def generate_relazione_tecnica_lazy(
          'STABILE' if stability.get('stable') else 'INSTABILE'],
         ['Soglia P(loss)', _pct(stability.get('loss_prob_threshold')), '—'],
         ['Min safe horizon', f"{_msh}y" if _msh is not None else 'N/A', '—'],
-        ['DSR (Deflated Sharpe Ratio — probabilità in [0,1])', _num(dsr, 3),
-         'SIGNIFICATIVO (≥0.95)' if (dsr is not None and dsr >= 0.95) else 'NON SIGNIFICATIVO'],
     ]
     val_t = Table(val_rows, colWidths=[70 * mm, _hw - 10 * mm, _hw + 10 * mm])
     val_t.setStyle(TableStyle(_ts_base() + [('ALIGN', (1, 0), (-1, -1), 'CENTER')]))
@@ -3293,28 +3267,17 @@ def generate_relazione_tecnica_lazy(
     else:
         story.append(Paragraph("Proiezione capitale non disponibile.", st_body))
 
-    # ── §7 Decisione finale ──────────────────────────────────────────────────
-    story.append(Paragraph("7. Decisione Finale", st_section))
-    _promosso = str(verdetto).upper().strip() == 'PROMOSSO'
-    verd_t = Table(
-        [[_p_verd] for _p_verd in [Paragraph(
-            f"VERDETTO: {str(verdetto).upper()}", st_verd)]],
-        colWidths=[CONTENT_W])
-    verd_t.setStyle(TableStyle([
-        ('BACKGROUND',    (0, 0), (-1, -1), C_GREEN if _promosso else C_RED),
-        ('TOPPADDING',    (0, 0), (-1, -1), 10),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 10),
-    ]))
-    story += [verd_t, Spacer(1, 4 * mm)]
-
+    # ── §7 Sintesi ────────────────────────────────────────────────────────────
+    # Nessun verdetto PROMOSSO/RIGETTATO: un'allocazione statica scelta per
+    # ragioni di asset allocation non è il risultato di una ricerca su
+    # griglia. La relazione misura e riporta; la decisione se portare un
+    # portafoglio in produzione è dell'architetto.
+    story.append(Paragraph("7. Sintesi", st_section))
     _vtext = (
-        f"Il portafoglio <b>{portfolio_title}</b> ha ottenuto verdetto "
-        f"<b>{str(verdetto).upper()}</b> sulla base dei criteri di validazione "
-        f"(MC Block A p50 Sharpe, MC Block B skill, DSR). "
+        f"Il portafoglio <b>{portfolio_title}</b>: "
         f"CAGR {_metric(pf_proposed, 'cagr')}, Sharpe {_metric(pf_proposed, 'sharpe')}, "
         f"MaxDD {_metric(pf_proposed, 'maxdd')}; "
-        f"P(rolling {_th}y &lt; 0%) {_pct(_ploss) if _ploss is not None else 'N/A'}; "
-        f"DSR (probabilità) {_num(dsr, 3)}."
+        f"P(rolling {_th}y &lt; 0%) {_pct(_ploss) if _ploss is not None else 'N/A'}."
     )
     vbox = Table([[Paragraph(_vtext, st_vbox)]], colWidths=[CONTENT_W])
     vbox.setStyle(TableStyle([
@@ -3358,8 +3321,9 @@ def run_lazy_portfolio_analysis(
 ) -> dict:
     """
     Entry point unico per iq l-analyze: esegue la pipeline batch Lazy e,
-    se generate_pdf=True, genera la Relazione Investitore PDF per ogni PTF
-    promosso.
+    se generate_pdf=True, genera la Relazione Investitore PDF per OGNI PTF
+    analizzato. Nessun verdetto: la pipeline misura e riporta, non filtra
+    quali PTF documentare.
 
     Returns
     -------
@@ -3403,12 +3367,11 @@ def run_lazy_portfolio_analysis(
         from r_functions import generate_relazione_investitore_report
         os.makedirs(output_dir, exist_ok=True)
 
+        # Nessun gate sul verdetto: la Relazione Investitore viene generata
+        # per OGNI PTF analizzato — il Lazy non produce più un verdetto
+        # PROMOSSO/RIGETTATO (vedi _compute_lazy_full), quindi non c'è più
+        # un criterio con cui filtrare quali PTF documentare.
         for ptf_name, rich in details.items():
-            verdetto = rich.get("verdetto", "RIGETTATO")
-            if verdetto != "PROMOSSO":
-                print(f"[iq l-analyze] {ptf_name}: RIGETTATO — relazione investitore non generata.")
-                result['pdf_paths'][ptf_name] = None
-                continue
             try:
                 portfolio_cfg = rich.get("portfolio_cfg") or registry.get(ptf_name, {})
                 # Supporta sia formato flat {ticker: peso} sia annidato
