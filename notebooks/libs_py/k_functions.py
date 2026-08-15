@@ -46,6 +46,7 @@ import fnmatch
 from sklearn.linear_model import LinearRegression
 from typing import Optional, Iterable, Dict, Tuple, List, Union, Callable, Any
 from scipy.stats import norm, skew, kurtosis
+from r_functions import deflated_sharpe_ratio
 
 
 # --- Parallel helpers (optional) ---
@@ -8400,32 +8401,9 @@ def analyze_timing_efficiency(
 # ════════════════════════════════════════
 # DSR — Deflated Sharpe Ratio
 # ════════════════════════════════════════
-
-def deflated_sharpe_ratio(
-    sharpe_ratio, n_obs, skewness, kurtosis, n_trials, sr_benchmark=0.0
-):
-    sr_std = np.sqrt(
-        (1 - skewness * sharpe_ratio + ((kurtosis - 1) / 4) * sharpe_ratio**2)
-        / (n_obs - 1)
-    )
-    if n_trials <= 1:
-        sr_star = sr_benchmark
-    else:
-        euler_mascheroni = 0.5772156649
-        z = (1 - euler_mascheroni) * norm.ppf(1 - 1 / n_trials) + \
-            euler_mascheroni * norm.ppf(1 - 1 / (n_trials * np.e))
-        sr_star = sr_benchmark + sr_std * z
-
-    dsr = norm.cdf(
-        (sharpe_ratio - sr_star) * np.sqrt(n_obs - 1) /
-        np.sqrt(1 - skewness * sharpe_ratio + ((kurtosis - 1) / 4) * sharpe_ratio**2)
-    )
-    return {
-        "dsr": round(dsr, 6),
-        "sr_star": round(sr_star, 6),
-        "sr_std": round(sr_std, 6),
-        "is_significant": dsr > 0.95,
-    }
+# deflated_sharpe_ratio() vive ora in r_functions.py — condivisa da
+# R-portfolio, Lazy e K-portfolio (nessuna duplicazione della formula,
+# import in cima al file).
 
 
 def compute_dsr_from_returns(
@@ -8442,10 +8420,15 @@ def compute_dsr_from_returns(
     std    = np.std(r, ddof=1)
     skew_  = _skew(r)
     kurt_  = _kurt(r, fisher=True)
-    sr     = (mean / std) * np.sqrt(periods_per_year) if std > 0 else 0.0
+    # deflated_sharpe_ratio richiede lo Sharpe PER-PERIODO (stessa scala di
+    # n_obs), NON annualizzato — passare mean/std * sqrt(periods_per_year)
+    # con n_obs giornaliero satura DSR a 1.0 per qualunque n_trials (bug
+    # storico corretto in questo branch). `periods_per_year` non entra qui:
+    # serve solo per lo Sharpe annualizzato riportato altrove (compute_panel_dsr).
+    sr_per_period = (mean / std) if std > 0 else 0.0
 
     return deflated_sharpe_ratio(
-        sharpe_ratio=sr,
+        sharpe_ratio=sr_per_period,
         n_obs=n_obs,
         skewness=skew_,
         kurtosis=kurt_,

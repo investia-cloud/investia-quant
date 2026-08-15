@@ -11802,7 +11802,7 @@ _PROFILES: dict[str, _ProfileDefaults] = {
         plateau_threshold=0.20,
         s2_coherence_threshold=0.50,
         s3_pvalue_threshold=0.10,
-        s4_dsr_threshold=0.0,
+        s4_dsr_threshold=0.95,  # DSR ora è una probabilità (deflated_sharpe_ratio) — 0.95 = soglia standard di significatività
         min_signals_to_pass=3,
     ),
     "core": _ProfileDefaults(
@@ -11810,7 +11810,7 @@ _PROFILES: dict[str, _ProfileDefaults] = {
         plateau_threshold=0.30,
         s2_coherence_threshold=0.75,
         s3_pvalue_threshold=0.05,
-        s4_dsr_threshold=0.5,   # empirical — to calibrate across PTFs; range [0.3, 0.8]
+        s4_dsr_threshold=0.95,  # DSR ora è una probabilità (deflated_sharpe_ratio) — 0.95 = soglia standard di significatività
         min_signals_to_pass=4,
     ),
 }
@@ -11848,10 +11848,132 @@ def _ofc_compute_metric(equity: pd.Series, metric: str, trading_days: int = 252)
     return float(result[m])
 
 
-# ── S4 DSR formula ────────────────────────────────────────────────────────────
+# ── DSR formula (unica, condivisa da R-portfolio, Lazy, K-portfolio) ──────────
+
+def deflated_sharpe_ratio(
+    sharpe_ratio: float,
+    n_obs: int,
+    skewness: float,
+    kurtosis: float,
+    n_trials: int,
+    sr_benchmark: float = 0.0,
+) -> dict:
+    """
+    Deflated Sharpe Ratio completo (Bailey & Lopez de Prado, "The Deflated
+    Sharpe Ratio: Correcting for Selection Bias, Backtest Overfitting, and
+    Non-Normality", 2014).
+
+    Restituisce una PROBABILITÀ in [0,1]: la probabilità che lo Sharpe
+    osservato sia genuinamente positivo (superiore a `sr_benchmark`) una
+    volta corretto per selection bias (numero di prove `n_trials`),
+    skewness e curtosi della serie di rendimenti, e lunghezza della serie
+    (`n_obs`). NON è più uno Sharpe in unità di Sharpe — a differenza della
+    vecchia `ofc_compute_dsr` (deprecata, vedi sotto), qui l'unità di
+    output è probabilità, non Sharpe.
+
+    Il termine di penalizzazione per multiple testing usa la correzione
+    di Eulero-Mascheroni (valida anche per N piccolo, N>=2):
+        E[max_N] = (1-γ)·Φ⁻¹(1 - 1/N) + γ·Φ⁻¹(1 - 1/(N·e))
+    con γ = costante di Eulero-Mascheroni (~0.5772), e = exp(1).
+    Per N=1 la penalizzazione è nulla (nessun multiple testing): sr_star = sr_benchmark.
+
+    Soglia di significatività standard in letteratura: DSR >= 0.95.
+
+    ⚠️ SCALA OBBLIGATORIA — PER-PERIODO, NON ANNUALIZZATA ⚠️
+    `sharpe_ratio`, `sr_benchmark` e `n_obs` devono essere nella STESSA
+    scala per-periodo (tipicamente giornaliera): `sharpe_ratio` è lo
+    Sharpe calcolato su `mean(rets)/std(rets)` SENZA moltiplicare per
+    √(periodi/anno), e `n_obs` è il numero di quelle stesse osservazioni
+    per-periodo. Questa è la forma originale di Bailey & Lopez de Prado.
+
+    Passare uno Sharpe ANNUALIZZATO insieme a un `n_obs` giornaliero
+    produce un risultato PRIVO DI SIGNIFICATO: lo z-score interno cresce
+    di un fattore ≈√(periodi/anno) fuori scala, `norm.cdf` satura a 1.0
+    per qualunque `n_trials`, e la funzione perde ogni potere
+    discriminante (bug storico riscontrato in tutte e tre le filiere
+    prima di questa fix — vedi guardia sotto).
+
+    Se serve la versione annualizzata per la reportistica, calcolarla
+    SEPARATAMENTE (es. `pf.sharpe_ratio(year_freq=...)` per i report) —
+    non riusare quel valore qui.
+
+    Parameters
+    ----------
+    sharpe_ratio : Sharpe per-periodo (NON annualizzato), unità di Sharpe.
+    n_obs        : numero di osservazioni per-periodo della serie di
+                   rendimenti (T), STESSA frequenza di `sharpe_ratio`.
+    skewness     : skewness campionaria dei rendimenti per-periodo.
+    kurtosis     : curtosi campionaria dei rendimenti in convenzione Fisher
+                   (eccesso, normale = 0) — stessa convenzione già in uso
+                   in K-portfolio: scipy.stats.kurtosis(r, fisher=True).
+    n_trials     : numero di prove/configurazioni testate (selection bias).
+    sr_benchmark : Sharpe minimo di riferimento per-periodo (default 0.0 —
+                   scala-neutro, va comunque espresso per-periodo se != 0).
+
+    Returns
+    -------
+    dict con chiavi: dsr (probabilità in [0,1]), sr_star (Sharpe soglia
+    deflazionato, per-periodo), sr_std (errore standard dello Sharpe,
+    per-periodo), is_significant (dsr > 0.95).
+
+    Raises
+    ------
+    ValueError se n_trials < 1, n_obs <= 1, se la varianza dello Sharpe
+    stimato risulta non positiva (input non validi, es. skewness/kurtosis
+    incoerenti con lo Sharpe fornito), oppure se lo z-score interno
+    |z| > 8 — soglia oltre la quale `norm.cdf` satura numericamente a
+    0.0/1.0 e il risultato non ha più potere discriminante: quasi sempre
+    sintomo di scale incoerenti (Sharpe annualizzato + n_obs per-periodo).
+    """
+    from scipy.stats import norm
+
+    if n_trials < 1:
+        raise ValueError(f"deflated_sharpe_ratio: n_trials deve essere >= 1, ricevuto {n_trials!r}.")
+    if n_obs <= 1:
+        raise ValueError(f"deflated_sharpe_ratio: n_obs deve essere > 1, ricevuto {n_obs!r}.")
+
+    var_term = 1 - skewness * sharpe_ratio + ((kurtosis - 1) / 4) * sharpe_ratio**2
+    if not (var_term > 0):
+        raise ValueError(
+            f"deflated_sharpe_ratio: varianza dello Sharpe stimato non positiva "
+            f"({var_term!r}) — input non validi (sharpe_ratio={sharpe_ratio!r}, "
+            f"skewness={skewness!r}, kurtosis={kurtosis!r})."
+        )
+
+    sr_std = np.sqrt(var_term / (n_obs - 1))
+    if n_trials <= 1:
+        sr_star = sr_benchmark
+    else:
+        euler_mascheroni = 0.5772156649
+        z = (1 - euler_mascheroni) * norm.ppf(1 - 1 / n_trials) + \
+            euler_mascheroni * norm.ppf(1 - 1 / (n_trials * np.e))
+        sr_star = sr_benchmark + sr_std * z
+
+    z_stat = (sharpe_ratio - sr_star) * np.sqrt(n_obs - 1) / np.sqrt(var_term)
+    if abs(z_stat) > 8:
+        raise ValueError(
+            f"deflated_sharpe_ratio: z-score interno |{z_stat:.2f}| > 8 — oltre questa "
+            f"soglia norm.cdf satura numericamente a 0.0/1.0 e il DSR perde ogni potere "
+            f"discriminante rispetto a n_trials. Causa probabile: scale incoerenti fra "
+            f"sharpe_ratio={sharpe_ratio!r} e n_obs={n_obs!r} (es. Sharpe ANNUALIZZATO "
+            f"passato insieme a un n_obs PER-PERIODO/giornaliero — sharpe_ratio e n_obs "
+            f"devono essere nella stessa scala per-periodo). sr_star={sr_star!r}, "
+            f"sr_std={sr_std!r}, n_trials={n_trials!r}."
+        )
+
+    dsr = norm.cdf(z_stat)
+    return {
+        "dsr": round(float(dsr), 6),
+        "sr_star": round(float(sr_star), 6),
+        "sr_std": round(float(sr_std), 6),
+        "is_significant": bool(dsr > 0.95),
+    }
+
 
 def ofc_compute_dsr(sr_hat: float, n_trials: int, T: int) -> float:
     """
+    DEPRECATA — usare `deflated_sharpe_ratio()`.
+
     Simplified Deflated Sharpe Ratio (Bailey & Lopez de Prado 2014).
 
     DSR = SR_hat - Φ^{-1}(1 - 1/N) × (1/√T)
@@ -11859,6 +11981,14 @@ def ofc_compute_dsr(sr_hat: float, n_trials: int, T: int) -> float:
     where N = n_trials, T = OOS trading days.
     Φ^{-1}(1 - 1/N) ≈ expected maximum of N iid standard normals.
     Does not include skewness/kurtosis correction (requires full SR distribution).
+
+    Motivo della deprecazione: la penalizzazione per multiple testing usa
+    Φ⁻¹(1 - 1/N) da sola, che degenera a 0 per N=2 (identica a N=1,
+    nessuna penalizzazione — verificato numericamente). Inoltre l'output
+    resta in unità di Sharpe, non è una probabilità: non confrontabile
+    con soglie come 0.95. Sostituita ovunque da `deflated_sharpe_ratio()`,
+    che usa la correzione di Eulero-Mascheroni (valida per N>=2) e
+    restituisce una probabilità in [0,1].
     """
     if n_trials <= 0 or T <= 0 or np.isnan(sr_hat):
         return np.nan
@@ -12105,18 +12235,40 @@ def _ofc_s4_dsr(
     trading_days: int = 252,
 ) -> tuple[float, bool, str]:
     """
-    S4: Deflated Sharpe Ratio. Always on OOS Sharpe (DSR theory valid only for Sharpe).
+    S4: Deflated Sharpe Ratio — probabilità in [0,1] (deflated_sharpe_ratio,
+    r_functions.py). Always on OOS Sharpe (DSR theory valid only for Sharpe).
     """
     m  = _mc_compute_metrics(oos_equity, trading_days)
-    sr = float(m.get("Sharpe", np.nan))
-    T  = len(oos_equity)
+    sr = float(m.get("Sharpe", np.nan))  # annualizzato — SOLO per la nota diagnostica sotto
 
-    if np.isnan(sr) or n_trials <= 0 or T <= 0:
+    from scipy.stats import skew as _skew, kurtosis as _kurt
+    rets = oos_equity.pct_change(fill_method=None).dropna()
+    T = len(rets)
+
+    if np.isnan(sr) or n_trials <= 0 or T <= 1:
         return np.nan, False, "S4: insufficient data"
 
-    dsr    = ofc_compute_dsr(sr, n_trials, T)
-    passed = not np.isnan(dsr) and dsr > threshold
-    note   = (f"S4 (DSR on Sharpe): SR={sr:.4f}, n={n_trials}, T={T}, "
+    # deflated_sharpe_ratio richiede lo Sharpe PER-PERIODO (stessa scala di
+    # T=len(rets)), NON l'annualizzato `sr` sopra — stesso fattore
+    # sqrt(trading_days) con cui _mc_compute_metrics annualizza, qui
+    # ricavato direttamente da rets per evitare arrotondamenti nel
+    # round-trip di divisione.
+    _std = float(rets.std(ddof=1))
+    sr_per_period = float(rets.mean()) / _std if _std > 0 else 0.0
+    skewness = float(_skew(rets.values))
+    kurt_val = float(_kurt(rets.values, fisher=True))
+
+    try:
+        result = deflated_sharpe_ratio(
+            sharpe_ratio=sr_per_period, n_obs=T, skewness=skewness, kurtosis=kurt_val,
+            n_trials=n_trials, sr_benchmark=0.0,
+        )
+    except ValueError as e:
+        return np.nan, False, f"S4: {e}"
+
+    dsr    = result["dsr"]
+    passed = dsr > threshold
+    note   = (f"S4 (DSR, probabilità): SR={sr:.4f}, n={n_trials}, T={T}, "
               f"DSR={dsr:.4f} >threshold={threshold:.2f}")
     return dsr, passed, note
 
@@ -12562,7 +12714,7 @@ def generate_ptf_card_md(
             f"| S1 — Plateau proxy | Diversità parametrica: il WFO converge su un unico punto? | {_vd(sigs.get('S1_plateau', {}).get('pass'))} | {sigs.get('S1_plateau', {}).get('value', 'N/A')} |\n"
             f"| S2 — Flag coherence | I filtri sono stabili tra sottoperiodi? | {_vd(sigs.get('S2_coherence', {}).get('pass'))} | {sigs.get('S2_coherence', {}).get('value', 'N/A')} |\n"
             f"| S3 — Random selection | Il risultato Out-Of-Sample batte {_n_bs_ofc} portafogli con parametri casuali? | {_vd(sigs.get('S3_bootstrap', {}).get('pass'))} | p={sigs.get('S3_bootstrap', {}).get('p_value', 'N/A')} |\n"
-            f"| S4 — DSR | Lo Sharpe è significativo dopo correzione per n. trial? | {_vd(sigs.get('S4_dsr', {}).get('pass'))} | {sigs.get('S4_dsr', {}).get('dsr', 'N/A')} |\n"
+            f"| S4 — DSR (probabilità) | Lo Sharpe è significativo dopo correzione per n. trial? | {_vd(sigs.get('S4_dsr', {}).get('pass'))} | {sigs.get('S4_dsr', {}).get('dsr', 'N/A')} |\n"
             f"| **OFC Verdict** | Soglia: 3/4 segnali | **{'PROMOTED' if promoted else 'NOT PROMOTED'}** | |\n\n"
         )
 
@@ -12632,7 +12784,7 @@ def generate_ptf_card_md(
             ('S1_plateau',   'S1 — Plateau'),
             ('S2_coherence', 'S2 — Coherence'),
             ('S3_bootstrap', 'S3 — Bootstrap'),
-            ('S4_dsr',       'S4 — DSR'),
+            ('S4_dsr',       'S4 — DSR (prob.)'),
         ]:
             sd  = sigs.get(sk, {})
             pss = sd.get('pass')
@@ -14284,7 +14436,7 @@ def _diagnose_ofc(
                 )
             if not s4.get('pass') and s4_v is not None:
                 fail_parts.append(
-                    f"<b>S4 DSR = {s4_v:.3f}</b> indica uno Sharpe non sufficientemente "
+                    f"<b>S4 DSR = {s4_v:.3f}</b> (probabilità) indica uno Sharpe non sufficientemente "
                     f"significativo dopo correzione per il numero di trial (threshold={s4_thr})."
                 )
             body = " ".join(fail_parts) if fail_parts else "Segnali critici falliti."
@@ -15774,7 +15926,7 @@ def generate_relazione_tecnica(
         f"<b>S1</b> diversit\u00e0 &gt; {_s1t:.0%} \u00b7 "
         f"<b>S2</b> coerenza \u2265 {_s2t:.0%} \u00b7 "
         f"<b>S3</b> p \u2264 {_s3t:.2f} \u00b7 "
-        f"<b>S4</b> DSR &gt; {_s4t:.2f}.",
+        f"<b>S4</b> DSR (probabilità) &gt; {_s4t:.2f}.",
         st_body))
 
     def _ofc_block(sigs, ofc_passed, title):
@@ -15792,7 +15944,7 @@ def generate_relazione_tecnica(
             ('S1_plateau',   'S1 — Plateau proxy',    'Diversità parametrica del WFO'),
             ('S2_coherence', 'S2 — Flag coherence',   'Stabilità dei filtri tra sottoperiodi'),
             ('S3_bootstrap', 'S3 — Random selection', f'Il risultato Out-Of-Sample batte {wfo_config.get("n_bootstrap_ofc", wfo_config.get("n_bootstrap", 1000))} portafogli con parametri casuali?'),
-            ('S4_dsr',       'S4 — DSR',              'Sharpe significativo dopo correzione per numero di trial'),
+            ('S4_dsr',       'S4 — DSR (prob.)',      'Probabilità che lo Sharpe sia significativo dopo correzione per numero di trial'),
         ], start=1):
             sd  = (sigs or {}).get(sk, {})
             pss = sd.get('pass')
@@ -16061,7 +16213,7 @@ def generate_relazione_tecnica(
             ('S1_plateau',   'S1 — Plateau'),
             ('S2_coherence', 'S2 — Coherence'),
             ('S3_bootstrap', 'S3 — Bootstrap'),
-            ('S4_dsr',       'S4 — DSR'),
+            ('S4_dsr',       'S4 — DSR (prob.)'),
         ], start=1):
             sd  = (sigs or {}).get(sk, {})
             pss = sd.get('pass')
