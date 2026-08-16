@@ -1,6 +1,7 @@
 # investia-quant — Piano Operativo
 
-**Ultimo aggiornamento**: 7 agosto 2026 (filiera Lazy: 5 PTF scala di rischio, frequency selection allineata JN/CLI)
+**Ultimo aggiornamento**: 15 agosto 2026 (DSR unificato, Sharpe 252,
+verdetto Lazy eliminato)
 **Root progetto**: `~/investia-quant`
 
 > **Nota consolidamento 22/07**: le voci "0.b" e "0.d-bis" sono state
@@ -51,7 +52,7 @@ alla volta, commit + merge in `main` prima di aprirne un altro**.
 | `iq run --ptf/--rotational/--trading/--all` | Runtime operativo — segnali ai gestori | ✅ Production |
 | `iq report --ptf/--rotational/--trading/--all` | Statistiche YTD PTF deployati | ✅ Production |
 | `iq r-analyze --ptf/--universe [--pdf]` | Pipeline R completa — card .md sempre, relazione tecnica PDF con `--pdf` | ✅ Production |
-| `iq l-analyze --ptf [--pdf]` | Pipeline Lazy — frontiera+stability+MC A/B+DSR; relazione tecnica PDF con `--pdf` | ✅ Production |
+| `iq l-analyze --ptf [--pdf]` | Pipeline Lazy — frontiera+stability+MC A/B; relazione tecnica PDF con `--pdf` | ✅ Production |
 | `iq k-analyze -s/-t/--ptf` | Pipeline K completa — WFO+OFC+DSR+MC | ✅ Production |
 | `iq k-agent --max/--llm/--model/--pdf` | Genera K-strategy da articoli Medium; --pdf per PDF locali | ✅ Production |
 
@@ -106,6 +107,9 @@ AND TotRet% > BH_TotRet%  (batte il B&H in return)
 AND MaxDD% < BH_DD%        (drawdown inferiore al B&H)
 ```
 
+⚠️ il criterio DSR >= 0.95 non ha mai filtrato prima del 15/08 (norm.cdf
+saturo a 1,0). I verdetti K storici vanno riletti.
+
 **Flusso operativo K:**
 ```
 iq k-agent --max 15 --llm anthropic   → genera strategie → k_strategies_agent.py
@@ -139,6 +143,10 @@ cron irina (locale) ore 03:00         → iq k-analyze --ptf <PTF_DA_DEFINIRE>
 | Web | Da reintegrare in investia-platform — design sospeso (vedi priorità alta) |
 | Relazione tecnica AI | ✅ `generate_relazione_tecnica_lazy()`, §1-§7, completata il 19/06 |
 | Utenti | Tutti i livelli inclusi gestori bancari |
+
+**Verdetto eliminato (15/08)**: la pipeline Lazy non emette più un
+verdetto PROMOSSO/RIGETTATO — tutte le metriche vengono calcolate e
+riportate, la decisione è dell'architetto (vedi commit f55c953).
 
 ### Filiera R-strategies (esplorativa)
 
@@ -264,6 +272,11 @@ B, e il problema è nella costante del framework.
 **Perché è priorità massima**: finché non è risolto, ogni Sharpe della
 filiera Lazy è provvisorio — incluso l'1,215 validato il 07/08. Tocca
 qualunque numero già mostrato in relazione tecnica Lazy.
+
+La volatilità framework qui sopra è implicita (derivata da CAGR/Sharpe),
+non misurata direttamente, e lo Sharpe era difettoso (B-019): il
+rapporto framework/webapp scende da 1,45 a ~1,20. Va rimisurata
+direttamente prima di rieseguire i test A/B.
 
 ---
 
@@ -565,7 +578,10 @@ Batch su tutti i PTF: chiama `run_r_portfolio_analysis()` in loop.
 
 Fix `from_returns` → `from_holding`. Ruolo operativo da chiarire.
 
-**0.k `DSR` Lazy: valore fuori dominio, identico allo Sharpe** · filiera Lazy · ⚠️ APERTO 07/08
+**0.k `DSR` Lazy: valore fuori dominio, identico allo Sharpe** · filiera Lazy · ✅ RISOLTO (15/08)
+
+La causa era un mismatch di scala tra Sharpe annualizzato e n_obs
+giornaliero passato a `norm.cdf`, che saturava a 1,0. Vedi ECOSISTEMA §28.
 
 Sulla tabella riepilogativa di `sandbox_crescita` la colonna `DSR`
 riporta esattamente lo Sharpe della stessa riga: 1,219 nel run
@@ -723,6 +739,9 @@ i path + gestire la ricostruzione di `compare_wfo_pipelines`).
   commit nuovo sopra quello vecchio. In `main` restano ora due merge
   commit per lo stesso merge (`9eee04f` col messaggio sporco, `09e065b`
   con quello corretto). Innocuo sul contenuto, storia rumorosa.
+- `session_start_all.sh` dichiara "repo non usa nbstripout" su
+  investia-quant controllando `.gitattributes` in root — falso, il
+  filtro è attivo. Da correggere.
 
 ---
 
@@ -941,6 +960,10 @@ mantenuto — serve al multi-PTF — ma ora stampa
 tra "nessuno analizzato" (errore, `SystemExit(2)`) e "nessuno promosso"
 (esito legittimo, exit 0).
 
+### B-019 — Sharpe annualizzato su 365 giorni invece di 252, 8 punti di chiamata in mc_functions.py · RESOLVED (15/08, commit f55c953)
+
+### B-020 — DSR: tre implementazioni, scale incoerenti, degenerazione a N=2 · RESOLVED (15/08, unificato su deflated_sharpe_ratio in r_functions.py, guardia |z|>8)
+
 ---
 
 ## Storia sessioni
@@ -1049,11 +1072,10 @@ Branch vari → main.
   SANDBOX oltre al generale L_PORTFOLIO_REGISTRY (auto-discovery).
 - Criterio di stabilità ridisegnato: lazy_stability_weights (pesi
   Max Sharpe della frontiera su sotto-periodi) giudicato inadatto —
-  misura overfit di un'allocazione teorica mai eseguita. Sostituito
-  nel verdetto da lazy_rolling_stability: P(rendimento rolling a 5
-  anni < 0%) sul PTF reale, riusando analyze_rolling_horizons già
-  presente in u_functions.py per il triangolo dei rendimenti.
-- iq lazy-analyze: comando CLI completo, --ptf <nome|all>, --override,
+  misura overfit di un'allocazione teorica mai eseguita. Sostituito da 
+  lazy_rolling_stability, che è ora la metrica di stabilità riportata: 
+  P(rendimento rolling a 5 anni < 0%) sul PTF reale. 
+- iq l-analyze: comando CLI completo, --ptf <nome|all>, --override,
   cache pkl stabile in outputs/lazy_cache/ (per PTF + risultati MC).
 - lazy_panel.ipynb: viewer completo, §1-§7 (config, classifica colorata,
   scatter, equity curve top-N su periodo comune, confronto, export,
